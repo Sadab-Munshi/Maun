@@ -13,6 +13,7 @@ import {
   PUSH_PAYLOAD,
   PUSH_REPEAT_MS,
   PUSH_TTL_SECONDS,
+  PUSH_UNFINISHED,
   QUEUE_CAP,
   QUEUE_CAP_PER_SENDER,
   QUEUE_TTL_MS,
@@ -167,6 +168,7 @@ export class Mailbox extends DurableObject<Env> {
         keys: this.hasKeys(),
         otks: this.oneTimeKeyCount(),
         push: sql.exec("SELECT 1 FROM push WHERE id = 1").toArray().length > 0,
+        pushStatus: (sql.exec("SELECT status FROM push_result WHERE id = 1").toArray()[0]?.status as number) ?? null,
         queued: this.size().total,
       });
       // Everything that arrived while the phone was away.
@@ -294,12 +296,15 @@ export class Mailbox extends DurableObject<Env> {
           blob(frame.key),
           blob(frame.auth),
         );
+        // What happened to the old address's wake-ups says nothing about this one.
+        sql.exec("DELETE FROM push_result");
         send(ws, { t: "saved", id: frame.id, otks: this.oneTimeKeyCount() });
         return;
       }
 
       case "drop_push":
         sql.exec("DELETE FROM push WHERE id = 1");
+        sql.exec("DELETE FROM push_result");
         send(ws, { t: "saved", id: frame.id, otks: this.oneTimeKeyCount() });
         return;
     }
@@ -385,6 +390,7 @@ export class Mailbox extends DurableObject<Env> {
     const sentToday = row.day === today ? (row.sent as number) : 0;
     if (sentToday >= PUSH_DAILY_CAP) return;
     sql.exec("UPDATE push SET last = ?, pending = 1, day = ?, sent = ? WHERE id = 1", now, today, sentToday + 1);
+    sql.exec("INSERT OR REPLACE INTO push_result (id, status) VALUES (1, ?)", PUSH_UNFINISHED);
     this.ctx.waitUntil(this.deliverWake(row.url as string, bytes(row.key), bytes(row.auth)));
   }
 
@@ -411,6 +417,9 @@ export class Mailbox extends DurableObject<Env> {
     } catch {
       // The push service could not be reached.
     }
+    // Kept for the phone to see at its next login. Without it, a push service
+    // that turns the relay away would look exactly like one that works.
+    sql.exec("UPDATE push_result SET status = ? WHERE id = 1", status);
     if (status >= 200 && status < 300) return;
     if (status === 404 || status === 410) {
       // The push service says this address no longer exists. The phone leaves
@@ -522,6 +531,9 @@ export class Mailbox extends DurableObject<Env> {
          day INTEGER NOT NULL, sent INTEGER NOT NULL
        )`,
     );
+    // One row: what the push service answered to the last wake-up. An HTTP
+    // status, 0 when it could not be reached, PUSH_UNFINISHED while in flight.
+    sql.exec("CREATE TABLE IF NOT EXISTS push_result (id INTEGER PRIMARY KEY CHECK (id = 1), status INTEGER NOT NULL)");
     sql.exec(
       `CREATE TABLE IF NOT EXISTS queue (
          seq INTEGER PRIMARY KEY,

@@ -142,7 +142,11 @@ class ChatEngine(
             try {
                 // Each is tried again at the next login. Sending does not depend on either.
                 quietly { publishKeys() }
-                quietly { syncPush() }
+                quietly {
+                    // What became of the last wake-up only matters if it went
+                    // to the address this phone still uses.
+                    if (syncPush()) describeWakeUp(ready?.pushStatus)?.let { _pushProblem.value = it }
+                }
             } finally {
                 kick()
                 settingUp.value = false
@@ -493,11 +497,14 @@ class ChatEngine(
 
     // ---- Wake-up address -------------------------------------------------------
 
-    /** Makes sure the relay has this phone's current wake-up address, or none. */
-    private suspend fun syncPush() = pushLock.withLock {
-        val state = push ?: return@withLock
-        val link = link ?: return@withLock
-        if (link.ready == null) return@withLock
+    /**
+     * Makes sure the relay has this phone's current wake-up address, or none.
+     * Returns true when the relay already had the address this phone wants.
+     */
+    private suspend fun syncPush(): Boolean = pushLock.withLock {
+        val state = push ?: return@withLock false
+        val link = link ?: return@withLock false
+        if (link.ready == null) return@withLock false
         val wanted = withContext(io) { state.wanted() }
         if (wanted == null) {
             _pushProblem.value = null
@@ -505,13 +512,13 @@ class ChatEngine(
                 relayHasPush = false
                 withContext(io) { state.setUploaded(null) }
             }
-            return@withLock
+            return@withLock false
         }
         // The relay forgets an address the push service says is dead, so its
         // word counts as well as this phone's memory.
         if (relayHasPush && withContext(io) { state.uploaded() } == wanted) {
             _pushProblem.value = null
-            return@withLock
+            return@withLock true
         }
         val answer = link.request(
             JSONObject().put("t", "put_push").put("url", wanted.url).put("key", wanted.key).put("auth", wanted.auth),
@@ -531,6 +538,17 @@ class ChatEngine(
             // A relay from before wake-ups existed.
             else -> _pushProblem.value = "This relay cannot wake phones yet. It needs an update."
         }
+        false
+    }
+
+    /** Says why the relay's last wake-up did not get through, or null if it did or nothing is known. */
+    private fun describeWakeUp(status: Int?): String? = when {
+        status == null || status == WAKE_UP_UNFINISHED || status in 200..299 -> null
+        status == 0 -> "The relay could not reach your push app's server, so the last wake-up was lost."
+        status == 429 ->
+            "Your push app's server turned the relay's last wake-up away: too many requests. " +
+                "Messages may arrive late until it accepts them again."
+        else -> "Your push app's server refused the relay's last wake-up (HTTP $status)."
     }
 
     private fun wire(key: SignedPublicKey) =
@@ -556,6 +574,9 @@ class ChatEngine(
     private fun decode(text: String): ByteArray = Base64.getDecoder().decode(text)
 
     companion object {
+        /** PUSH_UNFINISHED in backend/src/protocol.ts. */
+        private const val WAKE_UP_UNFINISHED = -1
+
         /** Top up when the relay has fewer one-time pre-keys than this. */
         const val MIN_ONE_TIME_KEYS = 20
 

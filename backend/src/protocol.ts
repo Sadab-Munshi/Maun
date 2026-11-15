@@ -65,6 +65,8 @@ export const PUSH_DAILY_CAP = 200;
 export const PUSH_TTL_SECONDS = 24 * 60 * 60;
 /** What a wake-up says once decrypted. It names nobody and carries nothing. */
 export const PUSH_PAYLOAD = "wake";
+/** Recorded as the outcome of a wake-up that has been started and has not finished. */
+export const PUSH_UNFINISHED = -1;
 
 export const NONCE_BYTES = 32;
 
@@ -115,8 +117,19 @@ export type ServerFrame =
   /**
    * `keys`: pre-keys are published. `otks`: one-time pre-keys left.
    * `push`: a wake-up address is on file. `queued`: messages waiting right now.
+   * `pushStatus`: what the push service answered to the last wake-up sent to
+   * that address: an HTTP status, 0 when it could not be reached,
+   * PUSH_UNFINISHED when the attempt never finished, null when none was sent.
    */
-  | { t: "ready"; fresh: boolean; keys: boolean; otks: number; push: boolean; queued: number }
+  | {
+      t: "ready";
+      fresh: boolean;
+      keys: boolean;
+      otks: number;
+      push: boolean;
+      pushStatus: number | null;
+      queued: number;
+    }
   | { t: "echo"; id: string; body: string; at: number }
   | { t: "saved"; id: string; otks: number }
   | {

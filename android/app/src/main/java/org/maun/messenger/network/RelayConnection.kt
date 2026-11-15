@@ -57,6 +57,12 @@ data class Ready(
     val oneTimeKeys: Int,
     /** The relay has a wake-up address for this phone. */
     val hasPush: Boolean = false,
+    /**
+     * What the push service answered to the relay's last wake-up for this
+     * phone: an HTTP status, 0 if it could not be reached, -1 if the attempt
+     * never finished. Null when none has been sent to the current address.
+     */
+    val pushStatus: Int? = null,
     /** How many messages were waiting at the moment of login. They follow right away. */
     val queued: Int = 0,
 )
@@ -244,6 +250,7 @@ class RelayConnection(
                                         hasKeys = frame.optBoolean("keys"),
                                         oneTimeKeys = frame.optInt("otks"),
                                         hasPush = frame.optBoolean("push"),
+                                        pushStatus = if (frame.isNull("pushStatus")) null else frame.optInt("pushStatus"),
                                         queued = frame.optInt("queued"),
                                     )
                                     live = socket

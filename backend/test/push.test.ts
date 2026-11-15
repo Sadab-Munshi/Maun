@@ -283,6 +283,41 @@ describe("waking a phone", () => {
     expect(await readyOf(bob)).toMatchObject({ push: false, queued: 2 });
   });
 
+  it("tells the phone what the push service answered to the last wake-up", async () => {
+    const alice = await registered();
+    const bob = await withPush();
+    // Nothing has been sent yet.
+    expect(await readyOf(bob)).toMatchObject({ push: true, pushStatus: null });
+
+    const a = await online(alice);
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(1)).toBe(1);
+    expect(await readyOf(bob)).toMatchObject({ push: true, pushStatus: 201 });
+
+    // The push service starts turning the relay away.
+    pushServiceAnswer = () => new Response("slow down", { status: 429 });
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(2)).toBe(2);
+    await vi.waitFor(async () => expect((await pushRow(bob.id))?.pending).toBe(0));
+    expect(await readyOf(bob)).toMatchObject({ push: true, pushStatus: 429 });
+
+    // It cannot be reached at all.
+    pushServiceAnswer = () => {
+      throw new Error("no route");
+    };
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(3)).toBe(3);
+    await vi.waitFor(async () => expect((await pushRow(bob.id))?.pending).toBe(0));
+    expect(await readyOf(bob)).toMatchObject({ pushStatus: 0 });
+
+    // A new address starts with a clean slate.
+    const b = await online(bob);
+    expect(await putPush(b, pushUrl(), await makePushKeys())).toMatchObject({ t: "saved" });
+    await hangUp(b);
+    expect(await readyOf(bob)).toMatchObject({ push: true, pushStatus: null });
+    await hangUp(a);
+  });
+
   it("tries again with the next message when the push service was unreachable", async () => {
     const alice = await registered();
     const bob = await withPush();
