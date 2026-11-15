@@ -19,6 +19,7 @@ zxing = "3.5.4"
 desugar = "2.1.5"
 work = "2.12.0"
 unifiedpush = "3.3.5"
+unifiedpushFcm = "3.1.0"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -44,6 +45,7 @@ camerax-view = { module = "androidx.camera:camera-view", version.ref = "camerax"
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 work-runtime = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 unifiedpush-connector = { module = "org.unifiedpush.android:connector", version.ref = "unifiedpush" }
+unifiedpush-fcm = { module = "org.unifiedpush.android:embedded-fcm-distributor", version.ref = "unifiedpushFcm" }
 junit = { module = "junit:junit", version.ref = "junit" }
 json = { module = "org.json:json", version.ref = "json" }
 

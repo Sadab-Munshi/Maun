@@ -35,6 +35,7 @@ fun HomeScreen(
     delivery: DeliveryUi,
     pushProblem: String?,
     onChoosePushApp: (String) -> Unit,
+    onGooglePush: (Boolean) -> Unit,
     onStayConnected: (Boolean) -> Unit,
     onDeliveryChanged: () -> Unit,
     onShowMyCode: () -> Unit,
@@ -49,7 +50,7 @@ fun HomeScreen(
 
         // Up here while something about background delivery needs doing; below the chats once it is settled.
         val deliveryCard = @Composable {
-            DeliveryCard(delivery, pushProblem, onChoosePushApp, onStayConnected, onDeliveryChanged)
+            DeliveryCard(delivery, pushProblem, onChoosePushApp, onGooglePush, onStayConnected, onDeliveryChanged)
         }
         if (delivery.needsAttention) deliveryCard()
 
@@ -197,6 +198,7 @@ private fun HomePreview() {
             delivery = DeliveryUi(pushApp = "Sunup"),
             pushProblem = null,
             onChoosePushApp = {},
+            onGooglePush = {},
             onStayConnected = {},
             onDeliveryChanged = {},
             onShowMyCode = {},

@@ -51,7 +51,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Hears from the push app on this phone: a new wake-up address, or a wake-up. -->
+        <!-- Hears from what wakes this phone, Google's push service or a push app: a new wake-up address, or a wake-up. -->
         <service
             android:name=".push.WakeService"
             android:exported="false">

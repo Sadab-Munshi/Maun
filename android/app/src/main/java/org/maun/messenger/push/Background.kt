@@ -9,41 +9,65 @@ import androidx.core.content.edit
 import org.maun.messenger.MaunApp
 import org.unifiedpush.android.connector.UnifiedPush
 
-/** A push app installed on this phone that can wake Maun. */
-data class PushApp(val packageName: String, val label: String)
+/**
+ * Something on this phone that can wake Maun: a push app, or the push service
+ * of Google Play ([google]).
+ */
+data class PushApp(val packageName: String, val label: String, val google: Boolean = false)
 
 /**
- * The push apps on this phone (UnifiedPush "distributors") and which of them
- * wakes Maun.
+ * What can wake Maun on this phone (UnifiedPush "distributors") and which of
+ * them does.
+ *
+ * Google's push service is the one WhatsApp and most other apps use. It needs
+ * nothing installed and nothing of Maun running. It appears in these lists
+ * under Maun's own package name, because the part that talks to it is built
+ * into Maun. It is used when no push app is installed and the user has not
+ * turned it off.
  */
 object PushApps {
 
+    /** What the user can choose from. Leaves Google's service out once the user has turned it off. */
     fun installed(context: Context): List<PushApp> =
         try {
-            UnifiedPush.getDistributors(context).map { PushApp(it, labelOf(context, it)) }
+            val googleOff = Background.googleOff(context)
+            UnifiedPush.getDistributors(context)
+                .filter { !(googleOff && it == context.packageName) }
+                .map { describe(context, it) }
         } catch (_: Exception) {
             emptyList()
+        }
+
+    /** Whether this phone has Google's push service, turned off or not. */
+    fun googleAvailable(context: Context): Boolean =
+        try {
+            context.packageName in UnifiedPush.getDistributors(context)
+        } catch (_: Exception) {
+            false
         }
 
     /** The push app that wakes Maun, or null. */
     fun current(context: Context): PushApp? =
         try {
-            UnifiedPush.getSavedDistributor(context)?.let { PushApp(it, labelOf(context, it)) }
+            UnifiedPush.getSavedDistributor(context)?.let { describe(context, it) }
         } catch (_: Exception) {
             null
         }
 
     /**
-     * Registers with the push app in use, as UnifiedPush asks apps to do every
-     * time they start. If none was chosen and exactly one is installed, that
-     * one is used. Returns whether a push app is in use; its answer arrives
-     * later, at [WakeService].
+     * Registers with what wakes Maun, as UnifiedPush asks apps to do every
+     * time they start. If nothing was chosen yet, a push app is used when
+     * exactly one is installed, and Google's service when there is no push
+     * app. With several push apps the user is asked. Returns whether
+     * something is in use; its answer arrives later, at [WakeService].
      */
     fun refresh(context: Context): Boolean =
         try {
             var chosen = UnifiedPush.getSavedDistributor(context)
             if (chosen == null) {
-                chosen = UnifiedPush.getDistributors(context).singleOrNull()
+                val all = installed(context)
+                val apps = all.filter { !it.google }
+                chosen = (apps.singleOrNull() ?: all.singleOrNull())?.packageName
                 if (chosen != null) UnifiedPush.saveDistributor(context, chosen)
             }
             if (chosen != null) register(context)
@@ -51,6 +75,22 @@ object PushApps {
         } catch (_: Exception) {
             false
         }
+
+    /** The user does not want Google's push service to wake Maun. */
+    fun stopGoogle(context: Context) {
+        Background.setGoogleOff(context, true)
+        try {
+            // Gives the address back and forgets the choice.
+            if (UnifiedPush.getSavedDistributor(context) == context.packageName) UnifiedPush.removeDistributor(context)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** The user wants Google's push service to wake Maun after all. */
+    fun useGoogle(context: Context): Boolean {
+        Background.setGoogleOff(context, false)
+        return choose(context, context.packageName)
+    }
 
     /** The user picked [packageName] out of several. */
     fun choose(context: Context, packageName: String): Boolean =
@@ -68,20 +108,36 @@ object PushApps {
      */
     fun startOver(context: Context) {
         try {
-            if (UnifiedPush.getSavedDistributor(context) == null) return
+            val chosen = UnifiedPush.getSavedDistributor(context) ?: return
+            // Unregistering the only address also forgets which push service
+            // was chosen, so that is put back before asking for a new one.
             UnifiedPush.unregister(context, INSTANCE)
+            UnifiedPush.saveDistributor(context, chosen)
             register(context)
         } catch (_: Exception) {
         }
     }
 
     // The relay's key goes along once it is known. Some push services hand
-    // out an address only to an app that names who will be calling.
+    // out an address only to an app that names who will be calling. Google's
+    // is one of them, so asking it before the key is known would only produce
+    // an error; [Background.onRelayKey] asks again when the key arrives.
     private fun register(context: Context) {
-        UnifiedPush.register(context, INSTANCE, null, Background.relayKey(context))
+        val key = Background.relayKey(context)
+        if (key == null && UnifiedPush.getSavedDistributor(context) == context.packageName) return
+        UnifiedPush.register(context, INSTANCE, null, key)
     }
 
     private const val INSTANCE = "default"
+
+    private fun describe(context: Context, packageName: String): PushApp =
+        if (packageName == context.packageName) {
+            PushApp(packageName, GOOGLE, google = true)
+        } else {
+            PushApp(packageName, labelOf(context, packageName))
+        }
+
+    private const val GOOGLE = "Google's push service"
 
     private fun labelOf(context: Context, packageName: String): String =
         try {
@@ -97,6 +153,15 @@ object Background {
     private const val SETTINGS = "settings"
     private const val KEY_STAY_CONNECTED = "stay_connected"
     private const val KEY_RELAY_KEY = "relay_push_key"
+    private const val KEY_GOOGLE_OFF = "google_push_off"
+
+    /** The user turned Google's push service off for Maun. */
+    fun googleOff(context: Context): Boolean =
+        context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE).getBoolean(KEY_GOOGLE_OFF, false)
+
+    fun setGoogleOff(context: Context, off: Boolean) {
+        context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE).edit { putBoolean(KEY_GOOGLE_OFF, off) }
+    }
 
     /** The key the relay signs wake-ups with, as push apps take it. Null until the first login tells it. */
     fun relayKey(context: Context): String? =

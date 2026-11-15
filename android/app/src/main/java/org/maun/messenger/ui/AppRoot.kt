@@ -147,6 +147,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 delivery = delivery,
                                 pushProblem = pushProblem,
                                 onChoosePushApp = viewModel::choosePushApp,
+                                onGooglePush = viewModel::setGooglePush,
                                 onStayConnected = viewModel::setStayConnected,
                                 onDeliveryChanged = viewModel::refreshDelivery,
                                 onShowMyCode = { screen = MY_CODE },

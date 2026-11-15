@@ -8,22 +8,27 @@ import org.unifiedpush.android.connector.data.PushEndpoint
 import org.unifiedpush.android.connector.data.PushMessage
 
 /**
- * Hears from the push app on this phone (UnifiedPush; Sunup and ntfy are such apps).
+ * Hears from what wakes this phone: Google's push service, or a push app
+ * (UnifiedPush; Sunup is such an app).
  *
- * The push app hands Maun an address at which wake-ups for this phone can be
- * left, and keys to encrypt them with. Maun gives both to the relay. When the
- * relay has a message for this phone and the phone is not connected, it leaves
- * a wake-up there; the push app passes it on, and Maun connects and fetches.
+ * It hands Maun an address at which wake-ups for this phone can be left, and
+ * keys to encrypt them with. Maun gives both to the relay. When the relay has
+ * a message for this phone and the phone is not connected, it leaves a wake-up
+ * there; the push service passes it on, and Maun connects and fetches.
  */
 class WakeService : PushService() {
 
     private val messenger
         get() = (application as MaunApp).messenger
 
+    /** What wakes this phone, as the start of a sentence. */
+    private val waker: String
+        get() = PushApps.current(this)?.takeIf { it.google }?.label ?: "Your push app"
+
     override fun onNewEndpoint(endpoint: PushEndpoint, instance: String) {
         val address = endpoint.pubKeySet?.let { PushAddress.fromWebPush(endpoint.url, it.pubKey, it.auth) }
         if (address == null) {
-            messenger.onPushFailed("Your push app gave Maun an address it cannot use.")
+            messenger.onPushFailed("$waker gave Maun an address it cannot use.")
             messenger.onPushAddress(null)
         } else {
             messenger.onPushAddress(address)
@@ -41,10 +46,10 @@ class WakeService : PushService() {
     override fun onRegistrationFailed(reason: FailedReason, instance: String) {
         messenger.onPushFailed(
             when (reason) {
-                FailedReason.NETWORK -> "Your push app could not reach its server. It will try again by itself."
-                FailedReason.ACTION_REQUIRED -> "Your push app needs your attention before it can wake Maun. Open it once."
-                FailedReason.VAPID_REQUIRED -> "Your push app can be used once Maun has connected to the relay. Open Maun with a connection."
-                else -> "Your push app reported an error."
+                FailedReason.NETWORK -> "$waker could not be reached. Maun asks again the next time it is opened."
+                FailedReason.ACTION_REQUIRED -> "$waker needs your attention before it can wake Maun. Open it once."
+                FailedReason.VAPID_REQUIRED -> "$waker can be used once Maun has connected to the relay. Open Maun with a connection."
+                else -> "$waker reported an error, so it cannot wake Maun yet. Maun asks again the next time it is opened."
             },
         )
     }

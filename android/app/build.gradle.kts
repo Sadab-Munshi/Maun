@@ -22,8 +22,8 @@ android {
         applicationId = "org.maun.messenger"
         minSdk = 29 // Android 10: built-in Ogg/Opus recording, StrongBox API.
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.3.0"
+        versionCode = 5
+        versionName = "0.3.1"
 
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
 
@@ -119,10 +119,14 @@ dependencies {
     implementation(libs.camerax.lifecycle)
     implementation(libs.camerax.view)
 
-    // Background delivery: WorkManager runs the fetch when the phone is woken;
-    // UnifiedPush is how a push app on the phone (never Google's) does the waking.
+    // Background delivery: WorkManager runs the fetch when the phone is woken.
+    // UnifiedPush is how the waking is done: by a push app on the phone, or,
+    // where there is none, by the push service of Google Play that most
+    // phones already run. The second library asks Play services for a Web
+    // Push address; it contains no Google code and needs no Firebase project.
     implementation(libs.work.runtime)
     implementation(libs.unifiedpush.connector)
+    implementation(libs.unifiedpush.fcm)
 
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 

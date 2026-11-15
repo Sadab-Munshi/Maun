@@ -94,6 +94,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _delivery.value = DeliveryUi(
             notificationsAllowed = Notifications(context).allowed,
             pushApp = pushApp?.label,
+            google = pushApp?.google == true,
+            googleOffered = pushApp == null && Background.googleOff(context) && PushApps.googleAvailable(context),
             pushChoices = if (pushApp == null) PushApps.installed(context) else emptyList(),
             stayConnected = Background.stayConnected(context),
             unrestricted = Background.unrestricted(context),
@@ -102,6 +104,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun choosePushApp(packageName: String) {
         PushApps.choose(getApplication(), packageName)
+        refreshDelivery()
+    }
+
+    /** Turns waking by Google's push service on or off. */
+    fun setGooglePush(on: Boolean) {
+        val context = getApplication<Application>()
+        if (on) {
+            PushApps.useGoogle(context)
+        } else {
+            PushApps.stopGoogle(context)
+            // The relay must forget the address too.
+            messenger.onPushAddress(null)
+        }
         refreshDelivery()
     }
 

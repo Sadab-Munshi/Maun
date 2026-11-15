@@ -531,7 +531,7 @@ class ChatEngine(
             }
             "failed" -> _pushProblem.value =
                 if (answer.optString("code") == "bad_push") {
-                    "The relay does not accept the address your push app gave Maun."
+                    "The relay does not accept the wake-up address this phone was given."
                 } else {
                     "The relay could not take this phone's wake-up address just now."
                 }
@@ -544,11 +544,11 @@ class ChatEngine(
     /** Says why the relay's last wake-up did not get through, or null if it did or nothing is known. */
     private fun describeWakeUp(status: Int?): String? = when {
         status == null || status == WAKE_UP_UNFINISHED || status in 200..299 -> null
-        status == 0 -> "The relay could not reach your push app's server, so the last wake-up was lost."
+        status == 0 -> "The relay could not reach the push service, so the last wake-up was lost."
         status == 429 ->
-            "Your push app's server turned the relay's last wake-up away: too many requests. " +
+            "The push service turned the relay's last wake-up away: too many requests. " +
                 "Messages may arrive late until it accepts them again."
-        else -> "Your push app's server refused the relay's last wake-up (HTTP $status)."
+        else -> "The push service refused the relay's last wake-up (HTTP $status)."
     }
 
     private fun wire(key: SignedPublicKey) =

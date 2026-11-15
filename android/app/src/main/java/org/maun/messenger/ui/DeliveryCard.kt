@@ -35,9 +35,13 @@ import org.maun.messenger.push.PushApp
 /** How messages reach this phone while Maun is closed, as the home screen shows it. */
 data class DeliveryUi(
     val notificationsAllowed: Boolean = true,
-    /** The name of the push app that wakes Maun, or null when none does. */
+    /** The name of what wakes Maun, a push app or Google's push service, or null when nothing does. */
     val pushApp: String? = null,
-    /** Push apps to choose from, when several are installed and none is chosen. */
+    /** What wakes Maun is Google's push service, the one most apps use. */
+    val google: Boolean = false,
+    /** This phone has Google's push service and the user turned it off for Maun. */
+    val googleOffered: Boolean = false,
+    /** What to choose from, when several push apps are installed and none is chosen. */
     val pushChoices: List<PushApp> = emptyList(),
     val stayConnected: Boolean = false,
     /** Android has been told not to pause Maun while the phone rests. */
@@ -57,6 +61,7 @@ fun DeliveryCard(
     ui: DeliveryUi,
     problem: String?,
     onChoosePushApp: (String) -> Unit,
+    onGooglePush: (Boolean) -> Unit,
     onStayConnected: (Boolean) -> Unit,
     onChanged: () -> Unit,
 ) {
@@ -94,7 +99,20 @@ fun DeliveryCard(
                         )
                         Button(onClick = { context.open(batterySettings(context)) }) { Text("Allow background use") }
                     }
+                    if (ui.pushApp != null) {
+                        Note("This phone does not need it: ${ui.pushApp} can wake Maun instead.")
+                    }
                     TextButton(onClick = { onStayConnected(false) }) { Text("Stop staying connected") }
+                }
+
+                ui.pushApp != null && ui.google -> {
+                    Note(
+                        "Google's push service wakes Maun when a message is waiting, the way it does for most apps. " +
+                            "Nothing of Maun keeps running. Google learns that this phone was woken and when, " +
+                            "never who wrote or what the message says.",
+                    )
+                    if (problem != null) Note(problem, warning = true)
+                    TextButton(onClick = { onGooglePush(false) }) { Text("Do not use Google") }
                 }
 
                 ui.pushApp != null -> {
@@ -107,17 +125,27 @@ fun DeliveryCard(
                 }
 
                 ui.pushChoices.size > 1 -> {
-                    Note("More than one push app is installed. Choose the one that should wake Maun.")
+                    Note("More than one push service can wake Maun on this phone. Choose one.")
                     ui.pushChoices.forEach { app ->
                         OutlinedButton(onClick = { onChoosePushApp(app.packageName) }) { Text("Use ${app.label}") }
                     }
                 }
 
+                ui.googleOffered -> {
+                    Note(
+                        "Messages arrive when you open Maun, and Maun looks for them about once an hour. " +
+                            "To get them right away, let Google's push service wake Maun, " +
+                            "or let Maun stay connected, which uses more battery and shows a permanent notification.",
+                    )
+                    Button(onClick = { onGooglePush(true) }) { Text("Use Google's push service") }
+                    OutlinedButton(onClick = { onStayConnected(true) }) { Text("Stay connected") }
+                }
+
                 else -> {
                     Note(
                         "Messages arrive when you open Maun, and Maun looks for them about once an hour. " +
-                            "To get them right away, install a UnifiedPush app such as Sunup and open Maun again. " +
-                            "Or let Maun stay connected, which uses more battery.",
+                            "This phone has no push service. To get messages right away, install a push app " +
+                            "such as Sunup and open Maun again. Or let Maun stay connected, which uses more battery.",
                     )
                     OutlinedButton(onClick = { onStayConnected(true) }) { Text("Stay connected") }
                 }
@@ -172,9 +200,10 @@ private fun Context.open(intent: Intent) {
 private fun DeliveryPreview() {
     MaunTheme {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(16.dp)) {
-            DeliveryCard(DeliveryUi(pushApp = "Sunup"), null, {}, {}, {})
-            DeliveryCard(DeliveryUi(notificationsAllowed = false), null, {}, {}, {})
-            DeliveryCard(DeliveryUi(stayConnected = true, unrestricted = false), null, {}, {}, {})
+            DeliveryCard(DeliveryUi(pushApp = "Google's push service", google = true), null, {}, {}, {}, {})
+            DeliveryCard(DeliveryUi(pushApp = "Sunup"), null, {}, {}, {}, {})
+            DeliveryCard(DeliveryUi(notificationsAllowed = false, googleOffered = true), null, {}, {}, {}, {})
+            DeliveryCard(DeliveryUi(stayConnected = true, unrestricted = false), null, {}, {}, {}, {})
         }
     }
 }
