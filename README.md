@@ -7,14 +7,15 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 
-## Status: app 0.5.0 (files, and an optional member-only mode)
+## Status: app 0.6.0 (files, and an optional member-only mode with usernames)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
 messages while the app is closed. The app can be locked behind the phone's
 fingerprint or screen lock, and two people can compare a safety number to be
 sure of each other. Files up to 25 MB can be sent; the relay keeps the
 encrypted file for one day. A relay can be made member-only: people log in
-once with an email address its owner approved, and can be banned. Voice notes
+once with a code sent to their email, pick a username, wait for the
+administrator's approval on a web page, and can be banned. Voice notes
 and calls are not built yet.
 
 | Piece | Where |
@@ -31,7 +32,8 @@ and calls are not built yet.
 | "Stay connected" for phones without a push app | `android/.../push/ConnectedService.kt` |
 | App lock, hiding Maun in recent apps, blocking screenshots | `android/.../AppLock.kt` |
 | Files: encrypted in pieces on the phone, stored a day on the relay | `android/.../crypto/FileCipher.kt`, `android/.../FileTransfers.kt`, `backend/src/index.ts` |
-| Member-only mode: email login, member list, bans | `backend/src/members.ts`, `backend/src/crypto/access.ts`, `android/.../ui/LoginScreen.kt` |
+| Member-only mode: email codes, usernames, approval, bans | `backend/src/members.ts`, `backend/src/auth.ts`, `backend/src/mail.ts`, `android/.../ui/LoginScreen.kt`, `android/.../network/AuthApi.kt` |
+| The administrator's web page | `backend/src/admin-page.ts` |
 | Signed HTTP requests and noticing a ban | `android/.../network/FileApi.kt` |
 | Phone fingerprint (member-only relays) | `android/.../security/DeviceFingerprint.kt` |
 | Safety number for checking a contact | `android/.../crypto/SafetyNumber.kt` |
@@ -147,69 +149,75 @@ its data, destroys the ID for good.
 ## A member-only relay
 
 By default a relay is open: anyone who knows its address can make an ID, and
-the relay knows nobody's name. Its owner can instead keep it to a list of
-people. This changes what the relay knows, so it is off until switched on.
+the relay knows nobody's name. Its owner can instead keep it to people they
+approve. This changes what the relay knows, so it is off until switched on.
 
-**What changes for members.** After making an ID, the app shows a login
-screen. The member types an email address the owner approved, Cloudflare sends
-a one-time code there, and the relay ties that address to the ID. This happens
-once per phone: afterwards the phone logs in with its hardware key as before,
-and the relay checks the member list every time.
+**What changes for members.** After making an ID, the app asks for an email
+address, sends a 6-digit code there, and lets a new member choose a unique
+username. They then wait until the administrator approves them. All of this
+happens once per phone: afterwards the phone logs in with its hardware key as
+before, and the relay checks the member list every time.
 
-**What the owner can then see** (in the D1 database `maun`): each member's
-email address, the Maun ID it belongs to, when they last logged in, and which
-phone they use: make, model, Android version and a SHA-256 fingerprint of the
-phone. Together with what any relay sees (who writes to whom, and when), the
-owner of a member-only relay knows which *person* writes to which. Message
-contents and files stay end-to-end encrypted and unreadable to the relay.
-The app says this on its login screen and in Settings.
+**Usernames.** Members add each other by typing a username (Add contact >
+By username); scanning a code still works. The relay tells the phone which ID
+a username belongs to, so a dishonest relay could point it at the wrong
+person. Comparing safety numbers when you meet settles that.
+
+**What the administrator can see**: each member's email address, username,
+Maun ID, when they last logged in, and which phone they use (make, model,
+Android version and a SHA-256 fingerprint of the phone). Together with what
+any relay sees (who writes to whom, and when), the administrator of a
+member-only relay knows which *person* writes to which. Message contents and
+files stay end-to-end encrypted and unreadable to the relay. The app says so
+on its login screen and in Settings.
 
 ### Switch it on
 
-1. Cloudflare dashboard > **Zero Trust**. Pick a team name if asked (the Free
-   plan covers 50 people). Under **Settings > Authentication**, make sure
-   **One-time PIN** is a login method.
-2. **Access > Applications > Add an application > Self-hosted**.
-   - Public hostname: your relay's host, for example
-     `maun.<you>.workers.dev`, with the path `v1/access/login`.
-   - Policy: **Allow**, include **Emails**, and list the approved addresses.
-     This list is who may join.
-   - Do **not** use "Enable Cloudflare Access" in the Worker's own settings:
-     that puts the whole relay behind the login, and the app's connection
-     with it.
-3. Copy the application's **Application Audience (AUD) Tag**.
-4. **Workers & Pages > maun > Settings > Variables and Secrets**, add two:
-   `ACCESS_TEAM` (your team name, or `<team>.cloudflareaccess.com`) and
-   `ACCESS_AUD` (the tag). Deploy.
+1. Make a free account at [resend.com](https://resend.com) and create an
+   **API key**.
+2. In Resend, add and verify a **domain** you own (Domains > Add domain, then
+   add the DNS records it shows). Resend only delivers to other people from a
+   verified domain. Without one it sends from `onboarding@resend.dev` and
+   only to the address of the Resend account itself: enough for the
+   administrator to try their own login, not for anyone else.
+   No domain? Use [Brevo](https://www.brevo.com) instead: it lets you verify a
+   single sender address. Set `BREVO_API_KEY` in place of `RESEND_API_KEY`.
+3. Cloudflare dashboard > **Workers & Pages > maun > Settings > Variables and
+   Secrets > Add**, three entries, then **Deploy**:
 
-`https://<relay>/health` now says `"access":true`. Phones that already have an
-ID on the relay are asked to log in the next time they connect; nothing they
-have is lost.
+   | Name | Type | Value |
+   |---|---|---|
+   | `ADMIN_EMAIL` | Text | your own email address |
+   | `RESEND_API_KEY` | Secret | the key from step 1 |
+   | `MAIL_FROM` | Text | `Maun <login@your-domain.com>`, on the domain from step 2 |
 
-### Ban, unban, look
+`https://<relay>/health` now says `"access":true`. Phones that already have
+an ID on the relay are asked to log in the next time they connect; nothing
+they have is lost.
 
-In the dashboard under **Storage & Databases > D1 > maun > Console**:
+### The admin page
 
-```sql
--- shut someone out (takes effect within a minute, also on an open app)
-UPDATE users SET is_banned = 1 WHERE email = 'someone@example.com';
--- let them back in
-UPDATE users SET is_banned = 0 WHERE email = 'someone@example.com';
--- shut out an address before it has ever logged in
-INSERT INTO users (email, is_banned) VALUES ('someone@example.com', 1);
--- who is a member, on which phone, and whether the phone changed
-SELECT email, maun_id, is_banned, device_model, device_changed_at, last_login_at FROM users;
-```
+Open `https://<relay>/admin` in any browser and log in with `ADMIN_EMAIL`
+and the code sent there. It shows who is waiting, the members and the banned,
+with each one's username, email, phone and last login, and lets you:
 
-A banned phone disconnects, deletes its login token and every message and
-file it holds, and shows "You have been banned". Its contacts and ID stay, so
-lifting the ban and tapping **Check again** brings the account back, empty.
-To stop someone joining in the first place, take their address off the Access
-policy.
+- **Approve** or **Refuse** someone who is waiting (you get an email when
+  somebody asks);
+- **Add** an email address in advance, so its owner is let straight in;
+- **Ban** a member, or an address that has never joined, and **Lift** a ban;
+- **Remove** a member: they would have to log in and be approved again.
 
-The fingerprint is a record, not a lock: it changes when Android is updated,
-and software can fake it. What actually ties an account to one phone is the
-login key in the phone's secure hardware.
+A banned phone disconnects within a minute, deletes its login and every
+message and file it holds, and shows "You have been banned". Its contacts and
+ID stay, so lifting the ban and tapping **Check again** brings the account
+back, empty.
+
+The relay sends at most 90 emails a day (Resend's free plan allows 100), at
+most 5 codes a day to one address, and one a minute.
+
+The phone fingerprint is a record, not a lock: it changes when Android is
+updated, and software can fake it. What actually ties an account to one phone
+is the login key in the phone's secure hardware.
 
 ## Continuous integration
 
