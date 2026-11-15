@@ -7,7 +7,7 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 
-## Status: app 0.7.0 (files, and an optional member-only mode with usernames)
+## Status: app 0.8.0 (files, voice messages, and an optional member-only mode with usernames)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
 messages while the app is closed. The app can be locked behind the phone's
@@ -15,8 +15,8 @@ fingerprint or screen lock, and two people can compare a safety number to be
 sure of each other. Files up to 25 MB can be sent; the relay keeps the
 encrypted file for one day. A relay can be made member-only: people log in
 once with a code sent to their email, pick a username, wait for the
-administrator's approval on a web page, and can be banned. Voice notes
-and calls are not built yet.
+administrator's approval on a web page, and can be banned. Voice messages
+can be recorded and played in the conversation. Calls are not built yet.
 
 | Piece | Where |
 |---|---|
@@ -36,6 +36,7 @@ and calls are not built yet.
 | The administrator's web page | `backend/src/admin-page.ts` |
 | Signed HTTP requests and noticing a ban | `android/.../network/FileApi.kt` |
 | Phone fingerprint (member-only relays) | `android/.../security/DeviceFingerprint.kt` |
+| Voice messages: recording and playing | `android/.../voice/VoiceRecorder.kt`, `android/.../voice/VoicePlayer.kt` |
 | Safety number for checking a contact | `android/.../crypto/SafetyNumber.kt` |
 | Rate limits and mailbox caps | `backend/src/index.ts`, `backend/src/protocol.ts`, `backend/wrangler.toml` |
 | CI: tests the relay, runs the app's messaging code against it, builds the APK | `.github/workflows/` |
@@ -124,10 +125,13 @@ On each of two phones:
    clock (not sent yet), one tick (the relay has it), two ticks (their phone
    has it) or two blue ticks (they opened the conversation).
 5. Hold a message to copy it or to delete it from this phone.
-6. Tap the paperclip to send a file of up to 25 MB. Pictures show in the
+6. Hold the microphone (it is there while the message field is empty) to
+   record a voice message; let go to send it, or slide left first to cancel.
+   Tap a voice message to play or pause it.
+7. Tap the paperclip to send a file of up to 25 MB. Pictures show in the
    conversation; tap any other file to save it. The relay deletes its
    encrypted copy after one day, so a file not fetched by then is gone.
-7. Tap the name at the top of a conversation to rename the contact or to
+8. Tap the name at the top of a conversation to rename the contact or to
    compare the **safety number** with them. Both phones show the same 60
    digits; if they match, nobody swapped the ID on the way.
 
@@ -320,8 +324,11 @@ main ones with made-up people and keeps the pictures as the artifact
 When the database changes, the build writes a new file under
 `android/app/schemas/`. Commit it: upgrades are generated from those files.
 
-To bake a relay address into the build, pass `-Pmaun.relayUrl=https://...` or
-set `MAUN_RELAY_URL`.
+The app is built for one relay, whose address is in `android/app/build.gradle.kts`
+(`https://maun.sadab.workers.dev` in this repository). A fresh install makes
+its ID there without asking. To build for your own relay, pass
+`-Pmaun.relayUrl=https://...` or set `MAUN_RELAY_URL`; with an empty address
+the app shows a welcome screen that asks for one.
 
 Debug builds are signed with `android/debug.keystore`, which is committed on
 purpose so that each debug build installs over the last one. It protects
