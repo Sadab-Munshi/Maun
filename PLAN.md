@@ -12,7 +12,9 @@ App name: **Maun** (Hindi/Sanskrit for "silence"). Package ID: `org.maun.messeng
 | M2. Text messaging | **Done.** Two phones exchanged messages both ways, with Sent, Delivered and Read. |
 | M3. Background delivery | **Built, tested in CI and deployed (app 0.3.1, relay still protocol 2). "Stay connected" works on a phone. Waking through Google's push service is waiting for the two-phone check.** |
 | App 0.4.0: look and small features | **Built and tested in CI.** New look (chat list, bubbles, ticks, day lines, light and dark); delete and copy a message; older messages load on scrolling back; rename a contact; safety number; app lock; screenshot blocking; a Settings screen. No change to the relay or the database. App lock, safety number and screenshot blocking were planned for M6 and are done early. Checked on rendered pictures of the screens (the Screens workflow), not yet on a phone. |
-| M4 to M6 | Not started. M4 is waiting for a decision on where files are kept (R2 needs a payment method on the Cloudflare account). |
+| M4. Files | **Files built, tested in CI and deployed (app 0.5.0).** Paperclip, encryption in 64 KB pieces with a key per file, upload and download with progress, pictures shown in the conversation, save to the phone. Relay: 25 MB limit enforced before reading, daily allowance, refusal after 24 hours, hourly sweep. Checked against the deployed relay: a 26 MB upload is refused (413), 25 MB is accepted, a stored file comes back byte for byte. **Voice notes are not built.** Not yet tried on a phone. |
+| Member-only mode (asked for in turn 13; not in the original spec) | **Built, tested in CI and deployed, switched off.** Email login through Cloudflare Access, member list and bans in D1, phone fingerprint. It needs the relay owner's Access settings before it can be tried for real; until then the token check is tested only against tokens made by the tests. See "Changed in app 0.5.0". |
+| M5, M6 | Not started |
 
 ### M3 results
 
@@ -39,6 +41,18 @@ Not checked yet, because it needs phones:
 
 - **The Android side of being woken by a push service has never run on a phone:** asking Google Play services (or a push app) for an address, being woken through it, WorkManager starting the fetch with the app closed, starting again after a restart. It compiles, passes lint, and the logic underneath is tested, but phone makers' battery savers are exactly what breaks this kind of feature. The stand-in used above talks to Google the way Chrome does, not the way Play services on a phone does.
 - The delay between sending and the notification on a phone, and the battery cost of "Stay connected" over 24 hours.
+
+### Changed in app 0.5.0
+
+Asked for by the project's owner, and each a departure from the original overview ("no phone number, SIM or email", "no analytics"):
+
+- **A relay can be member-only.** An email address is then tied to each ID and kept on the relay with the phone's make, model and a fingerprint. The owner of such a relay knows which person writes to which. It is a mode of the relay, off unless `ACCESS_TEAM` and `ACCESS_AUD` are set; an open relay still knows nobody.
+- **The email login is used once per phone, not on every request.** The request was to attach the Access token to every request. Access tokens expire within a day to a month and a closed app cannot do an email login, so messages would stop arriving until the user logged in again. Instead the token ties the address to the ID once and is then deleted; every connection is still signed by the phone's hardware key, and the relay asks its member list at every login and at most a minute late on an open connection. Chosen by the owner when asked.
+- **Files go through the Worker, not to a presigned R2 link.** A presigned link cannot cap the size on the server and needs R2 API keys kept as secrets. The Worker checks the sender and the size, then streams to the bucket. Chosen by the owner when asked.
+- **HTTP requests carry a token from the login, not the Access token.** `ready` hands out a `files` token, valid until the next login; the app's OkHttp interceptor adds it and watches for `403 {"error":"banned"}`.
+- **Messages are still fetched over the WebSocket after a wake-up**, not over an HTTP API: that part was already built and delivers in order with acknowledgements.
+- **The fingerprint is recorded, not enforced.** It includes the system build, so an Android update changes it; blocking on a change would lock members out. `users.device_changed_at` shows the change to the owner.
+- **A ban deletes messages and files on the phone, not contacts or the ID**, so that it can be undone.
 
 ### Changed while building M3
 
