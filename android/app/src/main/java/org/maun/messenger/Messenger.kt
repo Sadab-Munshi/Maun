@@ -15,6 +15,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -125,6 +128,17 @@ class Messenger(context: Context) {
 
     @Volatile
     private var unnamedTicket: String? = null
+
+    private val _moved = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 8)
+
+    /** A contact's ID changed, from the first to the second, because they set Maun up again. */
+    val moved: SharedFlow<Pair<String, String>> = _moved.asSharedFlow()
+
+    /**
+     * What this phone says about itself to a member-only relay: collected
+     * once, the first time such a relay asks. An open relay is told nothing.
+     */
+    private val phoneReport by lazy { DeviceFingerprint.collect(appContext) }
 
     private val _banned = MutableStateFlow(false)
 
@@ -309,6 +323,7 @@ class Messenger(context: Context) {
         )
         chatScope.launch { chat.waiting.collect { _waiting.value = it } }
         chatScope.launch { chat.pushProblem.collect { _pushProblem.value = it } }
+        chatScope.launch { chat.moved.collect { _moved.emit(it) } }
         _account.value = AccountState.Present(
             code = ContactCode(identity.id, ContactCode.relayName(relayUrl)),
             relayUrl = row.relayUrl,
@@ -333,6 +348,7 @@ class Messenger(context: Context) {
             onOffline = chat::onOffline,
             accessToken = { accessToken },
             awaitingApproval = { _awaiting.value },
+            phone = { phoneReport.toJson() },
         )
         chat.link = created
         val transfers = FileTransfers(
@@ -515,8 +531,8 @@ class Messenger(context: Context) {
 
     /**
      * Runs after every login. On a member-only relay ([email] is set) the
-     * token has done its job and is deleted, and the relay is told which
-     * phone this is: once a day, and whenever the fingerprint has changed.
+     * ticket has done its job and is deleted. (Which phone this is, the
+     * relay was told with the login itself: see [phoneReport].)
      */
     private suspend fun onLoggedInAs(db: AppDatabase, chat: ChatEngine, email: String?, name: String?) {
         if (_memberEmail.value != email) {
@@ -529,23 +545,6 @@ class Messenger(context: Context) {
         }
         if (email == null) return
         if (accessToken != null) setAccessToken(null)
-        try {
-            val report = withContext(Dispatchers.Default) { DeviceFingerprint.collect(appContext) }
-            val stamp = "${report.hash}:${System.currentTimeMillis() / DAY_MILLIS}"
-            if (withContext(Dispatchers.IO) { db.meta().get(KEY_DEVICE_REPORTED) } == stamp) return
-            val link = chat.link ?: return
-            val frame = JSONObject()
-                .put("t", "device")
-                .put("hash", report.hash)
-                .put("maker", report.maker)
-                .put("model", report.model)
-                .put("os", report.os)
-            if (link.request(frame).optString("t") == "saved") {
-                withContext(Dispatchers.IO) { db.meta().put(MetaEntry(KEY_DEVICE_REPORTED, stamp)) }
-            }
-        } catch (_: RelayException) {
-            // The connection went away. The next login reports it.
-        }
     }
 
     /**
@@ -755,13 +754,14 @@ class Messenger(context: Context) {
      * who was blocked unblocks them. From now on they are told when their
      * messages arrive and are read.
      */
-    suspend fun saveContact(id: String, name: String, verified: Boolean) {
+    suspend fun saveContact(id: String, name: String, verified: Boolean, username: String? = null) {
         require(ContactCode.isId(id)) { "not a Maun ID" }
         val contact = ContactEntity(
             id = id,
             name = name.trim().take(MAX_NAME_LENGTH),
             verified = verified,
             addedAt = System.currentTimeMillis(),
+            username = username,
         )
         withContext(Dispatchers.IO) {
             database?.chat()?.unblock(id)
@@ -838,7 +838,6 @@ class Messenger(context: Context) {
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_MEMBER_EMAIL = "member_email"
         private const val KEY_BANNED = "banned"
-        private const val KEY_DEVICE_REPORTED = "device_reported"
         private const val KEY_USERNAME = "username"
         private const val KEY_AWAITING = "awaiting_approval"
         private const val TICKET_SHOWN_WAIT_MILLIS = 3_000L

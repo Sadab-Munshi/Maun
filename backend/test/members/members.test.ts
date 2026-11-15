@@ -1,6 +1,7 @@
-import { SELF, env } from "cloudflare:test";
+import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CODES_PER_DAY, CODE_ATTEMPTS, CODE_GAP_MS, CODE_TTL_MS, MAIL_DAILY_CAP, forgetSchema } from "../../src/members";
+import { handleAuth } from "../../src/auth";
+import { ADMIN_LOCK_MS, ADMIN_TRIES, CODES_PER_DAY, CODE_ATTEMPTS, CODE_GAP_MS, CODE_TTL_MS, MAIL_DAILY_CAP, forgetSchema } from "../../src/members";
 import { CLOSE_ACCESS_REQUIRED, CLOSE_BANNED, CLOSE_PENDING, MEMBER_CHECK_MS, isUsername } from "../../src/protocol";
 import {
   connect,
@@ -31,7 +32,7 @@ beforeEach(async () => {
   mails = [];
   mailStatus = 200;
   // The tests of one file share a database: start each with an empty one.
-  const tables = ["users", "devices", "codes", "tickets", "sessions", "mail_days"];
+  const tables = ["users", "devices", "codes", "tickets", "sessions", "mail_days", "banned_devices", "admin_tries"];
   await env.DB.batch(tables.map((table) => env.DB.prepare(`DROP TABLE IF EXISTS ${table}`)));
   forgetSchema();
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -73,16 +74,23 @@ async function ticketFor(email: string, username?: string): Promise<string> {
   return ticket;
 }
 
-async function tryRegister(user: User, access?: string): Promise<{ inbox: Inbox; answer: Record<string, unknown> }> {
+type Phone = { hash: string; did: string; maker: string; model: string; os: string; app: string };
+
+/** What a phone says about itself. Two phones made from different letters are different phones. */
+function device(letters: string): Phone {
+  return { hash: letters.repeat(32), did: (letters + "0f").repeat(16), maker: "Google", model: "Pixel 8", os: "16", app: "0.7.0" };
+}
+
+async function tryRegister(user: User, access?: string, dev?: Phone): Promise<{ inbox: Inbox; answer: Record<string, unknown> }> {
   const { inbox, nonce, registered } = await connect(user.id);
   expect(registered).toBe(false);
-  inbox.sendJson({ ...(await registerFrame(user.identity, user.device, nonce)), ...(access ? { access } : {}) });
+  inbox.sendJson({ ...(await registerFrame(user.identity, user.device, nonce)), ...(access ? { access } : {}), ...(dev ? { dev } : {}) });
   return { inbox, answer: await inbox.nextJson() };
 }
 
-async function tryLogin(user: User, access?: string): Promise<{ inbox: Inbox; answer: Record<string, unknown> }> {
+async function tryLogin(user: User, access?: string, dev?: Phone): Promise<{ inbox: Inbox; answer: Record<string, unknown> }> {
   const { inbox, nonce } = await connect(user.id);
-  inbox.sendJson({ ...(await loginFrame(user.identity, user.device, nonce)), ...(access ? { access } : {}) });
+  inbox.sendJson({ ...(await loginFrame(user.identity, user.device, nonce)), ...(access ? { access } : {}), ...(dev ? { dev } : {}) });
   return { inbox, answer: await inbox.nextJson() };
 }
 
@@ -487,10 +495,20 @@ async function sha256Hex(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+const PASSWORD = "correct horse battery";
+
+/** The admin's two steps: password, then the code sent for it. Returns the response of the second. */
+async function adminLogin(password = PASSWORD): Promise<Response> {
+  const started = await post("/v1/admin/start", { email: ADMIN, password });
+  if (started.status !== 200) return started;
+  const code = /\b([0-9]{6})\b/.exec(mails.filter((sent) => sent.to === ADMIN).at(-1)!.text)![1]!;
+  return post("/v1/admin/login", { email: ADMIN, code });
+}
+
 describe("the admin page", () => {
   /** Logs the administrator in and returns the cookie to send from then on. */
   async function adminCookie(): Promise<string> {
-    const response = await post("/v1/admin/login", { email: ADMIN, code: await codeFor(ADMIN) });
+    const response = await adminLogin();
     expect(response.status).toBe(200);
     const cookie = response.headers.get("Set-Cookie")!;
     expect(cookie).toMatch(/HttpOnly/);
@@ -502,10 +520,10 @@ describe("the admin page", () => {
   const list = async (cookie: string) => {
     const response = await SELF.fetch("https://relay.test/v1/admin/members", { headers: { Cookie: cookie } });
     expect(response.status).toBe(200);
-    return (await response.json()) as { admin: string; members: Record<string, unknown>[]; mailsToday: number };
+    return (await response.json()) as { admin: string; members: Record<string, unknown>[]; bannedDevices: Record<string, unknown>[]; mailsToday: number };
   };
-  const act = (cookie: string, action: string, email: string, headers: Record<string, string> = {}) =>
-    post("/v1/admin/members", { action, email }, { Cookie: cookie, ...headers });
+  const act = (cookie: string, action: string, target: string, headers: Record<string, string> = {}) =>
+    post("/v1/admin/members", action.endsWith("_device") ? { action, device: target } : { action, email: target }, { Cookie: cookie, ...headers });
 
   it("is a page that loads nothing from elsewhere", async () => {
     const page = await SELF.fetch("https://relay.test/admin");
@@ -516,21 +534,48 @@ describe("the admin page", () => {
     expect(policy).not.toContain("script-src 'unsafe-inline'");
     const html = await page.text();
     expect(html).not.toMatch(/src="http|href="http/);
+    expect(html).toContain('type="password"');
   });
 
-  it("lets nobody in without the administrator's code", async () => {
+  it("asks for the password before it sends a code, and for both before it lets anyone in", async () => {
     expect((await SELF.fetch("https://relay.test/v1/admin/members")).status).toBe(401);
     expect((await SELF.fetch("https://relay.test/v1/admin/members", { headers: { Cookie: `maun_admin=${"A".repeat(43)}` } })).status).toBe(401);
     expect((await act("", "approve", "asha@example.com")).status).toBe(401);
 
-    // Somebody else's address, with a code that really was sent to it.
-    const theirs = await post("/v1/admin/login", { email: "asha@example.com", code: await codeFor("asha@example.com") });
-    expect(theirs.status).toBe(401);
-    // The administrator's address with a wrong code.
-    const code = await codeFor(ADMIN);
-    const wrong = await post("/v1/admin/login", { email: ADMIN, code: code === "000000" ? "000001" : "000000" });
+    // A wrong password, or somebody else's address: no code goes out.
+    const wrong = await post("/v1/admin/start", { email: ADMIN, password: "not the password" });
     expect(wrong.status).toBe(401);
-    expect(wrong.headers.get("Set-Cookie")).toBeNull();
+    expect(await wrong.json()).toEqual({ error: "wrong_password" });
+    expect((await post("/v1/admin/start", { email: "asha@example.com", password: PASSWORD })).status).toBe(401);
+    expect((await post("/v1/admin/start", { email: ADMIN })).status).toBe(401);
+    expect(mails).toHaveLength(0);
+
+    // A code sent for the app, to the administrator's own address, does not open this page.
+    const appCode = await codeFor(ADMIN);
+    expect((await post("/v1/admin/login", { email: ADMIN, code: appCode })).status).toBe(401);
+
+    // The right password, then a wrong code.
+    expect((await post("/v1/admin/start", { email: ADMIN, password: PASSWORD })).status).toBe(200);
+    const code = /\b([0-9]{6})\b/.exec(mails.at(-1)!.text)![1]!;
+    expect(mails.at(-1)!.subject).toContain("admin code");
+    const bad = await post("/v1/admin/login", { email: ADMIN, code: code === "000000" ? "000001" : "000000" });
+    expect(bad.status).toBe(401);
+    expect(bad.headers.get("Set-Cookie")).toBeNull();
+    // And the admin's code is no use in the app.
+    expect((await post("/v1/auth/verify", { email: ADMIN, code })).status).toBe(401);
+  });
+
+  it("closes for a while after too many wrong passwords", async () => {
+    for (let i = 0; i < ADMIN_TRIES - 1; i++) {
+      expect((await post("/v1/admin/start", { email: ADMIN, password: `guess ${i}` })).status).toBe(401);
+    }
+    const last = await post("/v1/admin/start", { email: ADMIN, password: "one guess too many" });
+    expect(last.status).toBe(429);
+    expect(await last.json()).toEqual({ error: "locked" });
+    // Even the right password waits now.
+    expect((await post("/v1/admin/start", { email: ADMIN, password: PASSWORD })).status).toBe(429);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + ADMIN_LOCK_MS + 1000);
+    expect((await post("/v1/admin/start", { email: ADMIN, password: PASSWORD })).status).toBe(200);
   });
 
   it("shows who is waiting and lets the administrator approve, ban, unban, remove and add", async () => {
@@ -539,13 +584,18 @@ describe("the admin page", () => {
 
     let seen = await list(cookie);
     expect(seen.admin).toBe(ADMIN);
-    expect(seen.members).toEqual([expect.objectContaining({ email: "asha@example.com", username: "asha", id: asha.id, status: "pending", banned: false })]);
+    expect(seen.members).toEqual([
+      expect.objectContaining({ email: "asha@example.com", username: "asha", id: asha.id, status: "pending", banned: false, logins: 1, reinstalls: 0 }),
+    ]);
     expect(seen.mailsToday).toBeGreaterThan(0);
 
     expect((await act(cookie, "approve", "asha@example.com")).status).toBe(200);
     const joined = await tryRegister(asha);
     expect(joined.answer).toMatchObject({ t: "ready", name: "asha" });
     await hangUp(joined.inbox);
+    seen = await list(cookie);
+    expect(seen.members[0]).toMatchObject({ status: "approved", logins: 2 });
+    expect(seen.members[0]!.approvedAt).toBeGreaterThan(0);
 
     expect((await act(cookie, "ban", "asha@example.com")).status).toBe(200);
     expect((await tryLogin(asha)).answer).toEqual({ t: "error", code: "banned" });
@@ -567,10 +617,60 @@ describe("the admin page", () => {
     expect(await row("troll@example.com")).toMatchObject({ is_banned: 1 });
   });
 
+  it("bans a phone, whichever email address is used on it", async () => {
+    const phone = device("aa");
+    const other = device("bb");
+    // The phone is seen while its owner waits, so the administrator knows what is asking.
+    const asha = await makeUser();
+    const first = await tryRegister(asha, await ticketFor("asha@example.com", "asha"), phone);
+    expect(first.answer).toEqual({ t: "error", code: "pending" });
+    const cookie = await adminCookie();
+    expect((await list(cookie)).members[0]).toMatchObject({ device: "Google Pixel 8 (Android 16)", deviceId: phone.did, appVersion: "0.7.0", deviceBanned: false });
+    await act(cookie, "approve", "asha@example.com");
+    const joined = await tryRegister(asha, undefined, phone);
+    expect(joined.answer).toMatchObject({ t: "ready" });
+
+    expect((await act(cookie, "ban_device", phone.did)).status).toBe(200);
+    const seen = await list(cookie);
+    expect(seen.bannedDevices).toEqual([expect.objectContaining({ id: phone.did, model: "Google Pixel 8 (Android 16)", email: "asha@example.com" })]);
+    expect(seen.members[0]).toMatchObject({ deviceBanned: true, banned: false });
+
+    // The phone that is connected is closed within the minute...
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + MEMBER_CHECK_MS + 1000);
+    joined.inbox.sendJson(keysFrame());
+    expect(await joined.inbox.nextJson()).toEqual({ t: "error", code: "banned" });
+    expect((await joined.inbox.closed).code).toBe(CLOSE_BANNED);
+    // ...cannot log in again, even without saying which phone it is...
+    expect((await tryLogin(asha, undefined, phone)).answer).toEqual({ t: "error", code: "banned" });
+    expect((await tryLogin(asha)).answer).toEqual({ t: "error", code: "banned" });
+    // ...and is no use with another email address either.
+    const second = await makeUser();
+    const retry = await tryRegister(second, await ticketFor("second@example.com", "second"), phone);
+    expect(retry.answer).toEqual({ t: "error", code: "banned" });
+    expect((await retry.inbox.closed).code).toBe(CLOSE_BANNED);
+    expect(await row("second@example.com")).toBeNull();
+
+    // The same person on another phone is a different matter: the ban was on the phone.
+    const moved = await makeUser();
+    const elsewhere = await tryRegister(moved, await ticketFor("asha@example.com"), other);
+    expect(elsewhere.answer).toMatchObject({ t: "ready", name: "asha" });
+    await hangUp(elsewhere.inbox);
+
+    expect((await act(cookie, "unban_device", phone.did)).status).toBe(200);
+    expect((await list(cookie)).bannedDevices).toEqual([]);
+    expect((await act(cookie, "ban_device", "not-a-phone")).status).toBe(400);
+  });
+
   it("refuses what would lock the administrator out, and requests it cannot read", async () => {
+    const phone = device("cc");
+    const boss = await makeUser();
+    const joined = await tryRegister(boss, await ticketFor(ADMIN, "boss"), phone);
+    expect(joined.answer).toMatchObject({ t: "ready" });
+    await hangUp(joined.inbox);
     const cookie = await adminCookie();
     expect((await act(cookie, "ban", ADMIN)).status).toBe(409);
     expect((await act(cookie, "remove", "Boss@Example.com")).status).toBe(409);
+    expect((await act(cookie, "ban_device", phone.did)).status).toBe(409);
     expect((await act(cookie, "promote", "asha@example.com")).status).toBe(400);
     expect((await act(cookie, "ban", "not an address")).status).toBe(400);
   });
@@ -589,5 +689,127 @@ describe("the admin page", () => {
     const cookie = await adminCookie();
     expect((await post("/v1/admin/logout", {}, { Cookie: cookie })).status).toBe(200);
     expect((await SELF.fetch("https://relay.test/v1/admin/members", { headers: { Cookie: cookie } })).status).toBe(401);
+  });
+
+  it("can be given a host name of its own, and then exists nowhere else", async () => {
+    const elsewhere = { ...env, ADMIN_HOST: "admin.example.org" } as typeof env;
+    const get = (address: string) => handleAuth(new Request(address), elsewhere, new URL(address));
+    // On its own host the page is the front page.
+    expect((await get("https://admin.example.org/"))!.status).toBe(200);
+    expect((await get("https://admin.example.org/admin"))!.status).toBe(200);
+    expect((await get("https://admin.example.org/v1/admin/members"))!.status).toBe(401);
+    // On the relay's address there is no trace of it, and "/" stays the relay's own business.
+    expect((await get("https://relay.test/admin"))!.status).toBe(404);
+    expect((await get("https://relay.test/v1/admin/members"))!.status).toBe(404);
+    expect(await get("https://relay.test/")).toBeNull();
+    expect(await get("https://admin.example.org/health")).toBeNull();
+  });
+
+  it("stays shut while it has no password", async () => {
+    const bare = { ...env, ADMIN_PASSWORD: "short" } as typeof env;
+    const page = await handleAuth(new Request("https://relay.test/admin"), bare, new URL("https://relay.test/admin"));
+    expect(await page!.text()).toContain("closed until it has a password");
+    const start = new Request("https://relay.test/v1/admin/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: ADMIN, password: "short" }),
+    });
+    expect((await handleAuth(start, bare, new URL(start.url)))!.status).toBe(503);
+  });
+});
+
+describe("a member list made by an earlier version", () => {
+  it("is brought up to date without losing anyone", async () => {
+    // The tables as version 0.6.0 of the relay made them.
+    await env.DB.batch([
+      env.DB.prepare(
+        `CREATE TABLE users (email TEXT PRIMARY KEY, maun_id TEXT UNIQUE, username TEXT, status TEXT NOT NULL DEFAULT 'pending',
+           is_banned INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0, approved_at INTEGER, last_login_at INTEGER,
+           device_hash TEXT, device_model TEXT, device_changed_at INTEGER)`,
+      ),
+      env.DB.prepare(
+        `CREATE TABLE devices (maun_id TEXT NOT NULL, hash TEXT NOT NULL, maker TEXT NOT NULL, model TEXT NOT NULL, os TEXT NOT NULL,
+           first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, PRIMARY KEY (maun_id, hash))`,
+      ),
+      env.DB.prepare("CREATE UNIQUE INDEX users_username ON users (username)"),
+    ]);
+    const old = await makeUser();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO users (email, maun_id, username, status, created_at, device_hash, device_model) VALUES ('old@example.com', ?, 'oldtimer', 'approved', 5, ?, 'Google Pixel 6 (Android 15)')").bind(old.id, "11".repeat(32)),
+      env.DB.prepare("INSERT INTO devices VALUES (?, ?, 'Google', 'Pixel 6', '15', 5, 5)").bind(old.id, "11".repeat(32)),
+    ]);
+    forgetSchema();
+
+    const response = await adminLogin();
+    expect(response.status).toBe(200);
+    const cookie = response.headers.get("Set-Cookie")!.split(";")[0]!;
+    const seen = (await (await SELF.fetch("https://relay.test/v1/admin/members", { headers: { Cookie: cookie } })).json()) as {
+      members: Record<string, unknown>[];
+    };
+    expect(seen.members).toEqual([
+      expect.objectContaining({ email: "old@example.com", username: "oldtimer", id: old.id, status: "approved", logins: 0, reinstalls: 0, deviceId: null, devices: 1 }),
+    ]);
+    // And the new columns take what a current phone reports.
+    expect(await row("old@example.com")).toMatchObject({ device_id: null, app_version: null });
+  });
+});
+
+describe("a member who sets Maun up again", () => {
+  /** Sends one message and returns the relay's answer to it. */
+  async function send(inbox: Inbox, to: string): Promise<Record<string, unknown>> {
+    const id = requestId();
+    inbox.sendJson({ t: "send", id, to, kind: 2, body: btoa("ciphertext") });
+    const answer = await inbox.nextJson();
+    expect(answer.id).toBe(id);
+    return answer;
+  }
+
+  it("gets a new ID; the old one says it is gone, and the username leads to the new one", async () => {
+    const alice = await member("alice@example.com", "alice");
+    const bobOld = await member("bob@example.com", "bob");
+    const { inbox } = await tryLogin(alice);
+    expect(await send(inbox, bobOld.id)).toMatchObject({ t: "stored" });
+
+    // Bob deletes the app's data and logs in again: same address, new keys.
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
+    const bobNew = await makeUser();
+    const again = await tryRegister(bobNew, await ticketFor("bob@example.com"));
+    expect(again.answer).toMatchObject({ t: "ready", fresh: true, name: "bob" });
+    expect(await row("bob@example.com")).toMatchObject({ maun_id: bobNew.id, reinstalls: 1, status: "approved" });
+
+    // The old ID stops taking messages and keys, and says why.
+    await vi.waitFor(async () => expect(await send(inbox, bobOld.id)).toMatchObject({ t: "failed", code: "gone" }));
+    const keysId = requestId();
+    inbox.sendJson({ t: "get_keys", id: keysId, of: bobOld.id });
+    expect(await inbox.nextJson()).toEqual({ t: "failed", id: keysId, code: "gone" });
+    // What was waiting there could never have been read, and is not kept.
+    expect(await runInDurableObject(env.MAILBOX.get(env.MAILBOX.idFromName(bobOld.id)), (_, state) =>
+      state.storage.sql.exec("SELECT COUNT(*) AS n FROM queue").one().n,
+    )).toBe(0);
+
+    // The username now leads to the new ID, which takes messages.
+    const findId = requestId();
+    inbox.sendJson({ t: "find", id: findId, name: "bob" });
+    expect(await inbox.nextJson()).toEqual({ t: "found", id: findId, user: bobNew.id, name: "bob" });
+    expect(await send(inbox, bobNew.id)).toMatchObject({ t: "stored" });
+    await hangUp(inbox);
+    await hangUp(again.inbox);
+  });
+
+  it("is told that someone who was removed or banned is gone, too", async () => {
+    const alice = await member("alice@example.com", "alice");
+    const carol = await member("carol@example.com", "carol");
+    const dave = await member("dave@example.com", "dave");
+    const { inbox } = await tryLogin(alice);
+    await env.DB.prepare("DELETE FROM users WHERE email = 'carol@example.com'").run();
+    await set("dave@example.com", "is_banned = 1");
+    // The mailboxes ask the list again once what they knew is ten minutes old.
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 11 * 60_000);
+    expect(await send(inbox, carol.id)).toMatchObject({ t: "failed", code: "gone" });
+    expect(await send(inbox, dave.id)).toMatchObject({ t: "failed", code: "gone" });
+    // A ban that is lifted lets messages through again.
+    await set("dave@example.com", "is_banned = 0");
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 11 * 60_000);
+    expect(await send(inbox, dave.id)).toMatchObject({ t: "stored" });
   });
 });

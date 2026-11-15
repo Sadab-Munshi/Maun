@@ -46,6 +46,7 @@ fun homeLists(contacts: List<ContactEntity>, summaries: List<ChatSummary>): Home
 fun previewOf(last: ChatSummary?): String = when {
     last == null -> "No messages yet"
     last.kind == MessageKind.UNREADABLE -> "A message could not be decrypted"
+    last.kind == MessageKind.NOTICE -> last.text
     last.kind == MessageKind.FILE -> Attachment.fromLocal(last.text)?.let { if (it.isImage) "Photo" else it.name } ?: "File"
     else -> last.text.replace('\n', ' ')
 }

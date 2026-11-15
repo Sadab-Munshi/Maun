@@ -26,14 +26,16 @@
 // mail_days how many emails went out on a day.
 
 import { type MailConfig, mailConfig, sendMail } from "./mail";
-import { isUsername } from "./protocol";
+import { type DeviceReport, isUsername } from "./protocol";
+
+export type { DeviceReport };
 
 /** A code can be tried this many times, and is good for this long. */
 export const CODE_ATTEMPTS = 5;
 export const CODE_TTL_MS = 10 * 60 * 1000;
 /** Codes one address may be sent: one a minute, this many a day. */
 export const CODE_GAP_MS = 60 * 1000;
-export const CODES_PER_DAY = 5;
+export const CODES_PER_DAY = 4;
 /** Emails the relay sends in a day at most. Resend's free plan allows 100. */
 export const MAIL_DAILY_CAP = 90;
 export const TICKET_TTL_MS = 10 * 60 * 1000;
@@ -51,7 +53,11 @@ const SCHEMA = [
      last_login_at INTEGER,
      device_hash TEXT,
      device_model TEXT,
-     device_changed_at INTEGER
+     device_changed_at INTEGER,
+     device_id TEXT,
+     app_version TEXT,
+     logins INTEGER NOT NULL DEFAULT 0,
+     reinstalls INTEGER NOT NULL DEFAULT 0
    )`,
   `CREATE TABLE IF NOT EXISTS devices (
      maun_id TEXT NOT NULL,
@@ -61,8 +67,16 @@ const SCHEMA = [
      os TEXT NOT NULL,
      first_seen_at INTEGER NOT NULL,
      last_seen_at INTEGER NOT NULL,
+     device_id TEXT,
      PRIMARY KEY (maun_id, hash)
    )`,
+  `CREATE TABLE IF NOT EXISTS banned_devices (
+     device_id TEXT PRIMARY KEY,
+     model TEXT,
+     email TEXT,
+     banned_at INTEGER NOT NULL
+   )`,
+  "CREATE TABLE IF NOT EXISTS admin_tries (id INTEGER PRIMARY KEY CHECK (id = 1), wrong INTEGER NOT NULL, locked_until INTEGER NOT NULL)",
   `CREATE TABLE IF NOT EXISTS codes (
      email TEXT PRIMARY KEY,
      hash TEXT NOT NULL,
@@ -95,6 +109,15 @@ async function ready(db: D1Database): Promise<D1Database> {
     await db.prepare("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'").run();
   }
   if (!columns.includes("approved_at")) await db.prepare("ALTER TABLE users ADD COLUMN approved_at INTEGER").run();
+  if (!columns.includes("device_id")) {
+    await db.batch([
+      db.prepare("ALTER TABLE users ADD COLUMN device_id TEXT"),
+      db.prepare("ALTER TABLE users ADD COLUMN app_version TEXT"),
+      db.prepare("ALTER TABLE users ADD COLUMN logins INTEGER NOT NULL DEFAULT 0"),
+      db.prepare("ALTER TABLE users ADD COLUMN reinstalls INTEGER NOT NULL DEFAULT 0"),
+      db.prepare("ALTER TABLE devices ADD COLUMN device_id TEXT"),
+    ]);
+  }
   await db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS users_username ON users (username)").run();
   schemaReady.add(db);
   return db;
@@ -107,13 +130,52 @@ export function forgetSchema(): void {
 
 // ---- Settings -------------------------------------------------------------------
 
-export type MemberConfig = { admin: string; mail: MailConfig };
+/**
+ * `adminPassword`: what the administrator types to get into the admin page,
+ * before the code sent by email; null when none (of ten characters or more)
+ * is set, and then the page lets nobody in. `adminHost`: the one host name
+ * the admin page answers on; null for the relay's own address, under /admin.
+ */
+export type MemberConfig = { admin: string; mail: MailConfig; adminPassword: string | null; adminHost: string | null };
+
+export const ADMIN_PASSWORD_MIN = 10;
 
 /** The settings that make a relay member-only. Null on an open relay. */
 export function memberConfig(env: unknown): MemberConfig | null {
-  const admin = normalEmail((env as { ADMIN_EMAIL?: unknown }).ADMIN_EMAIL);
+  const vars = env as { ADMIN_EMAIL?: unknown; ADMIN_PASSWORD?: unknown; ADMIN_HOST?: unknown };
+  const admin = normalEmail(vars.ADMIN_EMAIL);
   const mail = mailConfig(env);
-  return admin && mail ? { admin, mail } : null;
+  if (!admin || !mail) return null;
+  const password = typeof vars.ADMIN_PASSWORD === "string" && vars.ADMIN_PASSWORD.length >= ADMIN_PASSWORD_MIN ? vars.ADMIN_PASSWORD : null;
+  const host = typeof vars.ADMIN_HOST === "string" ? vars.ADMIN_HOST.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "") : "";
+  return { admin, mail, adminPassword: password, adminHost: host === "" ? null : host };
+}
+
+/** How often the admin password may be wrong before the page is closed for a while. */
+export const ADMIN_TRIES = 5;
+export const ADMIN_LOCK_MS = 15 * 60 * 1000;
+
+/**
+ * Checks the administrator's email address and password. After too many
+ * wrong tries nobody gets in for a quarter of an hour, right password or not.
+ */
+export async function checkAdminPassword(env: Env, config: MemberConfig, email: string | null, password: string, now: number): Promise<"ok" | "wrong" | "locked" | "no_password"> {
+  if (!config.adminPassword) return "no_password";
+  const db = await ready(env.DB);
+  const tries = await db.prepare("SELECT wrong, locked_until FROM admin_tries WHERE id = 1").first();
+  if (tries && (tries.locked_until as number) > now) return "locked";
+  // Compared as digests, so that how long it takes says nothing about the password.
+  const right = email === config.admin && sameText(await sha256(`pw:${password}`), await sha256(`pw:${config.adminPassword}`));
+  if (right) {
+    await db.prepare("DELETE FROM admin_tries").run();
+    return "ok";
+  }
+  const wrong = ((tries?.wrong as number | undefined) ?? 0) + 1;
+  await db
+    .prepare("INSERT OR REPLACE INTO admin_tries (id, wrong, locked_until) VALUES (1, ?, ?)")
+    .bind(wrong >= ADMIN_TRIES ? 0 : wrong, wrong >= ADMIN_TRIES ? now + ADMIN_LOCK_MS : 0)
+    .run();
+  return wrong >= ADMIN_TRIES ? "locked" : "wrong";
 }
 
 /** An email address in the one form it is stored in, or null when it is not one. */
@@ -174,39 +236,46 @@ async function mail(env: Env, config: MemberConfig, to: string, subject: string,
 
 export type CodeOutcome = "sent" | "wait" | "limit" | "mail_failed";
 
+/** What a code is for. One sent for the app does not open the admin page, and the other way round. */
+export type CodePurpose = "app" | "admin";
+const codeKey = (email: string, purpose: CodePurpose) => (purpose === "admin" ? `admin:${email}` : email);
+
 /**
  * Sends a login code to [email]. A banned address is answered as if one had
  * been sent, and gets none.
  */
-export async function startCode(env: Env, config: MemberConfig, email: string, now: number): Promise<CodeOutcome> {
+export async function startCode(env: Env, config: MemberConfig, email: string, now: number, purpose: CodePurpose = "app"): Promise<CodeOutcome> {
   const db = await ready(env.DB);
   const banned = await db.prepare("SELECT 1 FROM users WHERE email = ? AND is_banned = 1").bind(email).first();
-  if (banned) return "sent";
-  const previous = await db.prepare("SELECT sent_at, day, count FROM codes WHERE email = ?").bind(email).first();
+  if (banned && purpose === "app") return "sent";
+  const key = codeKey(email, purpose);
+  const previous = await db.prepare("SELECT sent_at, day, count FROM codes WHERE email = ?").bind(key).first();
   const today = dayOf(now);
   const count = previous && previous.day === today ? (previous.count as number) : 0;
   if (previous && now - (previous.sent_at as number) < CODE_GAP_MS) return "wait";
   if (count >= CODES_PER_DAY) return "limit";
 
   const code = randomCode();
+  const what = purpose === "admin" ? "Maun admin code" : "Maun login code";
   const text =
-    `Your Maun login code is ${code}\n\n` +
+    `Your ${what} is ${code}\n\n` +
     "It works for ten minutes. If you did not ask for it, ignore this email: nobody can log in without the code.";
-  if (!(await mail(env, config, email, `${code} is your Maun login code`, text, now))) return "mail_failed";
+  if (!(await mail(env, config, email, `${code} is your ${what}`, text, now))) return "mail_failed";
   await db
     .prepare(
       `INSERT INTO codes (email, hash, expires_at, attempts, sent_at, day, count) VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)
        ON CONFLICT (email) DO UPDATE SET hash = excluded.hash, expires_at = excluded.expires_at, attempts = 0,
          sent_at = excluded.sent_at, day = excluded.day, count = excluded.count`,
     )
-    .bind(email, await sha256(`code:${email}:${code}`), now + CODE_TTL_MS, now, today, count + 1)
+    .bind(key, await sha256(`code:${key}:${code}`), now + CODE_TTL_MS, now, today, count + 1)
     .run();
   return "sent";
 }
 
 /** Checks a login code. A right code works once; a wrong one uses up an attempt. */
-export async function checkCode(env: Env, email: string, code: string, now: number): Promise<"ok" | "wrong" | "expired"> {
+export async function checkCode(env: Env, address: string, code: string, now: number, purpose: CodePurpose = "app"): Promise<"ok" | "wrong" | "expired"> {
   const db = await ready(env.DB);
+  const email = codeKey(address, purpose);
   const row = await db.prepare("SELECT hash, expires_at, attempts FROM codes WHERE email = ?").bind(email).first();
   if (!row || (row.expires_at as number) <= now || (row.attempts as number) >= CODE_ATTEMPTS) return "expired";
   // The attempt is counted before the answer is known, so trying many at once gains nothing.
@@ -273,73 +342,104 @@ async function redeemTicket(env: Env, ticket: string, now: number): Promise<{ em
 
 export type Member = { email: string; username: string | null; approved: boolean; banned: boolean };
 
-/** The member an ID is tied to, or null when it is tied to nobody. */
+/** The member an ID is tied to, or null when it is tied to nobody. A member whose phone is banned counts as banned. */
 export async function memberOf(env: Env, maunId: string): Promise<Member | null> {
   const db = await ready(env.DB);
-  const row = await db.prepare("SELECT email, username, status, is_banned FROM users WHERE maun_id = ?").bind(maunId).first();
+  const row = await db
+    .prepare(
+      `SELECT email, username, status, is_banned,
+         EXISTS (SELECT 1 FROM banned_devices b WHERE b.device_id = users.device_id) AS device_banned
+       FROM users WHERE maun_id = ?`,
+    )
+    .bind(maunId)
+    .first();
   if (!row) return null;
   return {
     email: row.email as string,
     username: row.username as string | null,
     approved: row.status === "approved",
-    banned: row.is_banned === 1,
+    banned: row.is_banned === 1 || row.device_banned === 1,
   };
 }
 
+async function deviceBanned(db: D1Database, deviceId: string): Promise<boolean> {
+  return (await db.prepare("SELECT 1 FROM banned_devices WHERE device_id = ?").bind(deviceId).first()) !== null;
+}
+
+/**
+ * `movedFrom`: the ID this member had until now, when this login moved them
+ * to a new one. Whoever writes to the old ID has to be told it is gone.
+ */
 export type Admission =
-  | { is: "member"; email: string; username: string | null }
-  | { is: "pending"; email: string; username: string | null; fresh: boolean }
+  | { is: "member"; email: string; username: string | null; movedFrom: string | null }
+  | { is: "pending"; email: string; username: string | null; fresh: boolean; movedFrom: string | null }
   | { is: "banned" }
   | { is: "stranger" };
 
 /**
  * Decides whether the phone with this ID may log in. Its signatures have been
- * checked already. An ID the list knows is answered from the list. Any other
- * needs a ticket, which ties the ticket's email address to the ID: an address
- * has one ID, so logging in from a newly set up phone moves it there.
+ * checked already. A banned phone is turned away whoever uses it. An ID the
+ * list knows is answered from the list. Any other needs a ticket, which ties
+ * the ticket's email address to the ID: an address has one ID, so logging in
+ * from a newly set up phone moves it there.
  */
-export async function admit(env: Env, config: MemberConfig, maunId: string, ticket: string | null, now: number): Promise<Admission> {
+export async function admit(
+  env: Env,
+  config: MemberConfig,
+  maunId: string,
+  ticket: string | null,
+  device: DeviceReport | null,
+  now: number,
+): Promise<Admission> {
+  const db = await ready(env.DB);
+  if (device?.did && (await deviceBanned(db, device.did))) return { is: "banned" };
+
   const known = await memberOf(env, maunId);
   if (known) {
+    // A phone that does not say which one it is goes by the one last seen: memberOf looked.
     if (known.banned) return { is: "banned" };
-    if (!known.approved) return { is: "pending", email: known.email, username: known.username, fresh: false };
-    return { is: "member", email: known.email, username: known.username };
+    if (device) await recordDevice(env, maunId, device, now);
+    if (!known.approved) return { is: "pending", email: known.email, username: known.username, fresh: false, movedFrom: null };
+    await db.prepare("UPDATE users SET logins = logins + 1, last_login_at = ? WHERE maun_id = ?").bind(now, maunId).run();
+    return { is: "member", email: known.email, username: known.username, movedFrom: null };
   }
   const proven = ticket ? await redeemTicket(env, ticket, now) : null;
   if (!proven) return { is: "stranger" };
 
-  const db = await ready(env.DB);
-  const existing = await db.prepare("SELECT username, status, is_banned FROM users WHERE email = ?").bind(proven.email).first();
+  const existing = await db.prepare("SELECT maun_id, username, status, is_banned FROM users WHERE email = ?").bind(proven.email).first();
   if (existing?.is_banned === 1) return { is: "banned" };
   const username = (existing?.username as string | null) ?? proven.username;
   // Everybody has a username; the app asks for one before it gets this far.
   if (!username) return { is: "stranger" };
   const approved = proven.email === config.admin || existing?.status === "approved";
+  const movedFrom = (existing?.maun_id as string | null | undefined) ?? null;
   try {
     await db
       .prepare(
-        `INSERT INTO users (email, maun_id, username, status, created_at, approved_at, last_login_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5)
+        `INSERT INTO users (email, maun_id, username, status, created_at, approved_at, last_login_at, logins)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, 1)
          ON CONFLICT (email) DO UPDATE SET maun_id = excluded.maun_id, username = excluded.username,
            status = excluded.status, last_login_at = excluded.last_login_at,
            approved_at = COALESCE(approved_at, excluded.approved_at),
-           device_hash = NULL, device_model = NULL, device_changed_at = NULL`,
+           logins = logins + 1, reinstalls = reinstalls + ?7`,
       )
-      .bind(proven.email, maunId, username, approved ? "approved" : "pending", now, approved ? now : null)
+      .bind(proven.email, maunId, username, approved ? "approved" : "pending", now, approved ? now : null, movedFrom ? 1 : 0)
       .run();
   } catch {
     // Somebody took the username in the last moment. Log in again and pick another.
     return { is: "stranger" };
   }
-  if (approved) return { is: "member", email: proven.email, username };
-  return { is: "pending", email: proven.email, username, fresh: !existing };
+  if (device) await recordDevice(env, maunId, device, now);
+  if (approved) return { is: "member", email: proven.email, username, movedFrom };
+  return { is: "pending", email: proven.email, username, fresh: !existing, movedFrom };
 }
 
 /** Tells the administrator that somebody is waiting. Best effort. */
 export async function notifyAdmin(env: Env, config: MemberConfig, email: string, username: string | null, origin: string): Promise<void> {
   const text =
     `${username ?? "Somebody"} (${email}) has asked to join your Maun relay.\n\n` +
-    `Approve or refuse them here: ${origin}/admin\n\nUntil you approve them they cannot write to anyone.`;
+    `Approve or refuse them here: ${config.adminHost ? `https://${config.adminHost}/` : `${origin}/admin`}\n\n` +
+    "Until you approve them they cannot write to anyone.";
   await mail(env, config, config.admin, `${username ?? email} asks to join Maun`, text, Date.now()).catch(() => false);
 }
 
@@ -355,26 +455,32 @@ export async function findMember(env: Env, by: { name: string } | { user: string
   return { user: row.maun_id as string, name: row.username as string };
 }
 
-export type DeviceReport = { hash: string; maker: string; model: string; os: string };
-
-/** Records the phone a member is using. `device_changed_at` is set when it is not the one seen before. */
+/**
+ * Records the phone a member is using. `device_changed_at` is set when it is
+ * not the one seen before: by its lasting ID where both reports have one, by
+ * the hash of everything otherwise.
+ */
 export async function recordDevice(env: Env, maunId: string, device: DeviceReport, now: number): Promise<void> {
   const db = await ready(env.DB);
   await db.batch([
     db
       .prepare(
-        `INSERT INTO devices (maun_id, hash, maker, model, os, first_seen_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
-         ON CONFLICT (maun_id, hash) DO UPDATE SET last_seen_at = excluded.last_seen_at, os = excluded.os`,
+        `INSERT INTO devices (maun_id, hash, maker, model, os, first_seen_at, last_seen_at, device_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
+         ON CONFLICT (maun_id, hash) DO UPDATE SET last_seen_at = excluded.last_seen_at, os = excluded.os,
+           device_id = COALESCE(excluded.device_id, device_id)`,
       )
-      .bind(maunId, device.hash, device.maker, device.model, device.os, now),
+      .bind(maunId, device.hash, device.maker, device.model, device.os, now, device.did),
     db
       .prepare(
         `UPDATE users SET
-           device_changed_at = CASE WHEN device_hash IS NOT NULL AND device_hash <> ?2 THEN ?4 ELSE device_changed_at END,
-           device_hash = ?2, device_model = ?3, last_login_at = ?4
+           device_changed_at = CASE
+             WHEN device_id IS NOT NULL AND ?5 IS NOT NULL THEN CASE WHEN device_id <> ?5 THEN ?4 ELSE device_changed_at END
+             WHEN device_hash IS NOT NULL AND device_hash <> ?2 THEN ?4
+             ELSE device_changed_at END,
+           device_hash = ?2, device_model = ?3, device_id = COALESCE(?5, device_id), app_version = COALESCE(?6, app_version)
          WHERE maun_id = ?1`,
       )
-      .bind(maunId, device.hash, `${device.maker} ${device.model} (Android ${device.os})`.trim(), now),
+      .bind(maunId, device.hash, `${device.maker} ${device.model} (Android ${device.os})`.trim(), now, device.did, device.app),
   ]);
 }
 
@@ -406,17 +512,31 @@ export type MemberRow = {
   banned: boolean;
   admin: boolean;
   createdAt: number;
+  approvedAt: number | null;
   lastLoginAt: number | null;
+  logins: number;
+  /** How often this address has moved to a newly set up phone or a fresh install. */
+  reinstalls: number;
   device: string | null;
+  deviceId: string | null;
+  deviceBanned: boolean;
   deviceChangedAt: number | null;
   devices: number;
+  appVersion: string | null;
 };
 
-export async function listMembers(env: Env, config: MemberConfig, now: number): Promise<{ members: MemberRow[]; mailsToday: number; mailCap: number }> {
+export type BannedDevice = { id: string; model: string | null; email: string | null; bannedAt: number };
+
+export async function listMembers(
+  env: Env,
+  config: MemberConfig,
+  now: number,
+): Promise<{ members: MemberRow[]; bannedDevices: BannedDevice[]; mailsToday: number; mailCap: number }> {
   const db = await ready(env.DB);
   const rows = await db
     .prepare(
-      `SELECT u.*, (SELECT COUNT(*) FROM devices d WHERE d.maun_id = u.maun_id) AS devices
+      `SELECT u.*, (SELECT COUNT(*) FROM devices d WHERE d.maun_id = u.maun_id) AS devices,
+         EXISTS (SELECT 1 FROM banned_devices b WHERE b.device_id = u.device_id) AS device_banned
        FROM users u ORDER BY (u.status = 'pending') DESC, u.created_at DESC LIMIT 1000`,
     )
     .all();
@@ -428,26 +548,44 @@ export async function listMembers(env: Env, config: MemberConfig, now: number): 
     banned: row.is_banned === 1,
     admin: row.email === config.admin,
     createdAt: row.created_at as number,
+    approvedAt: row.approved_at as number | null,
     lastLoginAt: row.last_login_at as number | null,
+    logins: (row.logins as number | null) ?? 0,
+    reinstalls: (row.reinstalls as number | null) ?? 0,
     device: row.device_model as string | null,
+    deviceId: row.device_id as string | null,
+    deviceBanned: row.device_banned === 1,
     deviceChangedAt: row.device_changed_at as number | null,
     devices: row.devices as number,
+    appVersion: row.app_version as string | null,
+  }));
+  const banned = await db.prepare("SELECT device_id, model, email, banned_at FROM banned_devices ORDER BY banned_at DESC LIMIT 1000").all();
+  const bannedDevices = banned.results.map((row) => ({
+    id: row.device_id as string,
+    model: row.model as string | null,
+    email: row.email as string | null,
+    bannedAt: row.banned_at as number,
   }));
   const mailsToday = ((await db.prepare("SELECT sent FROM mail_days WHERE day = ?").bind(dayOf(now)).first("sent")) as number | null) ?? 0;
-  return { members, mailsToday, mailCap: MAIL_DAILY_CAP };
+  return { members, bannedDevices, mailsToday, mailCap: MAIL_DAILY_CAP };
 }
 
-export type AdminAction = "approve" | "ban" | "unban" | "remove" | "add";
+export type AdminAction = "approve" | "ban" | "unban" | "remove" | "add" | "ban_device" | "unban_device";
 
 /**
- * approve  lets a waiting member in.
- * ban      shuts an address out, also one that has not joined yet.
- * unban    lifts that.
- * remove   forgets the address: its phone has to log in and be approved again.
- * add      approves an address in advance, so its owner is let straight in.
+ * approve       lets a waiting member in.
+ * ban           shuts an address out, also one that has not joined yet.
+ * unban         lifts that.
+ * remove        forgets the address: its phone has to log in and be approved again.
+ * add           approves an address in advance, so its owner is let straight in.
+ * ban_device    shuts a phone out, whichever address is used on it. [target] is the phone's ID.
+ * unban_device  lifts that.
+ *
+ * For everything but the last two, [target] is an email address.
  */
-export async function adminAction(env: Env, config: MemberConfig, action: AdminAction, email: string, now: number): Promise<"done" | "refused"> {
+export async function adminAction(env: Env, config: MemberConfig, action: AdminAction, target: string, now: number): Promise<"done" | "refused"> {
   const db = await ready(env.DB);
+  const email = target;
   // The administrator cannot lock themselves out.
   if (email === config.admin && (action === "ban" || action === "remove")) return "refused";
   switch (action) {
@@ -485,6 +623,19 @@ export async function adminAction(env: Env, config: MemberConfig, action: AdminA
       ]);
       break;
     }
+    case "ban_device": {
+      const owners = await db.prepare("SELECT email, device_model FROM users WHERE device_id = ?").bind(target).all();
+      if (owners.results.some((row) => row.email === config.admin)) return "refused";
+      const last = owners.results[0];
+      await db
+        .prepare("INSERT OR IGNORE INTO banned_devices (device_id, model, email, banned_at) VALUES (?, ?, ?, ?)")
+        .bind(target, (last?.device_model as string | undefined) ?? null, (last?.email as string | undefined) ?? null, now)
+        .run();
+      break;
+    }
+    case "unban_device":
+      await db.prepare("DELETE FROM banned_devices WHERE device_id = ?").bind(target).run();
+      break;
   }
   return "done";
 }

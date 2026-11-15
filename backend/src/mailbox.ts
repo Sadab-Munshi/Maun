@@ -44,6 +44,7 @@ import {
   registerTranscript,
   toBase64,
   type ClientFrame,
+  type DeviceReport,
   type ErrorCode,
   type FailureCode,
   type KeyBundle,
@@ -80,7 +81,10 @@ type Account = { deviceKey: Uint8Array };
 export type FileAnswer = "ok" | "denied" | "banned" | "too_large" | "quota";
 
 /** What another mailbox is told when it hands over a message. */
-export type StoreOutcome = "stored" | "no_account" | "mailbox_full";
+export type StoreOutcome = "stored" | "no_account" | "mailbox_full" | "gone";
+
+/** How long another mailbox's word that its owner is still a member is believed. */
+const STANDING_FRESH_MS = 10 * 60 * 1000;
 
 /**
  * One Mailbox per user, addressed by the user's identity public key.
@@ -118,6 +122,8 @@ export class Mailbox extends DurableObject<Env> {
   private memberCheckedAt = 0;
   /** The address this relay was last reached at, for links in emails. */
   private origin = "";
+  /** Member-only relays: whether this mailbox's owner was an approved member when last asked, for senders. */
+  private standing: { ok: boolean; at: number } | null = null;
 
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
@@ -180,7 +186,7 @@ export class Mailbox extends DurableObject<Env> {
       let email: string | null = null;
       let name: string | null = null;
       const admit = async (): Promise<ErrorCode | null> => {
-        const answer = await this.admit(state.m, frame.access);
+        const answer = await this.admit(state.m, frame.access, frame.dev);
         if (answer.refused) return answer.refused;
         email = answer.email;
         name = answer.name;
@@ -201,6 +207,9 @@ export class Mailbox extends DurableObject<Env> {
       const vapid = await this.vapidKeys();
       // The phone is here: whatever wake-up was on its way has done its job.
       sql.exec("UPDATE push SET pending = 0 WHERE id = 1 AND pending = 1");
+      // An ID that was given up and is in use again takes messages again.
+      sql.exec("DELETE FROM retired");
+      this.standing = { ok: true, at: Date.now() };
       setState(ws, { s: "ready", m: state.m, c: 0, o: 0, t: Date.now() });
       send(ws, {
         t: "ready",
@@ -277,7 +286,7 @@ export class Mailbox extends DurableObject<Env> {
         }
         let bundle: KeyBundle | FailureCode;
         try {
-          bundle = await this.peer(frame.of).takeKeys();
+          bundle = await this.peer(frame.of).takeKeys(frame.of);
         } catch {
           bundle = "unavailable";
         }
@@ -306,7 +315,7 @@ export class Mailbox extends DurableObject<Env> {
         try {
           // The recipient's mailbox writes the message before it answers, so
           // "stored" means it will survive whatever happens to either phone.
-          outcome = await this.peer(frame.to).store(state.m, frame.kind, frame.body);
+          outcome = await this.peer(frame.to).store(state.m, frame.kind, frame.body, frame.to);
         } catch {
           outcome = "unavailable";
         }
@@ -378,6 +387,9 @@ export class Mailbox extends DurableObject<Env> {
             send(ws, { t: "failed", id: frame.id, code: "unavailable" });
             return;
           }
+          // The phone it turns out to be may be a banned one.
+          this.memberCheckedAt = 0;
+          if (await this.banned(state.m)) return;
         }
         send(ws, { t: "saved", id: frame.id, otks: this.oneTimeKeyCount() });
         return;
@@ -401,10 +413,20 @@ export class Mailbox extends DurableObject<Env> {
   private async admit(
     mailboxId: string,
     ticket: string | null,
+    device: DeviceReport | null,
   ): Promise<{ refused: ErrorCode } | { refused: null; email: string | null; name: string | null }> {
     const config = memberConfig(this.env);
     if (!config) return { refused: null, email: null, name: null };
-    const answer = await admit(this.env, config, mailboxId, ticket, Date.now());
+    const answer = await admit(this.env, config, mailboxId, ticket, device, Date.now());
+    if ((answer.is === "member" || answer.is === "pending") && answer.movedFrom && answer.movedFrom !== mailboxId) {
+      // This address had another ID until now. That one is finished: whoever
+      // writes to it is told so, and can look the member up again.
+      this.ctx.waitUntil(
+        this.peer(answer.movedFrom)
+          .retire()
+          .catch(() => {}),
+      );
+    }
     switch (answer.is) {
       case "member":
         this.memberCheckedAt = Date.now();
@@ -501,9 +523,10 @@ export class Mailbox extends DurableObject<Env> {
   // Worker's own code. `from` is therefore always a logged-in sender.
 
   /** Writes a message for this mailbox's owner and passes it on if they are connected. */
-  async store(from: string, kind: number, body: Uint8Array): Promise<StoreOutcome> {
+  async store(from: string, kind: number, body: Uint8Array, self: string): Promise<StoreOutcome> {
     if (!this.account()) return "no_account";
     this.ensureTables();
+    if (await this.givenUp(self)) return "gone";
     const size = this.size();
     if (size.total >= QUEUE_CAP || (size.bySender.get(from) ?? 0) >= QUEUE_CAP_PER_SENDER) return "mailbox_full";
 
@@ -533,9 +556,10 @@ export class Mailbox extends DurableObject<Env> {
    * Hands out what is needed to start a session with this mailbox's owner.
    * A one-time pre-key is given to one asker only, so it is deleted here.
    */
-  async takeKeys(): Promise<KeyBundle | "no_account" | "no_keys"> {
+  async takeKeys(self: string): Promise<KeyBundle | "no_account" | "no_keys" | "gone"> {
     if (!this.account()) return "no_account";
     this.ensureTables();
+    if (await this.givenUp(self)) return "gone";
     const sql = this.ctx.storage.sql;
     const row = sql.exec("SELECT * FROM keys WHERE id = 1").toArray()[0];
     if (!row) return "no_keys";
@@ -548,6 +572,42 @@ export class Mailbox extends DurableObject<Env> {
       kpk: { id: row.kpk_id as number, key: bytes(row.kpk), sig: bytes(row.kpk_sig) },
       otk: taken ? { id: taken.id as number, key: bytes(taken.key) } : null,
     };
+  }
+
+  /**
+   * The owner of this mailbox has moved to another ID. Nothing more is taken
+   * for this one, and what was waiting (encrypted to keys that no longer
+   * exist) is deleted.
+   */
+  async retire(): Promise<void> {
+    if (!this.account()) return;
+    this.ensureTables();
+    const sql = this.ctx.storage.sql;
+    sql.exec("INSERT OR REPLACE INTO retired (id, at) VALUES (1, ?)", Date.now());
+    for (const table of ["queue", "keys", "otks", "push", "push_since", "push_result"]) sql.exec(`DELETE FROM ${table}`);
+    this.queueSize = null;
+    this.standing = null;
+    for (const ws of this.ctx.getWebSockets()) closeQuietly(ws, CLOSE_ACCESS_REQUIRED, "access_required");
+  }
+
+  /**
+   * Whether messages for this mailbox would never be read: its owner moved to
+   * another ID, or (on a member-only relay) is no longer an approved member.
+   * [self] is the ID this mailbox was reached by.
+   */
+  private async givenUp(self: string): Promise<boolean> {
+    if (this.ctx.storage.sql.exec("SELECT 1 FROM retired WHERE id = 1").toArray().length > 0) return true;
+    if (!memberConfig(this.env)) return false;
+    const now = Date.now();
+    if (this.standing && now - this.standing.at < STANDING_FRESH_MS) return !this.standing.ok;
+    try {
+      const member = await memberOf(this.env, self);
+      this.standing = { ok: member !== null && member.approved && !member.banned, at: now };
+      return !this.standing.ok;
+    } catch {
+      // The list cannot be reached right now. Take the message.
+      return false;
+    }
   }
 
   // ---- Wake-ups --------------------------------------------------------------
@@ -778,6 +838,8 @@ export class Mailbox extends DurableObject<Env> {
          day INTEGER NOT NULL, bytes INTEGER NOT NULL, count INTEGER NOT NULL
        )`,
     );
+    // One row while this mailbox's owner has moved to another ID.
+    sql.exec("CREATE TABLE IF NOT EXISTS retired (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL)");
     sql.exec(
       `CREATE TABLE IF NOT EXISTS queue (
          seq INTEGER PRIMARY KEY,

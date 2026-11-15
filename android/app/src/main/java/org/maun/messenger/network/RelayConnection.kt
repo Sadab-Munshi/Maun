@@ -145,6 +145,8 @@ class RelayConnection(
     private val onOffline: () -> Unit = {},
     private val accessToken: () -> String? = { null },
     private val awaitingApproval: () -> Boolean = { false },
+    /** What this phone says about itself, for a member-only relay to look at before it lets the phone in. */
+    private val phone: () -> JSONObject? = { null },
 ) : RelayLink {
     private val request = Request.Builder().url(RelayClient.socketUrl(relayUrl, identity.id)).build()
 
@@ -380,6 +382,7 @@ class RelayConnection(
             val signature = device.sign(AuthTranscript.login(identity.publicKey, nonce))
             val frame = JSONObject().put("t", "login").put("sig", encoder.encodeToString(signature))
             if (token != null) frame.put("access", token)
+            if (memberOnly) phone()?.let { frame.put("dev", it) }
             return Answer.Send(frame.toString(), withToken = token != null)
         }
 
@@ -400,6 +403,7 @@ class RelayConnection(
             .put("identitySig", encoder.encodeToString(identity.sign(transcript)))
             .put("deviceSig", encoder.encodeToString(device.sign(transcript)))
         if (token != null) frame.put("access", token)
+        if (memberOnly) phone()?.let { frame.put("dev", it) }
         return Answer.Send(frame.toString(), withToken = token != null)
     }
 

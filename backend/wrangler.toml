@@ -11,11 +11,16 @@ keep_vars = true
 
 # Member-only mode is switched on by such settings:
 #   ADMIN_EMAIL     the administrator's email address
+#   ADMIN_PASSWORD  (as a Secret) the password of the admin page, ten
+#                   characters or more; without it the page lets nobody in
+#   ADMIN_HOST      optional: a host name of its own for the admin page, for
+#                   example "admin.example.com". Add it to the Worker as a
+#                   Custom Domain too. The page then exists only there.
 #   RESEND_API_KEY  (as a Secret) the key of the mail service that sends the
 #                   login codes; or BREVO_API_KEY to use Brevo instead
 #   MAIL_FROM       the sender, for example "Maun <login@your-domain.com>"
 # Without the first two the relay is open, as before: anyone may make an ID.
-# The administrator's page is at <this relay>/admin.
+# The administrator's page is at <this relay>/admin, or at ADMIN_HOST.
 
 # Zero tracking: do not ship request logs to Workers Logs.
 [observability]

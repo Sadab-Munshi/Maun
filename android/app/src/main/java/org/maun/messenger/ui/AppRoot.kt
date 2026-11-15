@@ -69,6 +69,15 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
 
     BackHandler(enabled = screen != HOME, onBack = goBack)
 
+    // Someone whose conversation or details are open set Maun up again and
+    // has a new ID: stay with the person, not with the old ID.
+    LaunchedEffect(Unit) {
+        viewModel.moved.collect { (old, new) ->
+            if (screen == CHAT_PREFIX + old) screen = CHAT_PREFIX + new
+            if (screen == CONTACT_PREFIX + old) screen = CONTACT_PREFIX + new
+        }
+    }
+
     when (val current = account) {
         AccountState.Loading -> Surface(modifier = Modifier.fillMaxSize()) {
             // Opening the storage takes a moment. A spinner that flashes by
@@ -172,8 +181,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             checkCode = viewModel::checkCode,
                             // Only a member-only relay has usernames.
                             findUser = if (username != null) viewModel::findUser else null,
-                            onSave = { id, name, verified ->
-                                viewModel.saveContact(id, name, verified)
+                            onSave = { id, name, verified, foundAs ->
+                                viewModel.saveContact(id, name, verified, foundAs)
                                 screen = CHAT_PREFIX + id
                             },
                             onBack = goHome,

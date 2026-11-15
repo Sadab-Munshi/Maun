@@ -40,6 +40,9 @@ object MessageKind {
 
     /** A file. The text is its record: see [org.maun.messenger.Attachment]. */
     const val FILE = 2
+
+    /** A line the app itself put into the conversation, such as "set up Maun again". */
+    const val NOTICE = 3
 }
 
 /**
@@ -177,6 +180,36 @@ interface ChatDao {
     @Query("DELETE FROM messages")
     fun deleteAllMessages(): Int
 
+    /** Hands the conversation with [old] over to [new]. A message [new] already has stays where it is. */
+    @Query("UPDATE OR IGNORE messages SET peer = :new WHERE peer = :old")
+    fun moveMessages(old: String, new: String): Int
+
+    /** What is waiting to be sent to [old] now goes to [new], and is encrypted afresh for them. */
+    @Query("UPDATE outbox SET peer = :new, cipher = NULL, cipher_kind = NULL WHERE peer = :old")
+    fun moveOutbox(old: String, new: String): Int
+
+    /** Own messages the relay took for [peer] and never handed over, oldest first. */
+    @Query("SELECT * FROM messages WHERE peer = :peer AND outgoing = 1 AND status = 1 AND kind IN (0, 2) AND at >= :since ORDER BY seq LIMIT 100")
+    fun undelivered(peer: String, since: Long): List<MessageEntity>
+
+    @Query("UPDATE messages SET status = :status WHERE seq = :seq")
+    fun setStatus(seq: Long, status: Int): Int
+
+    // ---- Contacts, as the messaging code needs them ----------------------------
+
+    @Query("SELECT * FROM contacts WHERE id = :id")
+    fun contact(id: String): ContactEntity?
+
+    /** The contact with this username, or failing that one named like it whose username is not known yet. */
+    @Query("SELECT * FROM contacts WHERE username = :username OR (username IS NULL AND LOWER(name) = :username) ORDER BY username IS NULL LIMIT 1")
+    fun contactByUsername(username: String): ContactEntity?
+
+    @Query("SELECT * FROM contacts WHERE username IS NULL ORDER BY added_at DESC LIMIT :limit")
+    fun contactsWithoutUsername(limit: Int): List<ContactEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun putContact(contact: ContactEntity)
+
     @Query("DELETE FROM outbox")
     fun deleteAllOutbox(): Int
 
@@ -197,6 +230,9 @@ interface ChatDao {
 
     @Query("DELETE FROM outbox WHERE peer = :peer")
     fun deleteOutboxFor(peer: String): Int
+
+    @Query("SELECT * FROM outbox WHERE peer = :peer ORDER BY seq")
+    fun outboxFor(peer: String): List<OutboxEntity>
 
     /** Takes back a chat message that has not left yet. Receipts are not touched. */
     @Query("DELETE FROM outbox WHERE peer = :peer AND message_id = :messageId")

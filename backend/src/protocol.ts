@@ -155,8 +155,9 @@ export type KeyBundle = { regId: number; spk: SignedKey; kpk: SignedKey; otk: On
 
 export type ClientFrame =
   /** `access`: a ticket from the email login, for a member-only relay that does not know this ID yet. */
-  | { t: "register"; deviceKey: Uint8Array; identitySig: Uint8Array; deviceSig: Uint8Array; access: string | null }
-  | { t: "login"; sig: Uint8Array; access: string | null }
+  /** `dev`: which phone this is. A member-only relay looks at it before letting the phone in. */
+  | { t: "register"; deviceKey: Uint8Array; identitySig: Uint8Array; deviceSig: Uint8Array; access: string | null; dev: DeviceReport | null }
+  | { t: "login"; sig: Uint8Array; access: string | null; dev: DeviceReport | null }
   | { t: "echo"; id: string; body: string }
   | { t: "put_keys"; id: string; regId: number; spk: SignedKey; kpk: SignedKey }
   | { t: "put_otks"; id: string; keys: OneTimeKey[] }
@@ -169,7 +170,15 @@ export type ClientFrame =
   /** Looks a member up, by username (`name`) or by ID (`user`). Member-only relays. */
   | { t: "find"; id: string; name: string | null; user: string | null }
   /** `hash`: SHA-256 of what the phone says about itself, in hex. */
-  | { t: "device"; id: string; hash: string; maker: string; model: string; os: string };
+  | ({ t: "device"; id: string } & DeviceReport);
+
+/**
+ * What a phone says about itself. `hash` is a SHA-256 of everything it can
+ * tell (it changes with a system update); `did` is one of the things that
+ * stay the same, and is what a ban on a phone goes by. `app` is the app's
+ * version.
+ */
+export type DeviceReport = { hash: string; did: string | null; maker: string; model: string; os: string; app: string | null };
 
 type WireSignedKey = { id: number; key: string; sig: string };
 
@@ -226,6 +235,8 @@ export type FailureCode =
   | "unavailable"
   /** Nobody has that username, or the relay keeps no usernames. */
   | "no_such_user"
+  /** The ID written to is no longer anybody's: its owner set Maun up again, or left. */
+  | "gone"
   /** The wake-up address or its keys are not ones the relay will use. */
   | "bad_push";
 
@@ -296,15 +307,17 @@ export function parseClientFrame(raw: string | ArrayBuffer): ClientFrame | Error
       if (!deviceKey || deviceKey.length !== DEVICE_KEY_BYTES) return "bad_frame";
       if (!identitySig || identitySig.length !== 64 || !deviceSig) return "bad_frame";
       const access = accessToken(frame.access);
-      if (access === undefined) return "bad_frame";
-      return { t: "register", deviceKey, identitySig, deviceSig, access };
+      const dev = frame.dev === undefined || frame.dev === null ? null : deviceReport(frame.dev);
+      if (access === undefined || dev === undefined) return "bad_frame";
+      return { t: "register", deviceKey, identitySig, deviceSig, access, dev };
     }
     case "login": {
       const sig = fromBase64(frame.sig, 72);
       if (!sig) return "bad_frame";
       const access = accessToken(frame.access);
-      if (access === undefined) return "bad_frame";
-      return { t: "login", sig, access };
+      const dev = frame.dev === undefined || frame.dev === null ? null : deviceReport(frame.dev);
+      if (access === undefined || dev === undefined) return "bad_frame";
+      return { t: "login", sig, access, dev };
     }
     case "echo":
       if (typeof frame.id !== "string" || typeof frame.body !== "string") return "bad_frame";
@@ -360,16 +373,31 @@ export function parseClientFrame(raw: string | ArrayBuffer): ClientFrame | Error
       return { t: "find", id: frame.id, name, user };
     }
     case "device": {
-      if (!isRequestId(frame.id) || typeof frame.hash !== "string" || !/^[0-9a-f]{64}$/.test(frame.hash)) return "bad_frame";
-      const maker = shortText(frame.maker);
-      const model = shortText(frame.model);
-      const os = shortText(frame.os);
-      if (maker === null || model === null || os === null) return "bad_frame";
-      return { t: "device", id: frame.id, hash: frame.hash, maker, model, os };
+      const report = deviceReport(frame);
+      if (!isRequestId(frame.id) || !report) return "bad_frame";
+      return { t: "device", id: frame.id, ...report };
     }
     default:
       return "unknown_type";
   }
+}
+
+const HASH = /^[0-9a-f]{64}$/;
+
+/** Reads a device report. Undefined when it is not one. */
+function deviceReport(value: unknown): DeviceReport | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const report = value as Record<string, unknown>;
+  if (typeof report.hash !== "string" || !HASH.test(report.hash)) return undefined;
+  const maker = shortText(report.maker);
+  const model = shortText(report.model);
+  const os = shortText(report.os);
+  if (maker === null || model === null || os === null) return undefined;
+  const did = report.did === undefined || report.did === null ? null : report.did;
+  if (did !== null && (typeof did !== "string" || !HASH.test(did))) return undefined;
+  const app = report.app === undefined || report.app === null ? null : shortText(report.app);
+  if (report.app !== undefined && report.app !== null && app === null) return undefined;
+  return { hash: report.hash, did, maker, model, os, app };
 }
 
 /** A token, null when none was sent, undefined when what was sent cannot be one. */

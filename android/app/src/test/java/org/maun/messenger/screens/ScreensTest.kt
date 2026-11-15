@@ -136,7 +136,7 @@ class ScreensTest {
         SettingsScreen(
             memberEmail = memberEmail,
             username = username,
-            version = "0.6.0",
+            version = "0.7.0",
             relayName = "maun.example.workers.dev",
             relay = RelayState.Online,
             delivery = DeliveryUi(pushApp = "Google's push service", google = true),
@@ -254,6 +254,35 @@ class ScreensTest {
             waiting = null,
             relay = RelayState.Online,
             files = FileActions(progress = mapOf(7L to 0.62f), loadImage = { seq, _, _ -> if (seq == 1L) photo else null }),
+            onSend = {},
+            onSeen = {},
+            onLoadOlder = {},
+            onDelete = {},
+            onBack = {},
+            onOpenDetails = {},
+            onAccept = {},
+            onBlock = {},
+        )
+    }
+
+    @Test
+    fun chatAfterAMove() = shoot("chat-moved") {
+        ChatScreen(
+            peerId = asha.id,
+            contactName = asha.name,
+            // Newest first.
+            messages = listOf(
+                message(4, false, "Yes, new phone. Everything from before is gone here.", 2 * minute),
+                message(3, true, "Is this still you?", 3 * minute),
+                MessageEntity(
+                    seq = 2, peer = asha.id, id = "n2", outgoing = false, kind = MessageKind.NOTICE, at = now - 4 * minute,
+                    text = "Asha set up Maun again. Messages now go to the new setup, and the safety number has changed.",
+                ),
+                message(1, true, "See you at six", 3 * 60 * minute),
+            ),
+            hasOlder = false,
+            waiting = null,
+            relay = RelayState.Online,
             onSend = {},
             onSeen = {},
             onLoadOlder = {},

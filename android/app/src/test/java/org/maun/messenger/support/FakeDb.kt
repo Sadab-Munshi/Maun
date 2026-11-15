@@ -6,6 +6,8 @@ import kotlinx.coroutines.flow.Flow
 import org.maun.messenger.crypto.SignalStorage
 import org.maun.messenger.data.BlockedEntity
 import org.maun.messenger.data.ChatDao
+import org.maun.messenger.data.MessageStatus
+import org.maun.messenger.data.ContactEntity
 import org.maun.messenger.data.ChatSummary
 import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.data.MessageKind
@@ -21,7 +23,7 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
     private data class State(
         val messages: List<MessageEntity> = emptyList(),
         val outbox: List<OutboxEntity> = emptyList(),
-        val contacts: Set<String> = emptySet(),
+        val contacts: Map<String, ContactEntity> = emptyMap(),
         val blocked: Map<String, Long> = emptyMap(),
         val sessions: Map<String, ByteArray> = emptyMap(),
         val preKeys: Map<Pair<Int, Int>, ByteArray> = emptyMap(),
@@ -54,7 +56,8 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
 
     // ---- Test helpers ------------------------------------------------------
 
-    fun addContact(id: String) = lock.withLock { state = state.copy(contacts = state.contacts + id) }
+    fun addContact(id: String, name: String = id.take(6), username: String? = null) =
+        putContact(ContactEntity(id = id, name = name, verified = true, addedAt = 0, username = username))
 
     fun hasSession(peer: String): Boolean = lock.withLock { peer in state.sessions }
 
@@ -158,6 +161,8 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
     override fun deleteOutboxOf(peer: String, messageId: String): Int =
         removeOutbox { it.peer == peer && it.messageId == messageId }
 
+    override fun outboxFor(peer: String): List<OutboxEntity> = lock.withLock { state.outbox.filter { it.peer == peer } }
+
     override fun outboxSize(): Int = lock.withLock { state.outbox.size }
 
     override fun isContact(id: String): Boolean = lock.withLock { id in state.contacts }
@@ -167,6 +172,49 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
         state = state.copy(contacts = state.contacts - id)
         if (had) 1 else 0
     }
+
+    override fun contact(id: String): ContactEntity? = lock.withLock { state.contacts[id] }
+
+    override fun contactByUsername(username: String): ContactEntity? = lock.withLock {
+        state.contacts.values.firstOrNull { it.username == username }
+            ?: state.contacts.values.firstOrNull { it.username == null && it.name.lowercase() == username }
+    }
+
+    override fun contactsWithoutUsername(limit: Int): List<ContactEntity> =
+        lock.withLock { state.contacts.values.filter { it.username == null }.take(limit) }
+
+    override fun putContact(contact: ContactEntity) =
+        lock.withLock { state = state.copy(contacts = state.contacts + (contact.id to contact)) }
+
+    override fun moveMessages(old: String, new: String): Int = lock.withLock {
+        var moved = 0
+        val taken = state.messages.filter { it.peer == new }.map { it.outgoing to it.id }.toSet()
+        state = state.copy(
+            messages = state.messages.map {
+                if (it.peer == old && (it.outgoing to it.id) !in taken) it.copy(peer = new).also { moved++ } else it
+            },
+        )
+        moved
+    }
+
+    override fun moveOutbox(old: String, new: String): Int = lock.withLock {
+        var moved = 0
+        state = state.copy(
+            outbox = state.outbox.map {
+                if (it.peer == old) OutboxEntity(it.seq, new, it.messageId, it.payload).also { moved++ } else it
+            },
+        )
+        moved
+    }
+
+    override fun undelivered(peer: String, since: Long): List<MessageEntity> = lock.withLock {
+        state.messages.filter {
+            it.peer == peer && it.outgoing && it.status == MessageStatus.SENT && it.kind != MessageKind.NOTICE &&
+                it.kind != MessageKind.UNREADABLE && it.at >= since
+        }
+    }
+
+    override fun setStatus(seq: Long, status: Int): Int = apply({ it.seq == seq }) { it.copy(status = status) }
 
     override fun isBlocked(id: String): Boolean = lock.withLock { id in state.blocked }
 

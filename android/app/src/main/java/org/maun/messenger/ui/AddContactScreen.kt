@@ -46,14 +46,15 @@ import org.maun.messenger.Messenger
 /**
  * Adds a contact in two steps: get their code (camera or pasted text), then
  * give them a name. [checkCode] decides whether a piece of text is a code that
- * can be added; [onSave] receives the ID, the name, and whether it was scanned.
+ * can be added; [onSave] receives the ID, the name, whether it was scanned,
+ * and the username it was found under, if it was.
  * On a relay with usernames, [findUser] looks one up; null where there are none.
  */
 @Composable
 fun AddContactScreen(
     checkCode: suspend (text: String, typed: Boolean) -> CodeCheck,
     findUser: (suspend (String) -> Messenger.UserSearch)? = null,
-    onSave: (id: String, name: String, verified: Boolean) -> Unit,
+    onSave: (id: String, name: String, verified: Boolean, username: String?) -> Unit,
     onBack: () -> Unit,
 ) {
     // The ID that was found, and how. Null while still looking.
@@ -79,7 +80,7 @@ fun AddContactScreen(
             id = id,
             scanned = foundByCamera,
             username = foundName,
-            onSave = { name -> onSave(id, name, foundByCamera) },
+            onSave = { name -> onSave(id, name, foundByCamera, foundName) },
             onBack = { foundId = null },
         )
     }

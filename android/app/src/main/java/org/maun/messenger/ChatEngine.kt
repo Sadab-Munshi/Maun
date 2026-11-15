@@ -31,6 +31,12 @@ import org.maun.messenger.crypto.SignalSessions
 import org.maun.messenger.crypto.SignedPublicKey
 import org.maun.messenger.crypto.UndecryptableException
 import org.maun.messenger.data.BlockedEntity
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import org.maun.messenger.data.ContactEntity
+import org.maun.messenger.network.Usernames
 import org.maun.messenger.data.ChatDao
 import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.data.MessageKind
@@ -78,6 +84,14 @@ class ChatEngine(
 
     /** Why the relay cannot wake this phone, in words for the screen. Null when it can, or need not. */
     val pushProblem: StateFlow<String?> = _pushProblem.asStateFlow()
+
+    private val _moved = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 8)
+
+    /** A contact's ID changed, from the first to the second: they set Maun up again. */
+    val moved: SharedFlow<Pair<String, String>> = _moved.asSharedFlow()
+
+    /** Senders being looked up right now. */
+    private val meeting = ConcurrentHashMap.newKeySet<String>()
 
     private val wakeUps = Channel<Unit>(Channel.CONFLATED)
     private var retry: Job? = null
@@ -142,6 +156,7 @@ class ChatEngine(
             try {
                 // Each is tried again at the next login. Sending does not depend on either.
                 quietly { publishKeys() }
+                quietly { learnUsernames() }
                 quietly {
                     // What became of the last wake-up only matters if it went
                     // to the address this phone still uses.
@@ -198,6 +213,148 @@ class ChatEngine(
         }
         link?.send(JSONObject().put("t", "ack").put("seq", seq))
         if (replies) kick()
+        // On a relay of members, somebody who writes without being a contact
+        // is still somebody the relay can name.
+        if (memberRelay && body != null && !withContext(io) { dao.isContact(from) }) meet(from)
+    }
+
+    // ---- Members who set Maun up again ----------------------------------------
+    //
+    // On a relay with usernames, a member who deletes the app's data or moves
+    // to another phone logs in again and gets a new ID; the username stays.
+    // The relay answers "gone" for the old ID. This phone then asks which ID
+    // the username has now, and carries the contact, the conversation and
+    // whatever was still to be sent over to it. The relay is trusted for that
+    // answer exactly as it is when a contact is added by username: the
+    // contact counts as unchecked again, and the conversation says so.
+
+    /** Whether the relay has usernames: it told this phone its own. */
+    private val memberRelay: Boolean get() = link?.ready?.name != null
+
+    /** Asks the relay for a member, by "name" or by "user" (an ID). Returns the ID and the username. */
+    private suspend fun find(by: String, value: String): Pair<String, String>? {
+        val answer = try {
+            (link ?: return null).request(JSONObject().put("t", "find").put(by, value))
+        } catch (_: RelayException) {
+            return null
+        }
+        if (answer.optString("t") != "found") return null
+        val id = answer.optString("user")
+        val name = answer.optString("name")
+        return if (ContactCode.isId(id) && name.isNotEmpty()) id to name else null
+    }
+
+    /**
+     * The relay says [peer]'s ID is gone. Finds where their username leads
+     * now and moves the contact there. Returns false when there is nowhere to
+     * follow them to.
+     */
+    private suspend fun follow(peer: String): Boolean {
+        if (!memberRelay) return false
+        val contact = withContext(io) { dao.contact(peer) } ?: return false
+        // A contact from before usernames were kept was named after theirs when it was added by username.
+        val username = contact.username ?: Usernames.clean(contact.name).takeIf(Usernames::isValid) ?: return false
+        val (id, name) = find("name", username) ?: return false
+        if (id == peer || id == selfId) return false
+        movePeer(peer, id, name)
+        return true
+    }
+
+    /** Looks up someone who wrote without being a contact, and makes them one. */
+    private fun meet(from: String) {
+        if (!meeting.add(from)) return
+        scope.launch {
+            try {
+                quietly {
+                    val (_, username) = find("user", from) ?: return@quietly
+                    val known = withContext(io) { dao.contactByUsername(username) }
+                    // A contact only named like them is theirs if its own ID is nobody's any more.
+                    val same = known != null && known.id != from && (known.username != null || find("user", known.id) == null)
+                    if (known != null && same) {
+                        movePeer(known.id, from, username)
+                    } else if (known == null || known.id != from) {
+                        val added = withContext(io) {
+                            tx.inTransaction {
+                                if (dao.isBlocked(from) || dao.isContact(from)) return@inTransaction false
+                                dao.putContact(ContactEntity(id = from, name = username, verified = false, addedAt = now(), username = username))
+                                true
+                            }
+                        }
+                        if (added) onContactAdded(from)
+                    }
+                }
+            } finally {
+                meeting.remove(from)
+            }
+        }
+    }
+
+    /** Fills in the usernames of contacts that have none yet, and follows those whose ID has gone. */
+    private suspend fun learnUsernames() {
+        if (!memberRelay) return
+        for (contact in withContext(io) { dao.contactsWithoutUsername(USERNAMES_PER_LOGIN) }) {
+            val found = find("user", contact.id)
+            if (found != null) {
+                withContext(io) { tx.inTransaction { dao.contact(contact.id)?.let { dao.putContact(it.copy(username = found.second)) } } }
+            } else if (link?.ready != null) {
+                follow(contact.id)
+            }
+        }
+    }
+
+    /**
+     * Carries a contact over from the ID [old] to [new]: the contact itself,
+     * the conversation, and what was waiting to be sent. Messages the relay
+     * had taken for the old ID and never handed over are sent again.
+     */
+    internal suspend fun movePeer(old: String, new: String, username: String?) {
+        val moved = withContext(io) {
+            tx.inTransaction {
+                val contact = dao.contact(old) ?: return@inTransaction false
+                val already = dao.contact(new)
+                // Whoever checked the old ID has not checked this one.
+                dao.putContact((already ?: contact.copy(id = new, verified = false)).copy(username = username ?: contact.username))
+                dao.deleteContact(old)
+                dao.moveMessages(old, new)
+                dao.deleteMessages(old)
+                // What was still waiting to go out is put behind what has to be
+                // sent again, so that everything arrives in the order it was
+                // written. Receipts are dropped: they answer messages the new
+                // setup never sent.
+                dao.moveOutbox(old, new)
+                val waiting = dao.outboxFor(new).filter { it.messageId != null }
+                dao.deleteOutboxFor(new)
+                for (message in dao.undelivered(new, now() - RESEND_WINDOW_MILLIS)) {
+                    val payload = when (message.kind) {
+                        MessageKind.TEXT -> Payload.Text(message.id, message.at, message.text)
+                        else -> Attachment.fromLocal(message.text)?.takeIf { it.key.isNotEmpty() }
+                            ?.let { Payload.File(message.id, message.at, it) }
+                    } ?: continue
+                    dao.setStatus(message.seq, MessageStatus.PENDING)
+                    dao.insertOutbox(OutboxEntity(peer = new, messageId = message.id, payload = Payload.encode(payload)))
+                }
+                for (item in waiting) dao.insertOutbox(OutboxEntity(peer = new, messageId = item.messageId, payload = item.payload))
+                dao.insertMessage(
+                    MessageEntity(
+                        peer = new,
+                        id = "notice-${UUID.randomUUID()}",
+                        outgoing = false,
+                        kind = MessageKind.NOTICE,
+                        text = "${contact.name} set up Maun again. Messages now go to the new setup, " +
+                            "and the safety number has changed.",
+                        at = now(),
+                        // Nothing is owed for it, and it does not count as unread.
+                        receipt = ReceiptLevel.READ,
+                    ),
+                )
+                signal.endSession(old)
+                true
+            }
+        }
+        if (!moved) return
+        _waiting.value -= old
+        _moved.tryEmit(old to new)
+        kick()
     }
 
     /** The phone's wake-up address has changed. Tells the relay if there is a connection. */
@@ -460,6 +617,9 @@ class ChatEngine(
 
         /** The connection is gone or not answering; stop until it is back. */
         data object Stop : Outcome
+
+        /** This person has a new ID now and what was for them has been readdressed; go over the outbox again. */
+        data object Moved : Outcome
     }
 
     private suspend fun drainOutbox() {
@@ -473,6 +633,11 @@ class ChatEngine(
             if (item.peer in held) continue
             when (val outcome = deliver(link, item)) {
                 Outcome.Done -> Unit
+                // Their items now carry the new ID; this pass ends and another begins.
+                Outcome.Moved -> {
+                    kick()
+                    return
+                }
                 is Outcome.Hold -> held[item.peer] = outcome.reason
                 Outcome.Stop -> {
                     if (link.ready != null) retryLater()
@@ -496,7 +661,7 @@ class ChatEngine(
                 }
                 val keys = when (answer.optString("t")) {
                     "keys" -> parseKeys(answer) ?: return Outcome.Hold(BAD_KEYS)
-                    "failed" -> return Outcome.Hold(describe(answer.optString("code")))
+                    "failed" -> return refused(peer, answer.optString("code"))
                     else -> return Outcome.Stop
                 }
                 try {
@@ -533,10 +698,14 @@ class ChatEngine(
                 }
                 Outcome.Done
             }
-            "failed" -> Outcome.Hold(describe(answer.optString("code")))
+            "failed" -> refused(peer, answer.optString("code"))
             else -> Outcome.Stop
         }
     }
+
+    /** The relay would not take something for [peer]. If their ID is gone, tries to find where they went. */
+    private suspend fun refused(peer: String, code: String): Outcome =
+        if (code == "gone" && follow(peer)) Outcome.Moved else Outcome.Hold(describe(code))
 
     @Synchronized
     private fun retryLater() {
@@ -549,6 +718,7 @@ class ChatEngine(
 
     private fun describe(code: String): String = when (code) {
         "no_account" -> "This ID is not registered on the relay."
+        "gone" -> "They are no longer on this relay under this ID. If they set Maun up again, add them again."
         "no_keys" -> "They need to open a newer version of Maun once before messages can reach them."
         "mailbox_full" -> "Their mailbox is full until they come online."
         "rate_limited" -> "Sending too fast. Maun will carry on in a moment."
@@ -658,6 +828,11 @@ class ChatEngine(
     private fun decode(text: String): ByteArray = Base64.getDecoder().decode(text)
 
     companion object {
+        /** Contacts whose username is asked for at one login. */
+        private const val USERNAMES_PER_LOGIN = 20
+
+        /** How far back undelivered messages are sent again to someone who set Maun up again. */
+        private const val RESEND_WINDOW_MILLIS = 30L * 24 * 60 * 60 * 1000
         /** PUSH_UNFINISHED in backend/src/protocol.ts. */
         private const val WAKE_UP_UNFINISHED = -1
 

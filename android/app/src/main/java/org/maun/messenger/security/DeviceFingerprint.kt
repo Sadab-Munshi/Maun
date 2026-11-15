@@ -8,6 +8,8 @@ import android.os.Build
 import android.provider.Settings
 import android.view.WindowManager
 import java.security.MessageDigest
+import org.json.JSONObject
+import org.maun.messenger.BuildConfig
 
 /**
  * A fingerprint of this phone, for a member-only relay.
@@ -26,12 +28,29 @@ import java.security.MessageDigest
  * Nothing is collected or sent on a relay that is open to everyone.
  */
 object DeviceFingerprint {
-    data class Report(val hash: String, val maker: String, val model: String, val os: String)
+    /**
+     * [hash] covers everything and changes with a system update. [deviceId]
+     * covers only what stays: Android's ID for this app on this phone, and the
+     * make and model. It survives deleting the app's data and reinstalling,
+     * and is what a ban on a phone goes by.
+     */
+    data class Report(val hash: String, val deviceId: String, val maker: String, val model: String, val os: String, val app: String) {
+        /** The form the relay reads. */
+        fun toJson(): JSONObject = JSONObject()
+            .put("hash", hash)
+            .put("did", deviceId)
+            .put("maker", maker)
+            .put("model", model)
+            .put("os", os)
+            .put("app", app)
+    }
 
     fun collect(context: Context): Report {
         val app = context.applicationContext
         return Report(
             hash = hash(parts(app)),
+            deviceId = hash(listOf(androidId(app), Build.MANUFACTURER.orEmpty(), Build.MODEL.orEmpty()), label = "maun:device-id:v1\n"),
+            app = BuildConfig.VERSION_NAME.take(MAX_FIELD),
             maker = Build.MANUFACTURER.orEmpty().take(MAX_FIELD),
             model = Build.MODEL.orEmpty().take(MAX_FIELD),
             os = Build.VERSION.RELEASE.orEmpty().take(MAX_FIELD),
@@ -76,9 +95,9 @@ object DeviceFingerprint {
         Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID).orEmpty()
 
     /** SHA-256 over the parts, each preceded by its length so that no two lists read the same. */
-    internal fun hash(parts: List<String>): String {
+    internal fun hash(parts: List<String>, label: String = "maun:device:v1\n"): String {
         val digest = MessageDigest.getInstance("SHA-256")
-        digest.update("maun:device:v1\n".toByteArray(Charsets.UTF_8))
+        digest.update(label.toByteArray(Charsets.UTF_8))
         for (part in parts) {
             val bytes = part.toByteArray(Charsets.UTF_8)
             digest.update("${bytes.size}:".toByteArray(Charsets.UTF_8))

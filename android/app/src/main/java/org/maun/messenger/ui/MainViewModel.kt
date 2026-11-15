@@ -284,8 +284,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun checkCode(text: String, typed: Boolean): CodeCheck = messenger.checkCode(text, typed)
 
-    fun saveContact(id: String, name: String, verified: Boolean) {
-        viewModelScope.launch { messenger.saveContact(id, name, verified) }
+    /** A contact's ID changed (old to new): a screen showing the old one should show the new one. */
+    val moved = messenger.moved
+
+    fun saveContact(id: String, name: String, verified: Boolean, username: String? = null) {
+        viewModelScope.launch { messenger.saveContact(id, name, verified, username) }
     }
 
     fun removeContact(id: String) {

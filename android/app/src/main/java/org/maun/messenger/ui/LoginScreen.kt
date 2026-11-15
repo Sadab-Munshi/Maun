@@ -161,7 +161,8 @@ private fun EmailStep(relayName: String, ui: LoginUi, busy: Boolean, onEmail: (S
         Text(
             text = "You log in once on this phone. After that the phone proves itself with a key that " +
                 "cannot leave it.\n\nThe relay's administrator will see this address, your username, your " +
-                "Maun ID, and which phone you use: its make, model and a fingerprint of it. Your messages " +
+                "Maun ID, and which phone you use: its make, model, a fingerprint of it, and the app's " +
+                "version. Your messages " +
                 "stay unreadable to the relay and its administrator.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

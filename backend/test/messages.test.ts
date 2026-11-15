@@ -134,7 +134,7 @@ describe("store and forward", () => {
     const bob = await registered();
     const total = DELIVERY_WINDOW + 10;
     for (let i = 0; i < total; i++) {
-      expect(await mailbox(bob.id).store(alice.id, 2, new Uint8Array([i]))).toBe("stored");
+      expect(await mailbox(bob.id).store(alice.id, 2, new Uint8Array([i]), "00".repeat(32))).toBe("stored");
     }
 
     const b = await online(bob);
@@ -194,7 +194,7 @@ describe("store and forward", () => {
   it("ignores an acknowledgement for something this connection was never sent", async () => {
     const alice = await registered();
     const bob = await registered();
-    await mailbox(bob.id).store(alice.id, 2, randomBytes(8));
+    await mailbox(bob.id).store(alice.id, 2, randomBytes(8), "00".repeat(32));
     const b = await online(bob);
     const delivered = await b.nextJson();
 
@@ -283,14 +283,14 @@ describe("refusals", () => {
     const carol = await makeUser();
     const box = mailbox(bob.id);
     const tiny = new Uint8Array([1]);
-    for (let i = 0; i < QUEUE_CAP_PER_SENDER; i++) expect(await box.store(alice.id, 2, tiny)).toBe("stored");
-    expect(await box.store(alice.id, 2, tiny)).toBe("mailbox_full");
+    for (let i = 0; i < QUEUE_CAP_PER_SENDER; i++) expect(await box.store(alice.id, 2, tiny, "00".repeat(32))).toBe("stored");
+    expect(await box.store(alice.id, 2, tiny, "00".repeat(32))).toBe("mailbox_full");
     // Someone else can still get through.
-    expect(await box.store(carol.id, 2, tiny)).toBe("stored");
+    expect(await box.store(carol.id, 2, tiny, "00".repeat(32))).toBe("stored");
 
     // The limit survives the mailbox being evicted, and eases as messages are collected.
     await evictDurableObject(box);
-    expect(await box.store(alice.id, 2, tiny)).toBe("mailbox_full");
+    expect(await box.store(alice.id, 2, tiny, "00".repeat(32))).toBe("mailbox_full");
     const b = await online(bob);
     const first = await b.nextJson();
     expect(first.from).toBe(alice.id);
@@ -298,7 +298,7 @@ describe("refusals", () => {
     // More of the backlog follows; wait for the echo that comes after the ack.
     b.sendJson({ t: "echo", id: "after-ack", body: "" });
     while ((await b.nextJson()).t !== "echo");
-    expect(await box.store(alice.id, 2, tiny)).toBe("stored");
+    expect(await box.store(alice.id, 2, tiny, "00".repeat(32))).toBe("stored");
     await hangUp(b);
   });
 
@@ -311,12 +311,12 @@ describe("refusals", () => {
     let stored = 0;
     for (const sender of senders) {
       for (let i = 0; i < 250 && stored < QUEUE_CAP; i++) {
-        expect(await box.store(sender.id, 2, tiny)).toBe("stored");
+        expect(await box.store(sender.id, 2, tiny, "00".repeat(32))).toBe("stored");
         stored += 1;
       }
     }
     const late = await makeUser();
-    expect(await box.store(late.id, 2, tiny)).toBe("mailbox_full");
+    expect(await box.store(late.id, 2, tiny, "00".repeat(32))).toBe("mailbox_full");
     expect(await queued(bob.id)).toHaveLength(QUEUE_CAP);
   });
 
@@ -344,8 +344,8 @@ describe("expiry", () => {
     const alice = await registered();
     const bob = await registered();
     const box = mailbox(bob.id);
-    await box.store(alice.id, 2, new Uint8Array([1]));
-    await box.store(alice.id, 2, new Uint8Array([2]));
+    await box.store(alice.id, 2, new Uint8Array([1]), "00".repeat(32));
+    await box.store(alice.id, 2, new Uint8Array([2]), "00".repeat(32));
     const [old, recent] = await queued(bob.id);
 
     // Make the first message look a little over the limit old.
@@ -360,7 +360,7 @@ describe("expiry", () => {
     expect(next).toBeGreaterThan(Date.now() + QUEUE_TTL_MS - 60_000);
 
     // The per-sender count was corrected too.
-    expect(await box.store(alice.id, 2, new Uint8Array([3]))).toBe("stored");
+    expect(await box.store(alice.id, 2, new Uint8Array([3]), "00".repeat(32))).toBe("stored");
     expect(await queued(bob.id)).toHaveLength(2);
   });
 

@@ -7,7 +7,12 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: "./wrangler.toml" },
       miniflare: {
-        bindings: { ADMIN_EMAIL: "Boss@Example.com", RESEND_API_KEY: "re_test_key", MAIL_FROM: "Maun <login@maun.test>" },
+        bindings: {
+          ADMIN_EMAIL: "Boss@Example.com",
+          ADMIN_PASSWORD: "correct horse battery",
+          RESEND_API_KEY: "re_test_key",
+          MAIL_FROM: "Maun <login@maun.test>",
+        },
       },
     }),
   ],

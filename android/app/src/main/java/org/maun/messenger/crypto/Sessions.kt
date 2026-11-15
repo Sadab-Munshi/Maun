@@ -153,6 +153,9 @@ class SignalSessions(identity: Identity, private val registrationId: Int, privat
         }
     }
 
+    /** Forgets the session with [peer]. The next message to them starts a new one. */
+    fun endSession(peer: String) = storage.deleteSession(peer)
+
     private fun address(peer: String) = SignalProtocolAddress(peer, DEVICE_ID)
 
     companion object {

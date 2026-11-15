@@ -208,7 +208,9 @@ fun ChatScreen(
                         items(items, key = { it.key }, contentType = { it is DayItem }) { item ->
                             when (item) {
                                 is DayItem -> Pill(dayLabel(item.day, today))
-                                is MessageItem -> MessageRow(
+                                is MessageItem -> if (item.message.kind == MessageKind.NOTICE) {
+                                    Pill(item.message.text)
+                                } else MessageRow(
                                     item = item,
                                     online = relay == RelayState.Online,
                                     stuck = waiting != null,

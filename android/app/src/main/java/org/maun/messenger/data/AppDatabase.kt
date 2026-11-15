@@ -72,6 +72,12 @@ data class ContactEntity(
     /** True when the ID was read from their screen with the camera. */
     val verified: Boolean,
     @ColumnInfo(name = "added_at") val addedAt: Long,
+    /**
+     * Their username on a relay that has usernames. It is what stays the same
+     * when they set Maun up again and get a new ID, so it is how they are
+     * found again. Null where it is not known.
+     */
+    val username: String? = null,
 )
 
 @Dao
@@ -105,12 +111,12 @@ interface ContactDao {
         PreKeyEntity::class,
         KyberUseEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
     // Version 3 only adds tables (messages and encryption sessions). Room
     // writes this migration itself from the two committed schema files, so it
     // cannot disagree with them.
-    autoMigrations = [AutoMigration(from = 2, to = 3)],
+    autoMigrations = [AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4)],
 )
 abstract class AppDatabase : RoomDatabase(), Transactor {
 
