@@ -183,6 +183,7 @@ export async function register(identity: Identity, device: Device): Promise<Inbo
     vapid: expect.any(String),
     queued: 0,
     email: null,
+    name: null,
     files: expect.any(String),
   });
   return inbox;

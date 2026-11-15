@@ -1,4 +1,5 @@
-import { accessConfig, looksLikeAccessToken } from "./crypto/access";
+import { handleAuth } from "./auth";
+import { memberConfig, sweepMembers } from "./members";
 import { type FileAnswer, type Mailbox, tooManyRequests } from "./mailbox";
 import { FILE_TTL_MS, MAX_FILE_BYTES, PROTOCOL_VERSION, isFileKey, isMailboxId } from "./protocol";
 
@@ -18,7 +19,7 @@ export default {
         ok: true,
         service: "maun-relay",
         proto: PROTOCOL_VERSION,
-        access: accessConfig(env) !== null,
+        access: memberConfig(env) !== null,
         files: true,
       });
     }
@@ -43,7 +44,9 @@ export default {
       return stub.fetch(request);
     }
 
-    if (request.method === "GET" && url.pathname === "/v1/access/login") return accessPage(request, env);
+    // The email login and the administrator's page of a member-only relay.
+    const auth = await handleAuth(request, env, url);
+    if (auth) return auth;
 
     if (request.method === "POST" && url.pathname === "/v1/files") return upload(request, env);
     const file = /^\/v1\/files\/([^/]+)$/.exec(url.pathname);
@@ -55,42 +58,9 @@ export default {
   /** Hourly: deletes every file older than a day. */
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     await deleteOldFiles(env, Date.now());
+    if (memberConfig(env)) await sweepMembers(env, Date.now());
   },
 } satisfies ExportedHandler<Env>;
-
-// ---- Email login ---------------------------------------------------------------
-
-/**
- * The page the app opens to log someone in. Cloudflare Access stands in front
- * of this path: it shows its email login and lets the request through only
- * with a token, which this page hands to the app. The token is checked later,
- * by the mailbox that is asked to accept it.
- */
-function accessPage(request: Request, env: Env): Response {
-  if (!accessConfig(env)) return new Response("not found", { status: 404 });
-  const token = request.headers.get("Cf-Access-Jwt-Assertion");
-  const headers = {
-    "Content-Type": "text/html; charset=utf-8",
-    "Cache-Control": "no-store",
-    "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff",
-  };
-  if (!looksLikeAccessToken(token)) {
-    // Reached without passing through Access: it is not set up for this path.
-    const body = page("Email login is not set up", "Cloudflare Access is not protecting this address yet.", "");
-    return new Response(body, { status: 503, headers });
-  }
-  return new Response(page("You are logged in", "Return to Maun.", token), { headers });
-}
-
-function page(title: string, text: string, token: string): string {
-  // The token is letters, digits, dots, dashes and underscores only.
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>Maun</title>
-<style>body{font-family:system-ui,sans-serif;margin:3rem 1.5rem;text-align:center;color:#17211d;background:#f7f4ee}
-@media (prefers-color-scheme: dark){body{color:#e4ebe7;background:#0e1513}}</style></head>
-<body data-maun-access="${token}"><h1>${title}</h1><p>${text}</p></body></html>`;
-}
 
 // ---- Files ---------------------------------------------------------------------
 //

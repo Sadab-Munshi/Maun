@@ -19,10 +19,12 @@
 // Every request carries an `id` that comes back in its answer.
 //
 // A relay can be member-only. `hello` then says `access: true`, and an ID the
-// relay has not seen before must bring a Cloudflare Access token (`access` in
-// `register` or `login`): proof of an email address the relay's owner
-// approved. The address is tied to the ID once; after that the ID's own
-// signature is enough. A banned member is closed with CLOSE_BANNED.
+// relay has not seen before must bring a ticket (`access` in `register` or
+// `login`): proof, from the relay's own email login, of an email address. The
+// address is tied to the ID once; after that the ID's own signature is
+// enough. A new member is closed with CLOSE_PENDING until the administrator
+// approves them, a banned one with CLOSE_BANNED. Members have usernames and
+// can look each other up with `find`.
 //
 // Files do not travel in frames. `ready` hands out a `files` token; with it
 // the phone may POST an encrypted file to /v1/files and GET /v1/files/<key>.
@@ -111,6 +113,13 @@ export function isFileKey(value: string): boolean {
   return FILE_KEY.test(value);
 }
 
+/** A username: 3 to 20 lower-case letters, digits or underscores, starting with a letter. */
+const USERNAME = /^[a-z][a-z0-9_]{2,19}$/;
+const RESERVED_NAMES = new Set(["admin", "administrator", "maun", "support", "system", "relay", "moderator"]);
+export function isUsername(value: string): boolean {
+  return USERNAME.test(value) && !RESERVED_NAMES.has(value);
+}
+
 /** How long a member's standing is trusted before the member list is asked again. */
 export const MEMBER_CHECK_MS = 60 * 1000;
 
@@ -122,6 +131,8 @@ export const CLOSE_AUTH_FAILED = 4003;
 export const CLOSE_AUTH_TIMEOUT = 4008;
 /** Close code on a member-only relay for an ID that has not been through the email login. */
 export const CLOSE_ACCESS_REQUIRED = 4401;
+/** Close code for a member who is waiting for the administrator's approval. */
+export const CLOSE_PENDING = 4402;
 /** Close code for a member the relay's owner has banned. */
 export const CLOSE_BANNED = 4403;
 
@@ -143,7 +154,7 @@ export type OneTimeKey = { id: number; key: Uint8Array };
 export type KeyBundle = { regId: number; spk: SignedKey; kpk: SignedKey; otk: OneTimeKey | null };
 
 export type ClientFrame =
-  /** `access`: a Cloudflare Access token, for a member-only relay that does not know this ID yet. */
+  /** `access`: a ticket from the email login, for a member-only relay that does not know this ID yet. */
   | { t: "register"; deviceKey: Uint8Array; identitySig: Uint8Array; deviceSig: Uint8Array; access: string | null }
   | { t: "login"; sig: Uint8Array; access: string | null }
   | { t: "echo"; id: string; body: string }
@@ -155,6 +166,8 @@ export type ClientFrame =
   /** `key` and `auth` are the Web Push keys the phone's push app handed out. */
   | { t: "put_push"; id: string; url: string; key: Uint8Array; auth: Uint8Array }
   | { t: "drop_push"; id: string }
+  /** Looks a member up, by username (`name`) or by ID (`user`). Member-only relays. */
+  | { t: "find"; id: string; name: string | null; user: string | null }
   /** `hash`: SHA-256 of what the phone says about itself, in hex. */
   | { t: "device"; id: string; hash: string; maker: string; model: string; os: string };
 
@@ -171,7 +184,7 @@ export type ServerFrame =
    * PUSH_UNFINISHED when the attempt never finished, null when none was sent.
    * `vapid`: the public key this mailbox signs its wake-ups with. The phone
    * passes it to its push app, for push services that ask who will be calling.
-   * `email`: on a member-only relay, the address this ID is tied to.
+   * `email` and `name`: on a member-only relay, the address this ID is tied to and its username.
    * `files`: the token for uploading and downloading files until the next login.
    */
   | {
@@ -184,6 +197,7 @@ export type ServerFrame =
       vapid: string;
       queued: number;
       email: string | null;
+      name: string | null;
       files: string;
     }
   | { t: "echo"; id: string; body: string; at: number }
@@ -197,6 +211,7 @@ export type ServerFrame =
       otk: { id: number; key: string } | null;
     }
   | { t: "stored"; id: string }
+  | { t: "found"; id: string; user: string; name: string }
   | { t: "failed"; id: string; code: FailureCode }
   | { t: "msg"; seq: number; from: string; kind: number; body: string; at: number }
   | { t: "error"; code: ErrorCode };
@@ -209,6 +224,8 @@ export type FailureCode =
   | "rate_limited"
   | "self"
   | "unavailable"
+  /** Nobody has that username, or the relay keeps no usernames. */
+  | "no_such_user"
   /** The wake-up address or its keys are not ones the relay will use. */
   | "bad_push";
 
@@ -221,8 +238,10 @@ export type ErrorCode =
   | "bad_signature"
   | "already_registered"
   | "not_registered"
-  /** Member-only relay: go through the email login and come back with the token. */
+  /** Member-only relay: go through the email login and come back with the ticket. */
   | "access_required"
+  /** Member-only relay: the administrator has not approved this member yet. */
+  | "pending"
   | "banned";
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -333,6 +352,13 @@ export function parseClientFrame(raw: string | ArrayBuffer): ClientFrame | Error
     case "drop_push":
       if (!isRequestId(frame.id)) return "bad_frame";
       return { t: "drop_push", id: frame.id };
+    case "find": {
+      if (!isRequestId(frame.id)) return "bad_frame";
+      const name = typeof frame.name === "string" ? frame.name.trim().toLowerCase().replace(/^@/, "") : null;
+      const user = typeof frame.user === "string" ? frame.user : null;
+      if (name !== null ? !isUsername(name) || user !== null : user === null || !isMailboxId(user)) return "bad_frame";
+      return { t: "find", id: frame.id, name, user };
+    }
     case "device": {
       if (!isRequestId(frame.id) || typeof frame.hash !== "string" || !/^[0-9a-f]{64}$/.test(frame.hash)) return "bad_frame";
       const maker = shortText(frame.maker);

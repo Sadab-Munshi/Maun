@@ -9,12 +9,13 @@ workers_dev = true
 # survive a deploy from this file.
 keep_vars = true
 
-# Member-only mode is switched on by two such settings:
-#   ACCESS_TEAM  your Zero Trust team, for example "myteam" or
-#                "myteam.cloudflareaccess.com"
-#   ACCESS_AUD   the "Application Audience (AUD) Tag" of the Access
-#                application that protects <this relay>/v1/access/*
-# Without them the relay is open, as before: anyone may make an ID.
+# Member-only mode is switched on by such settings:
+#   ADMIN_EMAIL     the administrator's email address
+#   RESEND_API_KEY  (as a Secret) the key of the mail service that sends the
+#                   login codes; or BREVO_API_KEY to use Brevo instead
+#   MAIL_FROM       the sender, for example "Maun <login@your-domain.com>"
+# Without the first two the relay is open, as before: anyone may make an ID.
+# The administrator's page is at <this relay>/admin.
 
 # Zero tracking: do not ship request logs to Workers Logs.
 [observability]

@@ -1,5 +1,4 @@
 import { DurableObject } from "cloudflare:workers";
-import { accessConfig, verifyAccessToken } from "./crypto/access";
 import { verifyDeviceSignature, verifyIdentitySignature } from "./crypto/signatures";
 import {
   PUSH_AUTH_BYTES,
@@ -10,12 +9,13 @@ import {
   isPushUrl,
   vapidAuthorization,
 } from "./crypto/webpush";
-import { bind, memberOf, recordDevice } from "./members";
+import { admit, findMember, memberConfig, memberOf, notifyAdmin, recordDevice } from "./members";
 import {
   CLOSE_ACCESS_REQUIRED,
   CLOSE_AUTH_FAILED,
   CLOSE_AUTH_TIMEOUT,
   CLOSE_BANNED,
+  CLOSE_PENDING,
   CLOSE_REPLACED,
   DELIVERY_WINDOW,
   FILE_DAILY_BYTES,
@@ -116,6 +116,8 @@ export class Mailbox extends DurableObject<Env> {
   private expiryArmed = false;
   /** Member-only relays: when the member list was last asked about this mailbox's owner. */
   private memberCheckedAt = 0;
+  /** The address this relay was last reached at, for links in emails. */
+  private origin = "";
 
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
@@ -124,6 +126,7 @@ export class Mailbox extends DurableObject<Env> {
     const mailboxId = new URL(request.url).pathname.split("/").pop() ?? "";
     if (!isMailboxId(mailboxId)) return new Response("bad mailbox id", { status: 400 });
 
+    this.origin = new URL(request.url).origin;
     const registered = this.account() !== null;
     if (!registered) {
       // A connection to an address with no account may become a new account.
@@ -140,7 +143,7 @@ export class Mailbox extends DurableObject<Env> {
     const nonce = toBase64(crypto.getRandomValues(new Uint8Array(NONCE_BYTES)));
     this.ctx.acceptWebSocket(server);
     setState(server, { s: "pending", m: mailboxId, n: nonce, at: Date.now() });
-    send(server, { t: "hello", proto: PROTOCOL_VERSION, nonce, registered, access: accessConfig(this.env) !== null });
+    send(server, { t: "hello", proto: PROTOCOL_VERSION, nonce, registered, access: memberConfig(this.env) !== null });
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -175,10 +178,12 @@ export class Mailbox extends DurableObject<Env> {
       // written: only somebody who holds this ID's keys can tie an email
       // address to it, and a stranger leaves no account behind.
       let email: string | null = null;
+      let name: string | null = null;
       const admit = async (): Promise<ErrorCode | null> => {
         const answer = await this.admit(state.m, frame.access);
         if (answer.refused) return answer.refused;
         email = answer.email;
+        name = answer.name;
         return null;
       };
       const failure = fresh
@@ -207,6 +212,7 @@ export class Mailbox extends DurableObject<Env> {
         vapid: toBase64(vapid.publicKey),
         queued: this.size().total,
         email,
+        name,
         files: this.newFileToken(),
       });
       // Everything that arrived while the phone was away.
@@ -348,9 +354,24 @@ export class Mailbox extends DurableObject<Env> {
         return;
       }
 
+      case "find": {
+        // Only a member-only relay has usernames, and only its members reach this line.
+        let found: { user: string; name: string } | null = null;
+        if (memberConfig(this.env) && (await this.env.SEND_LIMIT.limit({ key: state.m })).success) {
+          try {
+            found = await findMember(this.env, frame.name !== null ? { name: frame.name } : { user: frame.user ?? "" });
+          } catch {
+            found = null;
+          }
+        }
+        if (found) send(ws, { t: "found", id: frame.id, user: found.user, name: found.name });
+        else send(ws, { t: "failed", id: frame.id, code: "no_such_user" });
+        return;
+      }
+
       case "device":
         // Kept only by a member-only relay, next to the member's name.
-        if (accessConfig(this.env)) {
+        if (memberConfig(this.env)) {
           try {
             await recordDevice(this.env, state.m, frame, Date.now());
           } catch {
@@ -374,36 +395,37 @@ export class Mailbox extends DurableObject<Env> {
 
   /**
    * Whether this ID may log in. An open relay admits everyone. A member-only
-   * relay admits an ID tied to an email address that is not banned, and ties
-   * a new ID to the address in the Access token it brings.
+   * relay admits approved members; a new ID has to bring a ticket from the
+   * email login, and then waits for the administrator.
    */
   private async admit(
     mailboxId: string,
-    token: string | null,
-  ): Promise<{ refused: ErrorCode; email?: undefined } | { refused: null; email: string | null }> {
-    const config = accessConfig(this.env);
-    if (!config) return { refused: null, email: null };
-    const now = Date.now();
-    const member = await memberOf(this.env, mailboxId);
-    if (member) {
-      if (member.banned) return { refused: "banned" };
-      this.memberCheckedAt = now;
-      return { refused: null, email: member.email };
+    ticket: string | null,
+  ): Promise<{ refused: ErrorCode } | { refused: null; email: string | null; name: string | null }> {
+    const config = memberConfig(this.env);
+    if (!config) return { refused: null, email: null, name: null };
+    const answer = await admit(this.env, config, mailboxId, ticket, Date.now());
+    switch (answer.is) {
+      case "member":
+        this.memberCheckedAt = Date.now();
+        return { refused: null, email: answer.email, name: answer.username };
+      case "pending":
+        if (answer.fresh) this.ctx.waitUntil(notifyAdmin(this.env, config, answer.email, answer.username, this.origin));
+        return { refused: "pending" };
+      case "banned":
+        return { refused: "banned" };
+      default:
+        return { refused: "access_required" };
     }
-    const email = token ? await verifyAccessToken(token, config, now) : null;
-    if (!email) return { refused: "access_required" };
-    if ((await bind(this.env, email, mailboxId, now)) === "banned") return { refused: "banned" };
-    this.memberCheckedAt = now;
-    return { refused: null, email };
   }
 
   /**
    * Asks the member list again when the last answer is old. Closes every
-   * connection and returns true when the owner is banned, or is no longer a
-   * member at all.
+   * connection and returns true when the owner is banned, or is no longer an
+   * approved member.
    */
   private async banned(mailboxId: string): Promise<boolean> {
-    if (!accessConfig(this.env)) return false;
+    if (!memberConfig(this.env)) return false;
     const now = Date.now();
     if (now - this.memberCheckedAt < MEMBER_CHECK_MS) return false;
     let member;
@@ -413,16 +435,21 @@ export class Mailbox extends DurableObject<Env> {
       // The list cannot be reached right now. Ask again at the next request.
       return false;
     }
-    if (member && !member.banned) {
+    if (member && member.approved && !member.banned) {
       this.memberCheckedAt = now;
       return false;
     }
-    const code = member ? "banned" : "access_required";
+    this.shutOut(member);
+    return true;
+  }
+
+  /** Closes every connection of an owner who may no longer be here, saying why. */
+  private shutOut(member: { banned: boolean } | null): void {
+    const code: ErrorCode = !member ? "access_required" : member.banned ? "banned" : "pending";
     for (const ws of this.ctx.getWebSockets()) {
       send(ws, { t: "error", code });
-      closeQuietly(ws, member ? CLOSE_BANNED : CLOSE_ACCESS_REQUIRED, code);
+      closeQuietly(ws, closeCodeFor(code), code);
     }
-    return true;
   }
 
   // ---- Files -----------------------------------------------------------------
@@ -451,14 +478,11 @@ export class Mailbox extends DurableObject<Env> {
     const row = sql.exec("SELECT token, day, bytes, count FROM files WHERE id = 1").toArray()[0];
     if (!row || !sameText(row.token as string, token)) return "denied";
 
-    const config = accessConfig(this.env);
-    if (config) {
+    if (memberConfig(this.env)) {
       const member = await memberOf(this.env, mailboxId);
-      if (!member || member.banned) {
-        for (const ws of this.ctx.getWebSockets()) {
-          closeQuietly(ws, member ? CLOSE_BANNED : CLOSE_ACCESS_REQUIRED, member ? "banned" : "access_required");
-        }
-        return member ? "banned" : "denied";
+      if (!member || member.banned || !member.approved) {
+        this.shutOut(member);
+        return member?.banned ? "banned" : "denied";
       }
     }
     if (size <= 0) return "ok";
@@ -934,8 +958,20 @@ function send(ws: WebSocket, frame: ServerFrame): boolean {
 
 function reject(ws: WebSocket, code: ErrorCode): void {
   send(ws, { t: "error", code });
-  const close = code === "banned" ? CLOSE_BANNED : code === "access_required" ? CLOSE_ACCESS_REQUIRED : CLOSE_AUTH_FAILED;
-  closeQuietly(ws, close, code);
+  closeQuietly(ws, closeCodeFor(code), code);
+}
+
+function closeCodeFor(code: ErrorCode): number {
+  switch (code) {
+    case "banned":
+      return CLOSE_BANNED;
+    case "pending":
+      return CLOSE_PENDING;
+    case "access_required":
+      return CLOSE_ACCESS_REQUIRED;
+    default:
+      return CLOSE_AUTH_FAILED;
+  }
 }
 
 /** Compares two short texts without stopping at the first difference. */

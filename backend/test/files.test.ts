@@ -170,10 +170,26 @@ describe("an open relay", () => {
   it("says so, and has no login page", async () => {
     const health = await SELF.fetch("https://relay.test/health");
     expect(await health.json()).toMatchObject({ ok: true, access: false, files: true });
-    const page = await SELF.fetch("https://relay.test/v1/access/login", { headers: { "Cf-Access-Jwt-Assertion": "a.b.c" } });
-    expect(page.status).toBe(404);
+    const start = await SELF.fetch("https://relay.test/v1/auth/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "someone@example.com" }),
+    });
+    expect(start.status).toBe(404);
+    // The admin page explains how to switch member-only mode on, and offers nothing else.
+    const page = await SELF.fetch("https://relay.test/admin");
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain("ADMIN_EMAIL");
+    expect(html).not.toContain("<script");
+    expect((await SELF.fetch("https://relay.test/v1/admin/members")).status).toBe(404);
     const alice = await registered();
-    const { inbox } = await connect(alice.id);
+    // There are no usernames to look up.
+    const { inbox, nonce } = await connect(alice.id);
+    inbox.sendJson(await loginFrame(alice.identity, alice.device, nonce));
+    expect(await inbox.nextJson()).toMatchObject({ t: "ready", email: null, name: null });
+    inbox.sendJson({ t: "find", id: "q1", name: "someone" });
+    expect(await inbox.nextJson()).toEqual({ t: "failed", id: "q1", code: "no_such_user" });
     await hangUp(inbox);
   });
 });
