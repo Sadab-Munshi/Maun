@@ -147,7 +147,7 @@ class ScreensTest {
         SettingsScreen(
             memberEmail = memberEmail,
             username = username,
-            version = "0.9.0",
+            version = "0.9.1",
             relayName = "maun.example.workers.dev",
             relay = RelayState.Online,
             delivery = DeliveryUi(pushApp = "Google's push service", google = true),

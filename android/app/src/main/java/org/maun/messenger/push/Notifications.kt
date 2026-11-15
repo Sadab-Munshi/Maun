@@ -40,6 +40,12 @@ class Notifications(context: Context) {
                     .setSound(null, null)
                     .setVibrationEnabled(false)
                     .build(),
+                // Quiet: a call that is going on has the screen already and needs no banner over it.
+                NotificationChannelCompat.Builder(CHANNEL_CALL_ONGOING, NotificationManagerCompat.IMPORTANCE_LOW)
+                    .setName("Call in progress")
+                    .setDescription("Shown while a call goes on, to get back to it or hang up.")
+                    .setShowBadge(false)
+                    .build(),
                 NotificationChannelCompat.Builder(CHANNEL_BACKGROUND, NotificationManagerCompat.IMPORTANCE_LOW)
                     .setName("Background connection")
                     .setDescription("Shown while Maun stays connected or is checking for messages.")
@@ -148,7 +154,7 @@ class Notifications(context: Context) {
 
     /** The notification Android requires while a call goes on. Says that there is one, not with whom. */
     fun inCall(hangUp: Intent): Notification =
-        NotificationCompat.Builder(context, CHANNEL_CALLS)
+        NotificationCompat.Builder(context, CHANNEL_CALL_ONGOING)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Maun call")
             .setContentText("Tap to return to the call.")
@@ -195,6 +201,7 @@ class Notifications(context: Context) {
         const val ID_CALL = 4
         const val ID_RINGING = 5
         private const val CHANNEL_CALLS = "calls"
+        private const val CHANNEL_CALL_ONGOING = "call_ongoing"
 
         private const val CHANNEL_MESSAGES = "messages"
         private const val CHANNEL_BACKGROUND = "background"

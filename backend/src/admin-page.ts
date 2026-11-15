@@ -57,6 +57,7 @@ const APP = `
 
 <section id="panel" class="hidden">
   <p id="summary" class="quiet"></p>
+  <p id="callsNote" class="quiet"></p>
   <div class="row">
     <div class="grow"><input id="search" type="search" placeholder="Search username, email, phone or ID"></div>
     <div class="grow"><input id="addEmail" type="email" placeholder="Approve an email address in advance"></div>
@@ -231,9 +232,30 @@ async function load() {
   devices = r.data.bannedDevices || [];
   $("summary").textContent = "Logged in as " + r.data.admin + " · " + members.length + " people · " + r.data.mailsToday + " of " + r.data.mailCap + " emails sent today";
   if (!members.some(groups.waiting) && tab === "waiting") tab = "members";
+  callsLine();
   show($("login"), false); show($("panel"), true); show($("logout"), true);
   draw();
   return true;
+}
+
+// Whether calls work, asked once: the answer does not change by itself.
+let callsAsked = false;
+async function callsLine() {
+  if (callsAsked) return;
+  callsAsked = true;
+  const r = await call("/v1/calls/check");
+  if (r.status !== 200) return;
+  const text = !r.data.configured
+    ? "Calls: not set up (no TURN key)."
+    : r.data.working
+      ? "Calls: working."
+      : r.data.status === 404
+        ? "Calls: not working. Cloudflare does not know the TURN key (HTTP 404). TURN_KEY_ID has to be the Turn Token ID of a key made under Realtime > TURN Server, not the ID of a Realtime app."
+        : r.data.status === 401 || r.data.status === 403
+          ? "Calls: not working. Cloudflare refused the TURN_API_TOKEN (HTTP " + r.data.status + ")."
+          : "Calls: not working (the call service answered " + r.data.status + ").";
+  $("callsNote").textContent = text;
+  $("callsNote").className = r.data.configured && !r.data.working ? "error" : "quiet";
 }
 
 const note = (text, bad) => { $("loginNote").className = bad ? "error" : "quiet"; $("loginNote").textContent = text; };

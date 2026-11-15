@@ -245,8 +245,10 @@ export type FailureCode =
   | "unavailable"
   /** Nobody has that username, or the relay keeps no usernames. */
   | "no_such_user"
-  /** This relay has no calls set up, or the call service refused. */
+  /** This relay has no calls set up. */
   | "no_calls"
+  /** Calls are set up, but the call service turned the relay's key away or could not be reached. */
+  | "calls_refused"
   /** The ID written to is no longer anybody's: its owner set Maun up again, or left. */
   | "gone"
   /** The wake-up address or its keys are not ones the relay will use. */

@@ -46,38 +46,16 @@ export default {
       return stub.fetch(request);
     }
 
-    // Temporary, for finding out why the call service refuses: asks it once and
-    // says what came back. Nothing secret is in the answer.
+    // Whether calls work: asks the call service for credentials once and says
+    // only whether it gave any. The admin page shows it. Nothing secret, and
+    // not the credentials, are in the answer.
     if (request.method === "GET" && url.pathname === "/v1/calls/check") {
       const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
       if (!(await env.SIGNUP_LIMIT.limit({ key: `calls:${ip}` })).success) return tooManyRequests();
       const config = turnConfig(env);
-      if (!config) return Response.json({ configured: false });
+      if (!config) return Response.json({ configured: false, working: false, status: null });
       const answer = await askTurn(config);
-      // Was something other than a TURN key pasted? The two usual mix-ups can be told apart.
-      const asApp = await fetch(`https://rtc.live.cloudflare.com/v1/apps/${encodeURIComponent(config.keyId)}/sessions/new`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${config.token}` },
-      })
-        .then(async (response) => {
-          await response.body?.cancel();
-          return response.status;
-        })
-        .catch(() => 0);
-      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(config.keyId)));
-      return Response.json({
-        asRealtimeApp: asApp,
-        keyIdMark: [...digest.slice(0, 2)].map((b) => b.toString(16).padStart(2, "0")).join(""),
-        keyIdIsHex: /^[0-9a-f]+$/.test(config.keyId),
-        tokenIsHex: /^[0-9a-f]+$/.test(config.token),
-        configured: true,
-        status: answer.status,
-        usable: answer.servers.length,
-        swapped: answer.swapped,
-        shape: answer.shape,
-        keyIdLength: config.keyId.length,
-        tokenLength: config.token.length,
-      });
+      return Response.json({ configured: true, working: answer.servers.length > 0, status: answer.status });
     }
 
     // The email login and the administrator's page of a member-only relay.

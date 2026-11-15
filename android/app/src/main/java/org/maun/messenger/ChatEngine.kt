@@ -263,7 +263,8 @@ class ChatEngine(
         if (answer.optString("t") != "ice") {
             throw RelayException(
                 when (answer.optString("code")) {
-                    "no_calls" -> "Calls are not set up on this relay, or its call service refused."
+                    "no_calls" -> "Calls are not set up on this relay."
+                    "calls_refused" -> "The relay's call service refused. The relay's owner has to check its TURN key."
                     "rate_limited" -> "Too many calls today. Try again tomorrow."
                     else -> "The relay could not set up a call just now."
                 },

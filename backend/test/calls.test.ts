@@ -88,14 +88,27 @@ describe("servers for a call", () => {
   it("are refused when the call service refuses, cannot be reached, or answers nonsense", async () => {
     const inbox = await online(await registered());
     service = () => new Response("no", { status: 401 });
-    expect(await ask(inbox, { t: "turn" })).toMatchObject({ t: "failed", code: "no_calls" });
+    expect(await ask(inbox, { t: "turn" })).toMatchObject({ t: "failed", code: "calls_refused" });
     service = () => {
       throw new Error("network down");
     };
-    expect(await ask(inbox, { t: "turn" })).toMatchObject({ t: "failed", code: "no_calls" });
+    expect(await ask(inbox, { t: "turn" })).toMatchObject({ t: "failed", code: "calls_refused" });
     service = () => Response.json({ iceServers: [{ urls: ["stun:stun.cloudflare.com:3478"] }] }, { status: 201 });
-    expect(await ask(inbox, { t: "turn" })).toMatchObject({ t: "failed", code: "no_calls" });
+    expect(await ask(inbox, { t: "turn" })).toMatchObject({ t: "failed", code: "calls_refused" });
     await hangUp(inbox);
+  });
+
+  it("can be checked without a login, and the check gives nothing away", async () => {
+    const check = async () => (await SELF.fetch("https://relay.test/v1/calls/check", { headers: { "CF-Connecting-IP": "203.0.113.9" } })).json();
+    expect(await check()).toEqual({ configured: true, working: true, status: 201 });
+    forgetTurnOrder();
+    // A key the service does not know, as when the ID of something else was pasted.
+    service = () => Response.json({ error: "cannot find specified key" }, { status: 404 });
+    const failing = await SELF.fetch("https://relay.test/v1/calls/check", { headers: { "CF-Connecting-IP": "203.0.113.9" } });
+    const text = await failing.text();
+    expect(JSON.parse(text)).toEqual({ configured: true, working: false, status: 404 });
+    expect(text).not.toContain("test-turn");
+    expect(text).not.toContain("secret-for-this-call");
   });
 
   it("are still found when the key and the token were put into each other's place", async () => {

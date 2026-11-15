@@ -381,7 +381,7 @@ export class Mailbox extends DurableObject<Env> {
         }
         sql.exec("INSERT OR REPLACE INTO turn_use (id, day, count) VALUES (1, ?, ?)", today, count + 1);
         const servers = await iceServers(config);
-        if (typeof servers === "number") send(ws, { t: "failed", id: frame.id, code: "no_calls" });
+        if (typeof servers === "number") send(ws, { t: "failed", id: frame.id, code: "calls_refused" });
         else send(ws, { t: "ice", id: frame.id, servers, ttl: TURN_TTL_SECONDS });
         return;
       }

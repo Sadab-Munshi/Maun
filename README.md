@@ -168,7 +168,12 @@ TURN service.
 To switch calls on, create a TURN key (Cloudflare dashboard > **Realtime** >
 **TURN Server** > **Create**) and add two Secrets to the Worker:
 `TURN_KEY_ID` (the "Turn Token ID") and `TURN_API_TOKEN` (the "API Token").
-`https://<relay>/health` then says `"calls":true`.
+
+The Realtime page also offers to create an **app** (for Cloudflare's SFU).
+That is something else: its App ID and secret look just like a TURN key's two
+values, and calls do not work with them. `https://<relay>/v1/calls/check`
+asks the call service once and answers `"working":true` when the key is
+right; the admin page shows the same in a line under its heading.
 
 Cloudflare gives 1,000 GB of TURN traffic a month free and charges beyond
 it, with no cap of its own. A voice call uses about 0.3 MB a minute. The

@@ -126,12 +126,14 @@ class CallManager(context: Context, private val signals: CallSignals) {
         val id = UUID.randomUUID().toString()
         callId = id
         _state.value = CallUi(peer = peer, incoming = false, phase = CallUi.Phase.Ringing)
-        CallService.start(appContext)
-        audio.begin()
-        audio.ringOutgoing()
         setup = scope.launch {
             try {
                 val pc = connect(peer, id)
+                // Only now is there a call to keep alive and to ring for: one
+                // that the relay cannot serve ends before anything is started.
+                CallService.start(appContext)
+                audio.begin()
+                audio.ringOutgoing()
                 val description = pc.createOffer()
                 pc.setLocal(description)
                 if (!signals.send(peer, Payload.Call(id, Payload.CALL_OFFER, sdp = description.description), urgent = true)) {
