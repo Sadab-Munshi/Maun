@@ -54,7 +54,22 @@ export default {
       const config = turnConfig(env);
       if (!config) return Response.json({ configured: false });
       const answer = await askTurn(config);
+      // Was something other than a TURN key pasted? The two usual mix-ups can be told apart.
+      const asApp = await fetch(`https://rtc.live.cloudflare.com/v1/apps/${encodeURIComponent(config.keyId)}/sessions/new`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${config.token}` },
+      })
+        .then(async (response) => {
+          await response.body?.cancel();
+          return response.status;
+        })
+        .catch(() => 0);
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(config.keyId)));
       return Response.json({
+        asRealtimeApp: asApp,
+        keyIdMark: [...digest.slice(0, 2)].map((b) => b.toString(16).padStart(2, "0")).join(""),
+        keyIdIsHex: /^[0-9a-f]+$/.test(config.keyId),
+        tokenIsHex: /^[0-9a-f]+$/.test(config.token),
         configured: true,
         status: answer.status,
         usable: answer.servers.length,
