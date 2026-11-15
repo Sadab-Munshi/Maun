@@ -17,19 +17,45 @@ private val Paper = Color(0xFFF7F4EE)
 private val Ink = Color(0xFF17201C)
 private val Night = Color(0xFF0F1513)
 
+// Every colour Material draws with is named here. Whatever is left out falls
+// back to Material's own purple, which shows up in menus and dialogs.
 private val LightColors = lightColorScheme(
     primary = Moss,
     onPrimary = Color.White,
     primaryContainer = Color(0xFFCFE9DD),
     onPrimaryContainer = Forest,
+    inversePrimary = Mint,
+    secondary = Color(0xFF4E6358),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFD8E8DF),
+    onSecondaryContainer = Color(0xFF0B1F17),
+    tertiary = Color(0xFF3C6472),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFC9E6F1),
+    onTertiaryContainer = Color(0xFF0A2A35),
     background = Paper,
     onBackground = Ink,
     surface = Paper,
     onSurface = Ink,
     surfaceVariant = Color(0xFFE9E4D9),
     onSurfaceVariant = Color(0xFF4A524D),
-    outline = Color(0xFF8A918C),
+    surfaceTint = Moss,
+    inverseSurface = Color(0xFF2D322F),
+    inverseOnSurface = Color(0xFFEEF1ED),
     error = Color(0xFFB3261E),
+    onError = Color.White,
+    errorContainer = Color(0xFFF9DEDC),
+    onErrorContainer = Color(0xFF410E0B),
+    outline = Color(0xFF8A918C),
+    outlineVariant = Color(0xFFD5CFC2),
+    scrim = Color.Black,
+    surfaceBright = Paper,
+    surfaceDim = Color(0xFFDDD8CC),
+    surfaceContainerLowest = Color.White,
+    surfaceContainerLow = Color(0xFFF2EEE6),
+    surfaceContainer = Color(0xFFEDE9DF),
+    surfaceContainerHigh = Color(0xFFE9E4D9),
+    surfaceContainerHighest = Color(0xFFE3DED2),
 )
 
 private val DarkColors = darkColorScheme(
@@ -37,31 +63,88 @@ private val DarkColors = darkColorScheme(
     onPrimary = Forest,
     primaryContainer = Color(0xFF24503F),
     onPrimaryContainer = Color(0xFFCFE9DD),
+    inversePrimary = Moss,
+    secondary = Color(0xFFB4CCBF),
+    onSecondary = Color(0xFF20352B),
+    secondaryContainer = Color(0xFF2E4238),
+    onSecondaryContainer = Color(0xFFD8E8DF),
+    tertiary = Color(0xFFA4CDDD),
+    onTertiary = Color(0xFF053542),
+    tertiaryContainer = Color(0xFF234C5A),
+    onTertiaryContainer = Color(0xFFC9E6F1),
     background = Night,
     onBackground = Color(0xFFE3E7E3),
     surface = Night,
     onSurface = Color(0xFFE3E7E3),
     surfaceVariant = Color(0xFF1E2925),
     onSurfaceVariant = Color(0xFFB4BDB7),
-    outline = Color(0xFF7C857F),
+    surfaceTint = Mint,
+    inverseSurface = Color(0xFFE3E7E3),
+    inverseOnSurface = Color(0xFF2D322F),
     error = Color(0xFFF2B8B5),
+    onError = Color(0xFF601410),
+    errorContainer = Color(0xFF8C1D18),
+    onErrorContainer = Color(0xFFF9DEDC),
+    outline = Color(0xFF7C857F),
+    outlineVariant = Color(0xFF34403B),
+    scrim = Color.Black,
+    surfaceBright = Color(0xFF333D39),
+    surfaceDim = Night,
+    surfaceContainerLowest = Color(0xFF0A0F0D),
+    surfaceContainerLow = Color(0xFF151C19),
+    surfaceContainer = Color(0xFF19211E),
+    surfaceContainerHigh = Color(0xFF1E2925),
+    surfaceContainerHighest = Color(0xFF29342F),
 )
 
-/** Colours Material does not name: check results. */
+/** Colours Material does not name: check results, and the ticks of a message that was read. */
 @Immutable
-data class StatusColors(val passed: Color, val warning: Color, val failed: Color)
+data class StatusColors(val passed: Color, val warning: Color, val failed: Color, val read: Color)
 
 val LocalStatusColors = staticCompositionLocalOf {
-    StatusColors(passed = Color.Unspecified, warning = Color.Unspecified, failed = Color.Unspecified)
+    StatusColors(
+        passed = Color.Unspecified,
+        warning = Color.Unspecified,
+        failed = Color.Unspecified,
+        read = Color.Unspecified,
+    )
 }
+
+/**
+ * Backgrounds for the circles that stand in for a picture of a person. All
+ * are dark enough for white letters, in the light theme and the dark one.
+ */
+private val AvatarColors = listOf(
+    Color(0xFF2F6B55),
+    Color(0xFF3C6472),
+    Color(0xFF7A5C2E),
+    Color(0xFF8A4B4B),
+    Color(0xFF5B5A8C),
+    Color(0xFF3F7A7A),
+    Color(0xFF8A5A7A),
+    Color(0xFF55703A),
+)
+
+/** The same person always gets the same colour: it is chosen by their ID. */
+fun avatarColor(id: String): Color = AvatarColors[avatarIndex(id, AvatarColors.size)]
 
 @Composable
 fun MaunTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     val status = if (dark) {
-        StatusColors(passed = Color(0xFF7FD6A8), warning = Color(0xFFE8C36A), failed = Color(0xFFF2B8B5))
+        StatusColors(
+            passed = Color(0xFF7FD6A8),
+            warning = Color(0xFFE8C36A),
+            failed = Color(0xFFF2B8B5),
+            read = Color(0xFF6CC3F5),
+        )
     } else {
-        StatusColors(passed = Color(0xFF1F7A4D), warning = Color(0xFF8A5A00), failed = Color(0xFFB3261E))
+        StatusColors(
+            passed = Color(0xFF1F7A4D),
+            warning = Color(0xFF8A5A00),
+            failed = Color(0xFFB3261E),
+            read = Color(0xFF1479C9),
+        )
     }
     CompositionLocalProvider(LocalStatusColors provides status) {
         MaterialTheme(colorScheme = if (dark) DarkColors else LightColors, content = content)

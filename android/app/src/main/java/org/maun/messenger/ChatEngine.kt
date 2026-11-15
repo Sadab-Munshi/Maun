@@ -252,6 +252,20 @@ class ChatEngine(
         if (replies) kick()
     }
 
+    /**
+     * Deletes one message from this phone. If it had not left yet, it never
+     * will; if it had, the other person keeps their copy.
+     */
+    suspend fun deleteMessage(seq: Long) {
+        withContext(io) {
+            tx.inTransaction {
+                val message = dao.message(seq) ?: return@inTransaction
+                if (message.outgoing) dao.deleteOutboxOf(message.peer, message.id)
+                dao.deleteMessage(seq)
+            }
+        }
+    }
+
     /** Deletes the conversation with [peer] from this phone and forgets them as a contact. */
     suspend fun forget(peer: String) {
         withContext(io) {

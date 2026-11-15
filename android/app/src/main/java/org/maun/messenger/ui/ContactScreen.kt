@@ -1,10 +1,21 @@
 package org.maun.messenger.ui
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -12,28 +23,115 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import org.maun.messenger.Messenger
 import org.maun.messenger.data.ContactEntity
 
+/**
+ * Everything about one contact. [safetyNumber] is the sixty digits both
+ * phones show for this pair of people, or null while it is being worked out.
+ */
 @Composable
-fun ContactScreen(contact: ContactEntity, onBack: () -> Unit, onRemove: () -> Unit, onBlock: () -> Unit) {
+fun ContactScreen(
+    contact: ContactEntity,
+    safetyNumber: String?,
+    onBack: () -> Unit,
+    onRename: (String) -> Unit,
+    onChecked: (Boolean) -> Unit,
+    onRemove: () -> Unit,
+    onBlock: () -> Unit,
+) {
     var confirming by rememberSaveable { mutableStateOf(false) }
     var confirmingBlock by rememberSaveable { mutableStateOf(false) }
+    var renaming by rememberSaveable { mutableStateOf(false) }
+    var newName by rememberSaveable { mutableStateOf("") }
 
-    ScreenFrame(title = contact.name, onBack = onBack) {
-        Text(
-            text = if (contact.verified) {
-                "Scanned from their screen. This ID came straight from their phone."
-            } else {
-                "Typed or pasted. To be sure this ID is really theirs, compare it with the one " +
-                    "on their My code screen, or remove them and scan their code instead."
-            },
-            style = MaterialTheme.typography.bodyLarge,
-            color = if (contact.verified) LocalStatusColors.current.passed else LocalStatusColors.current.warning,
-        )
+    ScreenFrame(title = "Contact", onBack = onBack) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Avatar(id = contact.id, name = contact.name, size = 88.dp)
+            Text(
+                text = contact.name,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+            )
+            TextButton(onClick = {
+                newName = contact.name
+                renaming = true
+            }) { Text("Change name") }
+        }
 
-        Text("Their ID", style = MaterialTheme.typography.titleMedium)
-        SelectionContainer { IdText(contact.id) }
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        MaunIcons.Shield,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = if (contact.verified) LocalStatusColors.current.passed else MaterialTheme.colorScheme.outline,
+                    )
+                    Text(
+                        text = if (contact.verified) "Checked" else "Not checked yet",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = if (contact.verified) LocalStatusColors.current.passed else LocalStatusColors.current.warning,
+                    )
+                }
+                Text(
+                    text = if (contact.verified) {
+                        "You scanned this ID from their screen, or compared the safety number with them. " +
+                            "You are writing to their phone and nobody else's."
+                    } else {
+                        "This ID was typed or pasted, so it could have been swapped on the way to you. " +
+                            "To be sure, compare the safety number below with the one on their phone: " +
+                            "meet, or read it out on a call. If every digit matches, it is them."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text("Safety number", style = MaterialTheme.typography.labelLarge)
+                if (safetyNumber == null) {
+                    Text("Working it out…", style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    SelectionContainer {
+                        Text(
+                            text = safetyNumber,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                }
+                Text(
+                    text = "They see the same number when they open your name in their Maun.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (contact.verified) {
+                    TextButton(onClick = { onChecked(false) }) { Text("Mark as not checked") }
+                } else {
+                    Button(onClick = { onChecked(true) }, enabled = safetyNumber != null) { Text("The numbers match") }
+                }
+            }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            SectionTitle("Their ID")
+            SelectionContainer { IdText(contact.id) }
+        }
 
         BodyText(
             "Messages with ${contact.name} are encrypted between your two phones. The relay " +
@@ -46,6 +144,35 @@ fun ContactScreen(contact: ContactEntity, onBack: () -> Unit, onRemove: () -> Un
         OutlinedButton(onClick = { confirmingBlock = true }, modifier = Modifier.fillMaxWidth()) {
             Text("Block")
         }
+    }
+
+    if (renaming) {
+        AlertDialog(
+            onDismissRequest = { renaming = false },
+            title = { Text("Change name") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("The name is stored on this phone only. They are not told.")
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it.take(Messenger.MAX_NAME_LENGTH) },
+                        label = { Text("Name") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        renaming = false
+                        onRename(newName.trim())
+                    },
+                    enabled = newName.isNotBlank(),
+                ) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { renaming = false }) { Text("Cancel") } },
+        )
     }
 
     if (confirmingBlock) {
@@ -76,6 +203,22 @@ fun ContactScreen(contact: ContactEntity, onBack: () -> Unit, onRemove: () -> Un
                 }) { Text("Remove") }
             },
             dismissButton = { TextButton(onClick = { confirming = false }) { Text("Keep") } },
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun ContactPreview() {
+    MaunTheme {
+        ContactScreen(
+            contact = ContactEntity("ab12".repeat(16), "Asha", verified = false, addedAt = 0),
+            safetyNumber = "12345 67890 12345 67890\n12345 67890 12345 67890\n12345 67890 12345 67890",
+            onBack = {},
+            onRename = {},
+            onChecked = {},
+            onRemove = {},
+            onBlock = {},
         )
     }
 }

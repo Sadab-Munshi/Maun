@@ -105,6 +105,15 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
         removed
     }
 
+    override fun message(seq: Long): MessageEntity? = lock.withLock { state.messages.firstOrNull { it.seq == seq } }
+
+    override fun deleteMessage(seq: Long): Int = lock.withLock {
+        val kept = state.messages.filter { it.seq != seq }
+        val removed = state.messages.size - kept.size
+        state = state.copy(messages = kept)
+        removed
+    }
+
     override fun observeChats(): Flow<List<ChatSummary>> = notInTests()
 
     override fun insertOutbox(item: OutboxEntity): Long = lock.withLock {
@@ -130,6 +139,9 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
     override fun deleteOutbox(seq: Long): Int = removeOutbox { it.seq == seq }
 
     override fun deleteOutboxFor(peer: String): Int = removeOutbox { it.peer == peer }
+
+    override fun deleteOutboxOf(peer: String, messageId: String): Int =
+        removeOutbox { it.peer == peer && it.messageId == messageId }
 
     override fun outboxSize(): Int = lock.withLock { state.outbox.size }
 

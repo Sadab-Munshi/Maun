@@ -257,6 +257,51 @@ class ChatEngineTest {
     }
 
     @Test
+    fun `a message deleted before it left never leaves, and the ones around it still arrive in order`() {
+        val bob = Phone().registeredAndOffline()
+        val alice = Phone().knows(bob)
+        bob.knows(alice)
+
+        listOf("one", "not this", "three").forEach { alice.send(bob, it) }
+        val unwanted = alice.chat(bob).single { it.text == "not this" }
+        runBlocking { alice.engine.deleteMessage(unwanted.seq) }
+        assertEquals(listOf("> one", "> three"), alice.texts(bob))
+        assertEquals(2, alice.db.outboxSize())
+
+        alice.online()
+        eventually("sent") { alice.chat(bob).all { it.status == MessageStatus.SENT } }
+        bob.online()
+        eventually("arrived") { bob.chat(alice).size == 2 }
+        pause()
+        assertEquals(listOf("< one", "< three"), bob.texts(alice))
+    }
+
+    @Test
+    fun `deleting a delivered message removes it here only, and later messages still get through`() {
+        val alice = Phone()
+        val bob = Phone()
+        alice.knows(bob)
+        bob.knows(alice)
+        alice.online()
+        bob.online()
+
+        alice.send(bob, "first")
+        eventually("delivered") { alice.statusOf(bob, "first") >= MessageStatus.DELIVERED }
+        runBlocking { alice.engine.deleteMessage(alice.chat(bob).single().seq) }
+        assertEquals(emptyList<String>(), alice.texts(bob))
+        assertEquals(listOf("< first"), bob.texts(alice))
+
+        // A late receipt for the deleted message changes nothing and breaks nothing.
+        bob.read(alice)
+        alice.send(bob, "second")
+        eventually("second read") {
+            bob.read(alice)
+            alice.chat(bob).singleOrNull()?.status == MessageStatus.READ
+        }
+        assertEquals(listOf("< first", "< second"), bob.texts(alice))
+    }
+
+    @Test
     fun `a stranger's message waits as a request and tells them nothing`() {
         val alice = Phone()
         val bob = Phone()

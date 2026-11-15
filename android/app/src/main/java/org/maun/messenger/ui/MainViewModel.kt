@@ -6,15 +6,19 @@ import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.maun.messenger.AppLock
 import org.maun.messenger.BuildConfig
 import org.maun.messenger.CodeCheck
 import org.maun.messenger.MaunApp
@@ -23,6 +27,9 @@ import org.maun.messenger.network.RelayException
 import org.maun.messenger.push.Background
 import org.maun.messenger.push.Notifications
 import org.maun.messenger.push.PushApps
+
+/** A conversation as its screen shows it: the newest messages first, and whether older ones are waiting to be loaded. */
+data class Conversation(val messages: List<MessageEntity> = emptyList(), val hasOlder: Boolean = false)
 
 /** What the welcome screen needs beyond the account and relay state. */
 data class OnboardingUiState(
@@ -48,6 +55,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** How messages arrive while Maun is closed. Call [refreshDelivery] to bring it up to date. */
     val delivery: StateFlow<DeliveryUi> = _delivery.asStateFlow()
+
+    private val _privacy = MutableStateFlow(PrivacyUi())
+
+    /** The app lock and screenshot switches. Call [refreshPrivacy] to bring it up to date. */
+    val privacy: StateFlow<PrivacyUi> = _privacy.asStateFlow()
 
     val home: StateFlow<HomeLists> = combine(messenger.contacts, messenger.chats, ::homeLists)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeLists())
@@ -120,6 +132,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshDelivery()
     }
 
+    /** Reads the two privacy switches and whether the phone has a screen lock. */
+    fun refreshPrivacy() {
+        val context = getApplication<Application>()
+        _privacy.value = PrivacyUi(
+            appLock = AppLock.enabled(context),
+            canLock = AppLock.available(context),
+            blockScreenshots = AppLock.blocksScreenshots(context),
+            lockBlocksScreenshots = AppLock.lockBlocksScreenshots,
+        )
+    }
+
     fun setStayConnected(on: Boolean) {
         Background.setStayConnected(getApplication(), on)
         refreshDelivery()
@@ -135,8 +158,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { messenger.removeContact(id) }
     }
 
-    /** The conversation with [peer], newest first. */
-    fun messages(peer: String): Flow<List<MessageEntity>> = messenger.messages(peer)
+    fun renameContact(id: String, name: String) {
+        viewModelScope.launch { messenger.renameContact(id, name) }
+    }
+
+    fun setContactChecked(id: String, checked: Boolean) {
+        viewModelScope.launch { messenger.setContactChecked(id, checked) }
+    }
+
+    /**
+     * The conversation with [peer]. [limit] is how many of the newest
+     * messages to load; each new value replaces the list with a longer one.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun conversation(peer: String, limit: Flow<Int>): Flow<Conversation> =
+        limit.flatMapLatest { count ->
+            messenger.messages(peer, count).map { Conversation(messages = it, hasOlder = it.size >= count) }
+        }
+
+    fun deleteMessage(seq: Long) {
+        viewModelScope.launch { messenger.deleteMessage(seq) }
+    }
 
     fun sendText(peer: String, text: String) {
         viewModelScope.launch {

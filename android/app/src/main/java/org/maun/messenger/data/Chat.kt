@@ -146,6 +146,12 @@ interface ChatDao {
     @Query("DELETE FROM messages WHERE peer = :peer")
     fun deleteMessages(peer: String): Int
 
+    @Query("SELECT * FROM messages WHERE seq = :seq")
+    fun message(seq: Long): MessageEntity?
+
+    @Query("DELETE FROM messages WHERE seq = :seq")
+    fun deleteMessage(seq: Long): Int
+
     @Query(
         """
         SELECT m.peer AS peer, m.seq AS seq, m.kind AS kind, m.text AS text, m.outgoing AS outgoing,
@@ -175,6 +181,10 @@ interface ChatDao {
 
     @Query("DELETE FROM outbox WHERE peer = :peer")
     fun deleteOutboxFor(peer: String): Int
+
+    /** Takes back a chat message that has not left yet. Receipts are not touched. */
+    @Query("DELETE FROM outbox WHERE peer = :peer AND message_id = :messageId")
+    fun deleteOutboxOf(peer: String, messageId: String): Int
 
     @Query("SELECT COUNT(*) FROM outbox")
     fun outboxSize(): Int

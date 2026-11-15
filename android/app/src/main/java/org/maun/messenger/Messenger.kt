@@ -453,14 +453,39 @@ class Messenger(context: Context) {
         engine?.onContactAdded(id)
     }
 
+    /** Changes what this phone calls a contact. Nobody else is told. */
+    suspend fun renameContact(id: String, name: String) {
+        val trimmed = name.trim().take(MAX_NAME_LENGTH)
+        if (trimmed.isEmpty()) return
+        withContext(Dispatchers.IO) {
+            val contacts = database?.contacts() ?: return@withContext
+            val current = contacts.get(id) ?: return@withContext
+            contacts.put(current.copy(name = trimmed))
+        }
+    }
+
+    /** Records whether the user has checked that this ID really belongs to the person. */
+    suspend fun setContactChecked(id: String, checked: Boolean) {
+        withContext(Dispatchers.IO) {
+            val contacts = database?.contacts() ?: return@withContext
+            val current = contacts.get(id) ?: return@withContext
+            contacts.put(current.copy(verified = checked))
+        }
+    }
+
     /** Removes a contact and deletes the conversation with them from this phone. */
     suspend fun removeContact(id: String) {
         engine?.forget(id)
     }
 
-    /** The conversation with [peer], newest message first, updated as it changes. */
-    fun messages(peer: String): Flow<List<MessageEntity>> =
-        database?.chat()?.observeMessages(peer, MESSAGE_WINDOW) ?: emptyFlow()
+    /** The newest [limit] messages with [peer], newest first, updated as they change. */
+    fun messages(peer: String, limit: Int): Flow<List<MessageEntity>> =
+        database?.chat()?.observeMessages(peer, limit) ?: emptyFlow()
+
+    /** Deletes one message from this phone only. */
+    suspend fun deleteMessage(seq: Long) {
+        engine?.deleteMessage(seq)
+    }
 
     /** Queues a message. It leaves as soon as there is a connection. */
     suspend fun sendText(peer: String, text: String) {
@@ -484,8 +509,8 @@ class Messenger(context: Context) {
     companion object {
         const val MAX_NAME_LENGTH = 60
 
-        /** How many of a conversation's newest messages the screen loads. */
-        const val MESSAGE_WINDOW = 500
+        /** How many messages a conversation loads at first, and each time the reader reaches the oldest. */
+        const val MESSAGE_PAGE = 100
 
         private const val KEY_REGISTRATION_ID = "signal_registration_id"
         private const val KEY_PUSH_WANTED = "push_wanted"
