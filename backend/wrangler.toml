@@ -1,0 +1,18 @@
+# Maun relay: Cloudflare Worker + Durable Object mailbox.
+name = "maun-relay"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+# Zero tracking: do not ship request logs to Workers Logs.
+[observability]
+enabled = false
+
+[[durable_objects.bindings]]
+name = "MAILBOX"
+class_name = "Mailbox"
+
+# SQLite-backed Durable Objects are the only kind available on the free plan.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Mailbox"]

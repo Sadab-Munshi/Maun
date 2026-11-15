@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    A speech bubble holding a single quiet line. The line is a hole in the
+    bubble, so the same drawable works as the themed (monochrome) icon.
+    Drawn inside the 66dp safe zone.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#F4EFE6"
+        android:fillType="evenOdd"
+        android:pathData="M38,34h32a10,10 0,0 1,10 10v16a10,10 0,0 1,-10 10h-14l-12,10v-10h-6a10,10 0,0 1,-10 -10v-16a10,10 0,0 1,10 -10z M42,50h24a2.5,2.5 0,0 1,0 5h-24a2.5,2.5 0,0 1,0 -5z" />
+</vector>

@@ -1,0 +1,10 @@
+<resources>
+    <!--
+        Window theme only; all visible UI is drawn by Compose. DayNight keeps
+        the launch background dark when the phone is in dark mode.
+    -->
+    <style name="Theme.Maun" parent="android:Theme.DeviceDefault.DayNight">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+    </style>
+</resources>
