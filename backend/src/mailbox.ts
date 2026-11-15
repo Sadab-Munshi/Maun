@@ -189,10 +189,20 @@ export class Mailbox extends DurableObject<Env> {
     this.ensureTables();
     const sql = this.ctx.storage.sql;
     switch (frame.t) {
-      case "echo":
+      case "echo": {
         // Round-trip check used by the app's connection test.
-        send(ws, { t: "echo", id: frame.id, body: frame.body, at: Date.now() });
+        // TEMPORARY: "push-debug" reads back why the last wake-up failed.
+        let body = frame.body;
+        if (body === "push-debug") {
+          try {
+            body = String(sql.exec("SELECT detail FROM push_debug WHERE id = 1").toArray()[0]?.detail ?? "none");
+          } catch (e) {
+            body = "no table: " + String(e).slice(0, 100);
+          }
+        }
+        send(ws, { t: "echo", id: frame.id, body, at: Date.now() });
         return;
+      }
 
       case "put_keys":
         // The signatures are not checked here. Whoever fetches the keys checks
@@ -414,8 +424,11 @@ export class Mailbox extends DurableObject<Env> {
       });
       status = response.status;
       await response.body?.cancel();
-    } catch {
+    } catch (e) {
       // The push service could not be reached.
+      // TEMPORARY, while finding out why this fails on Cloudflare and not locally.
+      sql.exec("CREATE TABLE IF NOT EXISTS push_debug (id INTEGER PRIMARY KEY CHECK (id = 1), detail TEXT NOT NULL)");
+      sql.exec("INSERT OR REPLACE INTO push_debug (id, detail) VALUES (1, ?)", String(e).slice(0, 300));
     }
     // Kept for the phone to see at its next login. Without it, a push service
     // that turns the relay away would look exactly like one that works.
