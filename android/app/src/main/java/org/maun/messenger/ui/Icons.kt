@@ -13,6 +13,62 @@ import androidx.compose.ui.unit.dp
  */
 object MaunIcons {
 
+    /** Attach a file. */
+    val Attach: ImageVector by lazy {
+        icon(
+            "Attach",
+            "M16.5,6v11.5c0,2.21 -1.79,4 -4,4s-4,-1.79 -4,-4V5c0,-1.38 1.12,-2.5 2.5,-2.5s2.5,1.12 2.5,2.5v10.5c0,0.55 -0.45,1 -1,1s-1,-0.45 -1,-1V6H10v9.5c0,1.38 1.12,2.5 2.5,2.5s2.5,-1.12 2.5,-2.5V5c0,-2.21 -1.79,-4 -4,-4S7,2.79 7,5v12.5c0,3.04 2.46,5.5 5.5,5.5s5.5,-2.46 5.5,-5.5V6h-1.5z",
+        )
+    }
+
+    /** A file that is not a picture. */
+    val File: ImageVector by lazy {
+        icon(
+            "File",
+            "M6,2c-1.1,0 -1.99,0.9 -1.99,2L4,20c0,1.1 0.89,2 1.99,2H18c1.1,0 2,-0.9 2,-2V8l-6,-6H6zM13,9V3.5L18.5,9H13z",
+        )
+    }
+
+    /** A picture. */
+    val Image: ImageVector by lazy {
+        icon(
+            "Image",
+            "M21,19V5c0,-1.1 -0.9,-2 -2,-2H5c-1.1,0 -2,0.9 -2,2v14c0,1.1 0.9,2 2,2h14c1.1,0 2,-0.9 2,-2zM8.5,13.5l2.5,3.01L14.5,12l4.5,6H5l3.5,-4.5z",
+        )
+    }
+
+    /** Fetch a file, or save it out of Maun. */
+    val Download: ImageVector by lazy {
+        icon(
+            "Download",
+            "M19,9h-4V3H9v6H5l7,7 7,-7zM5,18v2h14v-2H5z",
+        )
+    }
+
+    /** Try again. */
+    val Retry: ImageVector by lazy {
+        icon(
+            "Retry",
+            "M17.65,6.35C16.2,4.9 14.21,4 12,4c-4.42,0 -7.99,3.58 -7.99,8s3.57,8 7.99,8c3.73,0 6.84,-2.55 7.73,-6h-2.08c-0.82,2.33 -3.04,4 -5.65,4 -3.31,0 -6,-2.69 -6,-6s2.69,-6 6,-6c1.66,0 3.14,0.69 4.22,1.78L13,11h7V4l-2.35,2.35z",
+        )
+    }
+
+    /** An email address. */
+    val Mail: ImageVector by lazy {
+        icon(
+            "Mail",
+            "M20,4H4c-1.1,0 -1.99,0.9 -1.99,2L2,18c0,1.1 0.9,2 2,2h16c1.1,0 2,-0.9 2,-2V6c0,-1.1 -0.9,-2 -2,-2zM20,8l-8,5 -8,-5V6l8,5 8,-5v2z",
+        )
+    }
+
+    /** Close what is open. */
+    val Close: ImageVector by lazy {
+        icon(
+            "Close",
+            "M19,6.41L17.59,5 12,10.59 6.41,5 5,6.41 10.59,12 5,17.59 6.41,19 12,13.41 17.59,19 19,17.59 13.41,12z",
+        )
+    }
+
     /** Back to the previous screen. */
     val Back: ImageVector by lazy {
         icon(

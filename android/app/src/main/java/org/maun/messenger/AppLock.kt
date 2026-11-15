@@ -62,9 +62,18 @@ object AppLock {
         applyTo(activity)
     }
 
+    /**
+     * Set while the email login of a member-only relay is on screen. Logging
+     * in means leaving Maun to read a code from an email, and locking then
+     * would throw the half-finished login away. Nothing private is on screen
+     * during it: the chats cannot be reached until the login is done.
+     */
+    @Volatile
+    var loggingIn = false
+
     /** The app left the screen. Turning the phone around does not count. */
     fun onStop(activity: Activity) {
-        if (!activity.isChangingConfigurations) locked = wanted(activity)
+        if (!activity.isChangingConfigurations && !loggingIn) locked = wanted(activity)
     }
 
     /** Asks for the fingerprint or screen lock, and opens the app if it matches. */

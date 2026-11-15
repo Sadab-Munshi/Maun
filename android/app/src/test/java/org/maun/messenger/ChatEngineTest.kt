@@ -1,5 +1,10 @@
 package org.maun.messenger
 
+import org.maun.messenger.network.FileException
+import org.maun.messenger.network.FileApi
+import org.maun.messenger.crypto.FileCipher
+import java.util.Base64
+import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -116,6 +121,7 @@ class ChatEngineTest {
                 withTimeout(15_000) { created.state.first { it is RelayState.Online || it is RelayState.Rejected } }
             }
             assertEquals(RelayState.Online, state)
+            ready = created.ready
             return created.ready!!
         }
 
@@ -151,6 +157,13 @@ class ChatEngineTest {
         fun texts(with: Phone): List<String> = chat(with).map { (if (it.outgoing) "> " else "< ") + it.text }
 
         fun statusOf(to: Phone, text: String): Int = chat(to).single { it.outgoing && it.text == text }.status
+
+        /** What the relay said at the last login. */
+        @Volatile
+        var ready: Ready? = null
+
+        /** The relay's file routes, with the credential from the last login. */
+        fun files(onBanned: () -> Unit = {}) = FileApi(relayUrl, id, token = { ready?.filesToken }, onBanned = onBanned)
     }
 
     private fun eventually(what: String, timeoutMillis: Long = 10_000, condition: () -> Boolean) {
@@ -175,6 +188,98 @@ class ChatEngineTest {
     @After
     fun stopEverything() {
         scope.cancel()
+    }
+
+    @Test
+    fun `a file goes up encrypted, its key travels in the message, and it comes down intact`() {
+        val bob = Phone().registeredAndOffline()
+        val alice = Phone().knows(bob)
+        bob.knows(alice)
+        val folder = File.createTempFile("maun", "files").apply {
+            delete()
+            mkdirs()
+        }
+        try {
+            // A file of more than one piece, encrypted the way the app does it.
+            val plain = ByteArray(FileCipher.CHUNK + 4321).also { java.util.Random(1).nextBytes(it) }
+            val secret = FileCipher.newKey()
+            val sealed = File(folder, "1.enc")
+            sealed.outputStream().use { FileCipher.encrypt(plain.inputStream(), it, secret) }
+            val record = Attachment(
+                key = "",
+                secret = Base64.getEncoder().encodeToString(secret),
+                name = "notes.pdf",
+                mime = "application/pdf",
+                size = plain.size.toLong(),
+                state = Attachment.UPLOADING,
+            )
+
+            alice.online()
+            val message = runBlocking { alice.engine.addFile(bob.id, record) }
+            pause()
+            assertEquals("nothing is sent before the upload is done", 0, alice.db.outboxSize())
+            assertEquals(MessageStatus.PENDING, alice.chat(bob).single().status)
+
+            val key = alice.files().upload(sealed) { _, _ -> }
+            runBlocking { alice.engine.sendFile(message.seq, record.copy(key = key)) }
+            eventually("stored by the relay") { alice.chat(bob).single().status == MessageStatus.SENT }
+            val mine = Attachment.fromLocal(alice.chat(bob).single().text)!!
+            assertEquals(Attachment.READY, mine.state)
+            assertEquals(key, mine.key)
+
+            bob.online()
+            eventually("arrived") { bob.chat(alice).size == 1 }
+            val arrived = bob.chat(alice).single()
+            assertEquals(MessageKind.FILE, arrived.kind)
+            assertTrue(arrived.unread)
+            val theirs = Attachment.fromLocal(arrived.text)!!
+            assertEquals(record.copy(key = key, state = Attachment.REMOTE), theirs)
+            eventually("delivered") { alice.chat(bob).single().status == MessageStatus.DELIVERED }
+
+            // What the relay holds is not the file: it opens only with the key from the message.
+            val fetched = File(folder, "2.part")
+            bob.files().download(theirs.key, fetched) { _, _ -> }
+            assertEquals(FileCipher.encryptedSize(plain.size.toLong()), fetched.length())
+            assertFalse(fetched.readBytes().contentEquals(plain))
+            val opened = java.io.ByteArrayOutputStream()
+            fetched.inputStream().use { FileCipher.decrypt(it, opened, theirs.secretBytes()) }
+            assertTrue(opened.toByteArray().contentEquals(plain))
+
+            // The credential belongs to one login: Alice's old one stops working when she logs in again.
+            val stale = alice.ready!!.filesToken
+            alice.offline()
+            alice.online()
+            assertFalse(stale == alice.ready!!.filesToken)
+            val old = FileApi(relayUrl, alice.id, token = { stale }, onBanned = {})
+            assertThrows(FileException::class.java) { old.download(key, File(folder, "3.part")) { _, _ -> } }
+        } finally {
+            folder.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `an open relay asks for no login and names no member`() {
+        val alice = Phone()
+        val ready = alice.online()
+        assertEquals(null, ready.email)
+        assertTrue(ready.filesToken!!.length >= 20)
+    }
+
+    @Test
+    fun `deleting every message leaves nothing to show and nothing to send`() {
+        val bob = Phone().registeredAndOffline()
+        val alice = Phone().knows(bob)
+        alice.send(bob, "one")
+        alice.send(bob, "two")
+        assertEquals(2, alice.chat(bob).size)
+        runBlocking { alice.engine.wipeMessages() }
+        assertTrue(alice.chat(bob).isEmpty())
+        assertEquals(0, alice.db.outboxSize())
+        // And nothing leaves afterwards.
+        alice.online()
+        bob.online()
+        pause()
+        assertTrue(bob.chat(alice).isEmpty())
     }
 
     @Test

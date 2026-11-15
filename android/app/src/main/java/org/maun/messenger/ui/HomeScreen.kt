@@ -143,6 +143,8 @@ private fun ConnectionLine(relay: RelayState, onReconnect: () -> Unit) {
         RelayState.Offline -> MaterialTheme.colorScheme.outline to "Not connected"
         is RelayState.Retrying -> colors.warning to "${relay.reason} Trying again…"
         is RelayState.Rejected -> colors.failed to relay.reason
+        is RelayState.LoginNeeded -> colors.warning to "This relay asks you to log in."
+        RelayState.Banned -> colors.failed to "This relay no longer accepts this account."
     }
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
         Row(

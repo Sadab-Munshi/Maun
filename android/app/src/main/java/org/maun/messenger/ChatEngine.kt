@@ -227,6 +227,73 @@ class ChatEngine(
     }
 
     /**
+     * Adds a file [peer] is about to be sent, before it has been uploaded.
+     * Nothing leaves the phone yet: see [sendFile]. Returns the new row.
+     */
+    suspend fun addFile(peer: String, file: Attachment): MessageEntity {
+        val message = MessageEntity(
+            peer = peer,
+            id = UUID.randomUUID().toString(),
+            outgoing = true,
+            kind = MessageKind.FILE,
+            text = file.toLocal(),
+            at = now(),
+            status = MessageStatus.PENDING,
+        )
+        val seq = withContext(io) {
+            tx.inTransaction {
+                check(dao.isContact(peer)) { "not a contact" }
+                dao.insertMessage(message)
+            }
+        }
+        return message.copy(seq = seq)
+    }
+
+    /**
+     * The file of message [seq] is on the relay as [file]: queues the message
+     * that tells its reader where, and with which key. Does nothing when the
+     * message was deleted in the meantime.
+     */
+    suspend fun sendFile(seq: Long, file: Attachment) {
+        val queued = withContext(io) {
+            tx.inTransaction {
+                val message = dao.message(seq) ?: return@inTransaction false
+                dao.setText(seq, file.copy(state = Attachment.READY).toLocal())
+                val payload = Payload.File(message.id, message.at, file)
+                dao.insertOutbox(OutboxEntity(peer = message.peer, messageId = message.id, payload = Payload.encode(payload)))
+                true
+            }
+        }
+        if (queued) kick()
+    }
+
+    /** The file record of message [seq], or null when there is no such message or it has no file. */
+    suspend fun fileOf(seq: Long): Attachment? = withContext(io) {
+        dao.message(seq)?.takeIf { it.kind == MessageKind.FILE }?.let { Attachment.fromLocal(it.text) }
+    }
+
+    /** Notes where the file of message [seq] is now. */
+    suspend fun setFileState(seq: Long, state: Int) {
+        withContext(io) {
+            tx.inTransaction {
+                val message = dao.message(seq)?.takeIf { it.kind == MessageKind.FILE } ?: return@inTransaction
+                val file = Attachment.fromLocal(message.text) ?: return@inTransaction
+                if (file.state != state) dao.setText(seq, file.copy(state = state).toLocal())
+            }
+        }
+    }
+
+    /** Deletes every message and everything waiting to be sent. Contacts stay. */
+    suspend fun wipeMessages() {
+        withContext(io) {
+            tx.inTransaction {
+                dao.deleteAllOutbox()
+                dao.deleteAllMessages()
+            }
+        }
+    }
+
+    /**
      * The conversation with [peer] is on screen. Clears the unread count and,
      * for a contact, tells them their messages were read. Someone who is not a
      * contact learns nothing.
@@ -309,7 +376,9 @@ class ChatEngine(
             tx.inTransaction {
                 if (dao.isBlocked(from)) return@inTransaction false
                 when (val payload = Payload.decode(signal.decrypt(from, kind, body))) {
-                    is Payload.Text -> saveIncoming(from, payload)
+                    is Payload.Text -> saveIncoming(from, payload.id, payload.sentAt, MessageKind.TEXT, payload.text)
+                    is Payload.File ->
+                        saveIncoming(from, payload.id, payload.sentAt, MessageKind.FILE, payload.file.toLocal())
                     is Payload.Receipt -> {
                         payload.delivered.forEach { dao.raiseStatus(from, it, MessageStatus.DELIVERED) }
                         payload.read.forEach { dao.raiseStatus(from, it, MessageStatus.READ) }
@@ -327,22 +396,23 @@ class ChatEngine(
         }
     }
 
-    private fun saveIncoming(from: String, payload: Payload.Text): Boolean {
+    private fun saveIncoming(from: String, id: String, sentAt: Long, kind: Int, text: String): Boolean {
         val contact = dao.isContact(from)
         val inserted = dao.insertMessage(
             MessageEntity(
                 peer = from,
-                id = payload.id,
+                id = id,
                 outgoing = false,
-                text = payload.text,
+                kind = kind,
+                text = text,
                 // Their clock, but never later than ours.
-                at = minOf(payload.sentAt, now()),
+                at = minOf(sentAt, now()),
                 unread = true,
                 receipt = if (contact) ReceiptLevel.DELIVERED else ReceiptLevel.NONE,
             ),
         ) != -1L
         if (!inserted || !contact) return false
-        dao.insertOutbox(receipt(from, Payload.Receipt(delivered = listOf(payload.id))))
+        dao.insertOutbox(receipt(from, Payload.Receipt(delivered = listOf(id))))
         return true
     }
 

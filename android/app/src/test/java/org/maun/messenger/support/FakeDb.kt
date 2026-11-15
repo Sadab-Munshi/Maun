@@ -8,6 +8,7 @@ import org.maun.messenger.data.BlockedEntity
 import org.maun.messenger.data.ChatDao
 import org.maun.messenger.data.ChatSummary
 import org.maun.messenger.data.MessageEntity
+import org.maun.messenger.data.MessageKind
 import org.maun.messenger.data.OutboxEntity
 import org.maun.messenger.data.Transactor
 
@@ -113,6 +114,20 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
         state = state.copy(messages = kept)
         removed
     }
+
+    override fun setText(seq: Long, text: String): Int =
+        apply({ it.seq == seq }) { it.copy(text = text) }
+
+    override fun fileMessages(): List<Long> =
+        lock.withLock { state.messages.filter { it.kind == MessageKind.FILE }.map { it.seq } }
+
+    override fun deleteAllMessages(): Int = lock.withLock {
+        val removed = state.messages.size
+        state = state.copy(messages = emptyList())
+        removed
+    }
+
+    override fun deleteAllOutbox(): Int = removeOutbox { true }
 
     override fun observeChats(): Flow<List<ChatSummary>> = notInTests()
 

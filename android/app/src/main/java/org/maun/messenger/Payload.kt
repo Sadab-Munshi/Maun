@@ -14,6 +14,9 @@ sealed interface Payload {
     data class Text(val id: String, val sentAt: Long, val text: String) : Payload
 
     /** IDs of the receiver's messages that have arrived on, or been read on, the sender's phone. */
+    /** A file: where its encrypted form is on the relay, and the key that opens it. */
+    data class File(val id: String, val sentAt: Long, val file: Attachment) : Payload
+
     data class Receipt(val delivered: List<String> = emptyList(), val read: List<String> = emptyList()) : Payload
 
     /** Something a newer version of Maun sent. It is dropped without complaint. */
@@ -38,6 +41,7 @@ sealed interface Payload {
             val json = JSONObject().put("v", VERSION)
             when (payload) {
                 is Text -> json.put("k", "text").put("id", payload.id).put("at", payload.sentAt).put("text", payload.text)
+                is File -> payload.file.toWire(json.put("k", "file").put("id", payload.id).put("at", payload.sentAt))
                 is Receipt -> {
                     json.put("k", "receipt")
                     if (payload.delivered.isNotEmpty()) json.put("delivered", JSONArray(payload.delivered))
@@ -62,6 +66,12 @@ sealed interface Payload {
                     val text = json.optString("text")
                     if (!isMessageId(id) || text.isEmpty() || !json.has("at")) return Unknown
                     Text(id, json.optLong("at"), text)
+                }
+                "file" -> {
+                    val id = json.optString("id")
+                    val file = Attachment.fromWire(json)
+                    if (!isMessageId(id) || file == null || !json.has("at")) return Unknown
+                    File(id, json.optLong("at"), file)
                 }
                 "receipt" -> Receipt(ids(json.optJSONArray("delivered")), ids(json.optJSONArray("read")))
                 else -> Unknown

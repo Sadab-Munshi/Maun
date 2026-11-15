@@ -45,6 +45,16 @@ sealed interface RelayState {
 
     /** The relay refused this phone for [reason]. Retrying will not help. */
     data class Rejected(val reason: String) : RelayState
+
+    /**
+     * The relay is member-only and does not know this ID: its owner has to be
+     * shown an approved email address first. [problem] says why a login that
+     * was just tried did not count, if one was.
+     */
+    data class LoginNeeded(val problem: String? = null) : RelayState
+
+    /** The relay's owner has shut this member out. */
+    data object Banned : RelayState
 }
 
 /** What the relay said about this account when it logged in. */
@@ -71,6 +81,10 @@ data class Ready(
     val relayKey: String? = null,
     /** How many messages were waiting at the moment of login. They follow right away. */
     val queued: Int = 0,
+    /** On a member-only relay, the email address this ID is tied to. */
+    val email: String? = null,
+    /** The credential for the relay's file routes, until the next login. */
+    val filesToken: String? = null,
 )
 
 /** What the messaging code needs from a connection. */
@@ -101,6 +115,12 @@ interface RelayLink {
  * becomes [RelayState.Online], and [onOnline] right after it has. [onOffline]
  * is called when a connection that had logged in has ended.
  *
+ * On a member-only relay, [accessToken] supplies the proof of an approved
+ * email address (a Cloudflare Access token) while the relay does not know this
+ * ID yet. Without one the connection stops at [RelayState.LoginNeeded]; a
+ * banned member's stops at [RelayState.Banned]. Neither is retried until
+ * [start] is called again.
+ *
  * [onFrame] receives the messages the relay delivers, one at a time and in
  * order. It runs on the connection's own loop, so it must not wait for an
  * answer from the relay: none can arrive until it returns.
@@ -117,6 +137,7 @@ class RelayConnection(
     private val onOnline: () -> Unit = {},
     private val onFrame: suspend (JSONObject) -> Unit = {},
     private val onOffline: () -> Unit = {},
+    private val accessToken: () -> String? = { null },
 ) : RelayLink {
     private val request = Request.Builder().url(RelayClient.socketUrl(relayUrl, identity.id)).build()
 
@@ -211,6 +232,14 @@ class RelayConnection(
                     _state.value = RelayState.Rejected(end.reason)
                     return
                 }
+                is End.LoginNeeded -> {
+                    _state.value = RelayState.LoginNeeded(end.problem)
+                    return
+                }
+                End.Banned -> {
+                    _state.value = RelayState.Banned
+                    return
+                }
                 is End.Dropped -> {
                     // A connection that got as far as logging in starts the count again.
                     if (end.wasOnline) failures = 0
@@ -228,6 +257,8 @@ class RelayConnection(
         val socket = http.newWebSocket(request, Listener(events))
         var online = false
         var refusal: String? = null
+        // Whether this attempt showed the relay a token, which it then did not take.
+        var offered = false
         try {
             for (event in events) {
                 when (event) {
@@ -239,8 +270,12 @@ class RelayConnection(
                         }
                         when (frame.optString("t")) {
                             "hello" -> when (val answer = withContext(Dispatchers.IO) { safeAnswerHello(frame) }) {
-                                is Answer.Send -> socket.send(answer.frame)
+                                is Answer.Send -> {
+                                    offered = answer.withToken
+                                    socket.send(answer.frame)
+                                }
                                 is Answer.Refuse -> return End.Rejected(answer.reason)
+                                Answer.NeedLogin -> return End.LoginNeeded(null)
                             }
                             "ready" -> {
                                 onLoggedIn()
@@ -259,6 +294,8 @@ class RelayConnection(
                                         pushStatus = if (frame.isNull("pushStatus")) null else frame.optInt("pushStatus"),
                                         relayKey = frame.optString("vapid").ifEmpty { null },
                                         queued = frame.optInt("queued"),
+                                        email = if (frame.isNull("email")) null else frame.optString("email").ifEmpty { null },
+                                        filesToken = frame.optString("files").ifEmpty { null },
                                     )
                                     live = socket
                                     _state.value = RelayState.Online
@@ -266,7 +303,8 @@ class RelayConnection(
                                 }
                             }
                             "msg" -> if (online) onFrame(frame)
-                            "error" -> if (!online) refusal = frame.optString("code")
+                            // After login it announces why the relay is about to hang up.
+                            "error" -> refusal = frame.optString("code")
                             // Everything else answers a request and carries its id.
                             else -> pending.remove(frame.optString("id"))?.complete(frame)
                         }
@@ -274,6 +312,10 @@ class RelayConnection(
                     is Event.Closed -> return when (event.code) {
                         CLOSE_REPLACED -> End.Rejected("A newer connection from this phone took over.")
                         CLOSE_AUTH_FAILED -> End.Rejected(describeRefusal(refusal ?: event.reason))
+                        CLOSE_BANNED -> End.Banned
+                        CLOSE_ACCESS_REQUIRED -> End.LoginNeeded(
+                            if (offered) "That login was not accepted. It may have expired; please log in again." else null,
+                        )
                         else -> End.Dropped("The relay closed the connection.", online)
                     }
                     is Event.Failed -> return End.Dropped(describeFailure(event), online, event.httpCode == 429)
@@ -310,13 +352,18 @@ class RelayConnection(
             return Answer.Refuse("The relay sent a greeting this app cannot read.")
         }
         val encoder = Base64.getEncoder()
+        // Shown whenever there is one: a relay that already knows this ID ignores it.
+        val memberOnly = hello.optBoolean("access")
+        val token = if (memberOnly) accessToken() else null
 
         if (hello.optBoolean("registered")) {
             if (!device.exists()) {
                 return Answer.Refuse("This ID is registered to a different phone.")
             }
             val signature = device.sign(AuthTranscript.login(identity.publicKey, nonce))
-            return Answer.Send(JSONObject().put("t", "login").put("sig", encoder.encodeToString(signature)).toString())
+            val frame = JSONObject().put("t", "login").put("sig", encoder.encodeToString(signature))
+            if (token != null) frame.put("access", token)
+            return Answer.Send(frame.toString(), withToken = token != null)
         }
 
         if (isRegistered()) {
@@ -324,6 +371,9 @@ class RelayConnection(
             // relay is wrong about this, the old key would be lost for nothing.
             return Answer.Refuse("The relay no longer has an account for this ID. It may have been reset.")
         }
+        // A new ID on a member-only relay is turned away without a token, so
+        // nothing is made or sent until there is one.
+        if (memberOnly && token == null) return Answer.NeedLogin
         device.create(nonce)
         val deviceKey = device.publicKeySpki()
         val transcript = AuthTranscript.register(identity.publicKey, nonce, deviceKey)
@@ -332,7 +382,8 @@ class RelayConnection(
             .put("deviceKey", encoder.encodeToString(deviceKey))
             .put("identitySig", encoder.encodeToString(identity.sign(transcript)))
             .put("deviceSig", encoder.encodeToString(device.sign(transcript)))
-        return Answer.Send(frame.toString())
+        if (token != null) frame.put("access", token)
+        return Answer.Send(frame.toString(), withToken = token != null)
     }
 
     private fun describeRefusal(code: String): String = when (code) {
@@ -350,12 +401,15 @@ class RelayConnection(
     }
 
     private sealed interface Answer {
-        class Send(val frame: String) : Answer
+        class Send(val frame: String, val withToken: Boolean = false) : Answer
         class Refuse(val reason: String) : Answer
+        data object NeedLogin : Answer
     }
 
     private sealed interface End {
         class Rejected(val reason: String) : End
+        class LoginNeeded(val problem: String?) : End
+        data object Banned : End
         class Dropped(val reason: String, val wasOnline: Boolean, val rateLimited: Boolean = false) : End
     }
 
@@ -384,5 +438,7 @@ class RelayConnection(
         // Must match the close codes in backend/src/protocol.ts.
         const val CLOSE_REPLACED = 4001
         const val CLOSE_AUTH_FAILED = 4003
+        const val CLOSE_ACCESS_REQUIRED = 4401
+        const val CLOSE_BANNED = 4403
     }
 }

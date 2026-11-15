@@ -41,6 +41,7 @@ fun SettingsScreen(
     pushProblem: String?,
     privacy: PrivacyUi,
     blockedCount: Int,
+    memberEmail: String? = null,
     onChoosePushApp: (String) -> Unit,
     onGooglePush: (Boolean) -> Unit,
     onStayConnected: (Boolean) -> Unit,
@@ -98,6 +99,15 @@ fun SettingsScreen(
                 text = "Test this phone's encryption, storage and connection.",
                 onClick = onOpenSetupCheck,
             )
+            if (memberEmail != null) {
+                InfoRow(
+                    icon = MaunIcons.Mail,
+                    title = "Logged in as $memberEmail",
+                    text = "This relay is for approved members. Its owner can see this address, the ID it " +
+                        "belongs to, and which phone you use (its make, model and a fingerprint of it). " +
+                        "Your messages stay unreadable to the relay and its owner.",
+                )
+            }
             InfoRow(
                 icon = MaunIcons.Info,
                 title = "Maun $version",
@@ -107,6 +117,8 @@ fun SettingsScreen(
                     RelayState.Offline -> "Not connected."
                     is RelayState.Retrying -> "${relay.reason} Trying again…"
                     is RelayState.Rejected -> relay.reason
+                    is RelayState.LoginNeeded -> "The relay asks you to log in."
+                    RelayState.Banned -> "The relay no longer accepts this account."
                 },
             )
         }

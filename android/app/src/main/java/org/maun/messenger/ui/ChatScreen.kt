@@ -7,6 +7,11 @@ import android.content.Context
 import android.os.Build
 import android.os.PersistableBundle
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.rememberUpdatedState
+import org.maun.messenger.Attachment
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -91,7 +96,7 @@ import org.maun.messenger.network.RelayState
  * more on this phone than were loaded, and [onLoadOlder] asks for them.
  * [contactName] is null while the other person is not a contact: their
  * messages are shown as a request, and nothing can be sent until it is
- * accepted.
+ * accepted. [files] is what the paperclip and the file messages work with.
  */
 @Composable
 fun ChatScreen(
@@ -103,6 +108,7 @@ fun ChatScreen(
     relay: RelayState,
     onSend: (String) -> Unit,
     onSeen: () -> Unit,
+    files: FileActions = FileActions(),
     onLoadOlder: () -> Unit,
     onDelete: (Long) -> Unit,
     onBack: () -> Unit,
@@ -119,6 +125,33 @@ fun ChatScreen(
     val items = remember(messages, zone) { chatItems(messages, zone) }
     val today = dayOf(System.currentTimeMillis(), zone)
     var deleting by remember { mutableStateOf<MessageEntity?>(null) }
+
+    // Files. Android's own picker chooses what to send and where to save, so
+    // Maun needs no permission to read the phone's storage.
+    val currentMessages by rememberUpdatedState(messages)
+    val fileOf = { seq: Long ->
+        currentMessages.firstOrNull { it.seq == seq && it.kind == MessageKind.FILE }?.let { Attachment.fromLocal(it.text) }
+    }
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) files.onAttach(uri)
+    }
+    var saving by rememberSaveable { mutableStateOf<Long?>(null) }
+    val pickPlace = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
+        val seq = saving
+        saving = null
+        val file = seq?.let(fileOf)
+        if (uri != null && seq != null && file != null) files.onSave(seq, file, uri)
+    }
+    val save = { seq: Long, file: Attachment ->
+        saving = seq
+        pickPlace.launch(file.name)
+    }
+    var viewing by rememberSaveable { mutableStateOf<Long?>(null) }
+    LaunchedEffect(files.problem) {
+        val problem = files.problem ?: return@LaunchedEffect
+        Toast.makeText(context, problem, Toast.LENGTH_LONG).show()
+        files.onProblemShown()
+    }
 
     // Keep the newest message in view: always for one's own, and for an
     // incoming one unless the reader has scrolled back to look at history.
@@ -177,6 +210,9 @@ fun ChatScreen(
                                     stuck = waiting != null,
                                     onCopy = { copyMessage(context, it) },
                                     onDelete = { deleting = it },
+                                    files = files,
+                                    onOpenFile = { seq, file -> if (file.isImage) viewing = seq else save(seq, file) },
+                                    onSaveFile = save,
                                 )
                             }
                         }
@@ -205,11 +241,20 @@ fun ChatScreen(
 
                 if (waiting != null) Notice(waiting)
                 if (isContact) {
-                    Composer(peerId = peerId, onSend = onSend)
+                    Composer(peerId = peerId, onSend = onSend, onAttach = { pickFile.launch("*/*") })
                 } else {
                     RequestBar(peerId = peerId, onAccept = onAccept, onBlock = onBlock)
                 }
             }
+        }
+    }
+
+    viewing?.let { seq ->
+        val file = fileOf(seq)
+        if (file == null) {
+            viewing = null
+        } else {
+            ImageViewer(seq = seq, file = file, files = files, onSave = { save(seq, file) }, onClose = { viewing = null })
         }
     }
 
@@ -320,10 +365,21 @@ private fun MessageRow(
     stuck: Boolean,
     onCopy: (String) -> Unit,
     onDelete: (MessageEntity) -> Unit,
+    files: FileActions = FileActions(),
+    onOpenFile: (Long, Attachment) -> Unit = { _, _ -> },
+    onSaveFile: (Long, Attachment) -> Unit = { _, _ -> },
 ) {
     val message = item.message
     val outgoing = message.outgoing
-    val readable = message.kind != MessageKind.UNREADABLE
+    val file = if (message.kind == MessageKind.FILE) remember(message.text) { Attachment.fromLocal(message.text) } else null
+    val fileStep = file?.let { fileStep(it, outgoing, active = message.seq in files.progress) }
+    // What a tap on a file's bubble does, if anything.
+    val onTap: (() -> Unit)? = when (fileStep) {
+        null, FileStep.Working, FileStep.Gone -> null
+        FileStep.Open -> ({ onOpenFile(message.seq, file) })
+        FileStep.Fetch, FileStep.Retry -> ({ files.onStart(message.seq) })
+    }
+    val readable = message.kind == MessageKind.TEXT
     val colors = MaterialTheme.colorScheme
     val haptics = LocalHapticFeedback.current
     var menu by remember { mutableStateOf(false) }
@@ -357,8 +413,9 @@ private fun MessageRow(
                     modifier = Modifier
                         .widthIn(max = 480.dp)
                         .clip(shape)
-                        .pointerInput(message.seq) {
+                        .pointerInput(message.seq, fileStep) {
                             detectTapGestures(
+                                onTap = onTap?.let { tap -> { tap() } },
                                 onLongPress = {
                                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                     menu = true
@@ -375,6 +432,8 @@ private fun MessageRow(
                     Column(modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 7.dp, bottom = 6.dp)) {
                         if (readable) {
                             Text(text = message.text, style = MaterialTheme.typography.bodyLarge, color = text)
+                        } else if (file != null) {
+                            FileContent(message, file, files, text, quiet)
                         } else {
                             Text(
                                 text = "A message arrived that this phone could not decrypt.",
@@ -407,6 +466,16 @@ private fun MessageRow(
                             onClick = {
                                 menu = false
                                 onCopy(message.text)
+                            },
+                        )
+                    }
+                    if (file != null && fileStep == FileStep.Open) {
+                        DropdownMenuItem(
+                            text = { Text("Save") },
+                            leadingIcon = { Icon(MaunIcons.Download, contentDescription = null) },
+                            onClick = {
+                                menu = false
+                                onSaveFile(message.seq, file)
                             },
                         )
                     }
@@ -475,7 +544,7 @@ private fun Notice(text: String) {
 }
 
 @Composable
-private fun Composer(peerId: String, onSend: (String) -> Unit) {
+private fun Composer(peerId: String, onSend: (String) -> Unit, onAttach: () -> Unit) {
     var draft by rememberSaveable(peerId) { mutableStateOf("") }
     val bytes = draft.trim().toByteArray(Charsets.UTF_8).size
     val tooLong = bytes > Payload.MAX_TEXT_BYTES
@@ -489,7 +558,10 @@ private fun Composer(peerId: String, onSend: (String) -> Unit) {
                 modifier = Modifier.padding(start = 8.dp, bottom = 4.dp),
             )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Bottom) {
+            IconButton(onClick = onAttach, modifier = Modifier.padding(bottom = 4.dp).size(48.dp)) {
+                Icon(MaunIcons.Attach, contentDescription = "Send a file", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             TextField(
                 value = draft,
                 onValueChange = { draft = it },
@@ -516,7 +588,7 @@ private fun Composer(peerId: String, onSend: (String) -> Unit) {
                     draft = ""
                 },
                 enabled = bytes > 0 && !tooLong,
-                modifier = Modifier.padding(bottom = 4.dp).size(48.dp),
+                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp).size(48.dp),
             ) { Icon(MaunIcons.Send, contentDescription = "Send") }
         }
     }

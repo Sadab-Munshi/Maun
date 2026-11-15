@@ -1,6 +1,16 @@
 package org.maun.messenger.screens
 
 import android.app.Application
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Shader
+import java.util.Base64
+import org.maun.messenger.Attachment
+import org.maun.messenger.ui.BannedScreen
+import org.maun.messenger.ui.FileActions
+import org.maun.messenger.ui.LoginScreen
 import androidx.compose.runtime.Composable
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Test
@@ -118,9 +128,10 @@ class ScreensTest {
     }
 
     @Composable
-    private fun Settings() {
+    private fun Settings(memberEmail: String? = null) {
         SettingsScreen(
-            version = "0.4.0",
+            memberEmail = memberEmail,
+            version = "0.5.0",
             relayName = "maun.example.workers.dev",
             relay = RelayState.Online,
             delivery = DeliveryUi(pushApp = "Google's push service", google = true),
@@ -199,6 +210,86 @@ class ScreensTest {
     @Test
     @Config(qualifiers = "w800dp-h1280dp-mdpi")
     fun chatOnATablet() = shoot("chat-tablet") { Chat() }
+
+    // ---- Files ---------------------------------------------------------------
+
+    private fun attachment(name: String, mime: String, size: Long, state: Int, key: String = "ab".repeat(32)) =
+        Attachment(key, Base64.getEncoder().encodeToString(ByteArray(32)), name, mime, size, state)
+
+    private fun fileMessage(seq: Long, outgoing: Boolean, file: Attachment, ago: Long, status: Int = MessageStatus.READ) =
+        MessageEntity(seq = seq, peer = asha.id, id = "f$seq", outgoing = outgoing, kind = MessageKind.FILE, text = file.toLocal(), at = now - ago, status = status)
+
+    /** A stand-in for a photo: nothing is decrypted when a screen is only drawn. */
+    private fun picture(): Bitmap {
+        val bitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888)
+        val paint = Paint().apply {
+            shader = LinearGradient(0f, 0f, 640f, 480f, 0xFF2F6B55.toInt(), 0xFFE7B76B.toInt(), Shader.TileMode.CLAMP)
+        }
+        Canvas(bitmap).drawRect(0f, 0f, 640f, 480f, paint)
+        return bitmap
+    }
+
+    @Composable
+    private fun ChatWithFiles() {
+        val photo = picture()
+        ChatScreen(
+            peerId = asha.id,
+            contactName = asha.name,
+            // Newest first.
+            messages = listOf(
+                fileMessage(7, true, attachment("Budget 2026.xlsx", "application/vnd.ms-excel", 1_840_000, Attachment.UPLOADING, key = ""), minute, MessageStatus.PENDING),
+                fileMessage(6, true, attachment("Lease.pdf", "application/pdf", 9_300_000, Attachment.FAILED, key = ""), 2 * minute, MessageStatus.PENDING),
+                fileMessage(5, false, attachment("Old video.mp4", "video/mp4", 24_100_000, Attachment.GONE), 3 * minute),
+                fileMessage(4, false, attachment("Tickets.pdf", "application/pdf", 412_000, Attachment.READY), 4 * minute),
+                fileMessage(3, false, attachment("Route map with a rather long name for a file.gpx", "application/gpx+xml", 86_000, Attachment.REMOTE), 5 * minute),
+                message(2, true, "Here is the view from the window", 6 * minute),
+                fileMessage(1, true, attachment("IMG_2041.jpg", "image/jpeg", 2_600_000, Attachment.READY), 7 * minute),
+            ),
+            hasOlder = false,
+            waiting = null,
+            relay = RelayState.Online,
+            files = FileActions(progress = mapOf(7L to 0.62f), loadImage = { seq, _, _ -> if (seq == 1L) photo else null }),
+            onSend = {},
+            onSeen = {},
+            onLoadOlder = {},
+            onDelete = {},
+            onBack = {},
+            onOpenDetails = {},
+            onAccept = {},
+            onBlock = {},
+        )
+    }
+
+    @Test
+    fun chatWithFiles() = shoot("chat-files") { ChatWithFiles() }
+
+    @Test
+    @Config(qualifiers = "+night")
+    fun chatWithFilesDark() = shoot("chat-files-dark") { ChatWithFiles() }
+
+    // ---- A member-only relay ---------------------------------------------------
+
+    @Test
+    fun login() = shoot("login") {
+        LoginScreen(relayName = "maun.example.workers.dev", relayUrl = "https://maun.example.workers.dev/", problem = null, onToken = {})
+    }
+
+    @Test
+    @Config(qualifiers = "+night")
+    fun loginRefused() = shoot("login-refused-dark") {
+        LoginScreen(
+            relayName = "maun.example.workers.dev",
+            relayUrl = "https://maun.example.workers.dev/",
+            problem = "That login was not accepted. It may have expired; please log in again.",
+            onToken = {},
+        )
+    }
+
+    @Test
+    fun banned() = shoot("banned") { BannedScreen(relayName = "maun.example.workers.dev", onCheckAgain = {}) }
+
+    @Test
+    fun settingsOfAMember() = shoot("settings-member") { Settings(memberEmail = "asha@example.com") }
 
     @Test
     fun settings() = shoot("settings") { Settings() }

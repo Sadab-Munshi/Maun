@@ -1,6 +1,11 @@
 package org.maun.messenger
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.net.Uri
+import org.json.JSONObject
+import org.maun.messenger.network.FileApi
+import org.maun.messenger.security.DeviceFingerprint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -96,6 +101,38 @@ class Messenger(context: Context) {
 
     private val _blocked = MutableStateFlow<List<BlockedEntity>>(emptyList())
     val blocked: StateFlow<List<BlockedEntity>> = _blocked.asStateFlow()
+
+    private val _memberEmail = MutableStateFlow<String?>(null)
+
+    /** On a member-only relay: the email address this ID is tied to. Null on an open relay. */
+    val memberEmail: StateFlow<String?> = _memberEmail.asStateFlow()
+
+    private val _banned = MutableStateFlow(false)
+
+    /** The relay's owner has shut this member out. Nothing connects while this is set. */
+    val banned: StateFlow<Boolean> = _banned.asStateFlow()
+
+    private val _fileProgress = MutableStateFlow<Map<Long, Float>>(emptyMap())
+
+    /** File transfers under way, by message: how much is done, from 0 to 1. */
+    val fileProgress: StateFlow<Map<Long, Float>> = _fileProgress.asStateFlow()
+
+    private val _fileProblem = MutableStateFlow<String?>(null)
+
+    /** Why the last file that could not be sent or fetched could not. */
+    val fileProblem: StateFlow<String?> = _fileProblem.asStateFlow()
+
+    /**
+     * The proof of an approved email address (a Cloudflare Access token),
+     * from the moment the login page hands it over until the relay has tied
+     * the address to this ID. It is kept in the encrypted database, whose key
+     * is in the Android Keystore, and deleted as soon as it has done its job.
+     */
+    @Volatile
+    private var accessToken: String? = null
+
+    @Volatile
+    private var files: FileTransfers? = null
 
     private val _waiting = MutableStateFlow<Map<String, String>>(emptyMap())
 
@@ -220,6 +257,16 @@ class Messenger(context: Context) {
                     db.meta().put(MetaEntry(KEY_REGISTRATION_ID, it.toString()))
                 }
         }
+        val (savedToken, savedEmail, wasBanned) = withContext(Dispatchers.IO) {
+            Triple(
+                db.meta().get(KEY_ACCESS_TOKEN)?.ifEmpty { null },
+                db.meta().get(KEY_MEMBER_EMAIL)?.ifEmpty { null },
+                db.meta().get(KEY_BANNED) == "1",
+            )
+        }
+        accessToken = savedToken
+        _memberEmail.value = savedEmail
+        _banned.value = wasBanned
         val chatScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
         val chat = ChatEngine(
             selfId = identity.id,
@@ -250,19 +297,49 @@ class Messenger(context: Context) {
             onLoggedIn = ::markRegistered,
             onOnline = {
                 chat.onOnline()
-                val relayKey = PushAddress.keyForPushApp(chat.link?.ready?.relayKey)
+                val ready = chat.link?.ready
+                scope.launch { onLoggedInAs(db, chat, ready?.email) }
+                val relayKey = PushAddress.keyForPushApp(ready?.relayKey)
                 // Talks to another app; not something to do from inside the connection.
                 if (relayKey != null) scope.launch { Background.onRelayKey(appContext, relayKey) }
             },
             onFrame = chat::onFrame,
             onOffline = chat::onOffline,
+            accessToken = { accessToken },
         )
         chat.link = created
+        val transfers = FileTransfers(
+            context = appContext,
+            engine = chat,
+            dao = db.chat(),
+            api = FileApi(
+                relayUrl = relayUrl,
+                selfId = identity.id,
+                token = { created.ready?.filesToken },
+                onBanned = { scope.launch { onBanned() } },
+            ),
+            scope = chatScope,
+            // A transfer asked for while the connection is still coming up waits for it a little.
+            whenOnline = { withTimeoutOrNull(ONLINE_WAIT_MILLIS) { created.state.first { it == RelayState.Online } } },
+        )
+        files = transfers
+        chatScope.launch { transfers.progress.collect { _fileProgress.value = it } }
+        chatScope.launch { transfers.problem.collect { _fileProblem.value = it } }
+        chatScope.launch { transfers.sweep() }
         synchronized(this) {
             engine = chat
             engineScope = chatScope
             connection = created
-            connectionWatcher = scope.launch { created.state.collect { _relay.value = it } }
+            connectionWatcher = scope.launch {
+                created.state.collect { state ->
+                    _relay.value = state
+                    when {
+                        state == RelayState.Banned -> onBanned()
+                        // The token was shown and not taken: it is of no further use.
+                        state is RelayState.LoginNeeded && state.problem != null -> setAccessToken(null)
+                    }
+                }
+            }
             if (wanted()) created.start()
         }
     }
@@ -282,13 +359,120 @@ class Messenger(context: Context) {
         engineScope?.cancel()
         engineScope = null
         engine = null
+        files = null
         _relay.value = RelayState.Offline
         _waiting.value = emptyMap()
     }
 
     // ---- When to be connected --------------------------------------------------
 
-    private fun wanted() = inForeground || fetches > 0 || stayingConnected
+    private fun wanted() = !_banned.value && (inForeground || fetches > 0 || stayingConnected)
+
+    // ---- Member-only relays ----------------------------------------------------
+
+    private suspend fun setAccessToken(token: String?) {
+        accessToken = token
+        withContext(Dispatchers.IO) { database?.meta()?.put(MetaEntry(KEY_ACCESS_TOKEN, token.orEmpty())) }
+    }
+
+    /**
+     * The login page has handed over proof of an approved email address.
+     * Stores it and connects again, this time showing it to the relay.
+     */
+    fun onAccessToken(token: String) {
+        scope.launch {
+            setAccessToken(token)
+            synchronized(this@Messenger) {
+                connection?.stop()
+                if (wanted()) connection?.start()
+            }
+        }
+    }
+
+    /**
+     * Runs after every login. On a member-only relay ([email] is set) the
+     * token has done its job and is deleted, and the relay is told which
+     * phone this is: once a day, and whenever the fingerprint has changed.
+     */
+    private suspend fun onLoggedInAs(db: AppDatabase, chat: ChatEngine, email: String?) {
+        if (_memberEmail.value != email) {
+            _memberEmail.value = email
+            withContext(Dispatchers.IO) { db.meta().put(MetaEntry(KEY_MEMBER_EMAIL, email.orEmpty())) }
+        }
+        if (email == null) return
+        if (accessToken != null) setAccessToken(null)
+        try {
+            val report = withContext(Dispatchers.Default) { DeviceFingerprint.collect(appContext) }
+            val stamp = "${report.hash}:${System.currentTimeMillis() / DAY_MILLIS}"
+            if (withContext(Dispatchers.IO) { db.meta().get(KEY_DEVICE_REPORTED) } == stamp) return
+            val link = chat.link ?: return
+            val frame = JSONObject()
+                .put("t", "device")
+                .put("hash", report.hash)
+                .put("maker", report.maker)
+                .put("model", report.model)
+                .put("os", report.os)
+            if (link.request(frame).optString("t") == "saved") {
+                withContext(Dispatchers.IO) { db.meta().put(MetaEntry(KEY_DEVICE_REPORTED, stamp)) }
+            }
+        } catch (_: RelayException) {
+            // The connection went away. The next login reports it.
+        }
+    }
+
+    /**
+     * The relay says this member is banned (a closed connection with the ban
+     * code, or a 403 from the file routes). Disconnects, forgets the login
+     * token, and deletes every message and file on this phone. Contacts and
+     * the ID stay, so that lifting the ban restores the account.
+     */
+    private suspend fun onBanned() {
+        val wasBanned = _banned.value
+        _banned.value = true
+        synchronized(this) {
+            pendingStop?.cancel()
+            pendingStop = null
+            connection?.stop()
+        }
+        setAccessToken(null)
+        engine?.wipeMessages()
+        files?.wipe()
+        notifications.clearMessages()
+        if (!wasBanned) withContext(Dispatchers.IO) { database?.meta()?.put(MetaEntry(KEY_BANNED, "1")) }
+    }
+
+    /** Asks the relay once more. If the ban still stands, [banned] is set again within moments. */
+    fun checkBanAgain() {
+        scope.launch {
+            withContext(Dispatchers.IO) { database?.meta()?.put(MetaEntry(KEY_BANNED, "")) }
+            _banned.value = false
+            synchronized(this@Messenger) {
+                connection?.stop()
+                if (wanted()) connection?.start()
+            }
+        }
+    }
+
+    // ---- Files -----------------------------------------------------------------
+
+    /** Encrypts the file at [uri] and starts sending it to [peer]. Returns why it could not be, or null. */
+    suspend fun sendFile(peer: String, uri: Uri): String? {
+        val transfers = files ?: return "Maun is not ready yet. Try again in a moment."
+        return transfers.send(peer, uri)
+    }
+
+    /** Sends or fetches the file of message [seq], whichever it still needs. */
+    fun startFile(seq: Long) {
+        files?.start(seq)
+    }
+
+    suspend fun image(seq: Long, file: Attachment, maxPixels: Int): Bitmap? = files?.image(seq, file, maxPixels)
+
+    suspend fun saveFile(seq: Long, file: Attachment, target: Uri): Boolean = files?.saveTo(seq, file, target) == true
+
+    fun clearFileProblem() {
+        files?.clearProblem()
+    }
 
     /**
      * Connects if there is a reason to be connected, disconnects if not. With
@@ -299,7 +483,9 @@ class Messenger(context: Context) {
         pendingStop?.cancel()
         pendingStop = null
         when {
-            wanted() -> connection?.start()
+            // A relay waiting for the email login is not asked again until
+            // there is a token to show it: see onAccessToken.
+            wanted() -> if (_relay.value !is RelayState.LoginNeeded) connection?.start()
             linger -> pendingStop = scope.launch {
                 delay(BACKGROUND_LINGER_MILLIS)
                 synchronized(this@Messenger) { if (!wanted()) connection?.stop() }
@@ -340,7 +526,7 @@ class Messenger(context: Context) {
      */
     suspend fun fetch(timeoutMillis: Long = FETCH_TIMEOUT_MILLIS): Boolean {
         val current = account.first { it !is AccountState.Loading }
-        if (current !is AccountState.Present || !current.registered) return true
+        if (current !is AccountState.Present || !current.registered || _banned.value) return true
         synchronized(this) {
             fetches++
             connectOrDrop()
@@ -476,6 +662,7 @@ class Messenger(context: Context) {
     /** Removes a contact and deletes the conversation with them from this phone. */
     suspend fun removeContact(id: String) {
         engine?.forget(id)
+        files?.sweep()
     }
 
     /** The newest [limit] messages with [peer], newest first, updated as they change. */
@@ -485,6 +672,7 @@ class Messenger(context: Context) {
     /** Deletes one message from this phone only. */
     suspend fun deleteMessage(seq: Long) {
         engine?.deleteMessage(seq)
+        files?.sweep()
     }
 
     /** Queues a message. It leaves as soon as there is a connection. */
@@ -500,6 +688,7 @@ class Messenger(context: Context) {
     /** Deletes the conversation with [peer] and throws away anything they send from now on. */
     suspend fun block(peer: String) {
         engine?.block(peer)
+        files?.sweep()
     }
 
     suspend fun unblock(peer: String) {
@@ -515,6 +704,12 @@ class Messenger(context: Context) {
         private const val KEY_REGISTRATION_ID = "signal_registration_id"
         private const val KEY_PUSH_WANTED = "push_wanted"
         private const val KEY_PUSH_UPLOADED = "push_uploaded"
+        private const val KEY_ACCESS_TOKEN = "access_token"
+        private const val KEY_MEMBER_EMAIL = "member_email"
+        private const val KEY_BANNED = "banned"
+        private const val KEY_DEVICE_REPORTED = "device_reported"
+        private const val DAY_MILLIS = 24 * 60 * 60 * 1000L
+        private const val ONLINE_WAIT_MILLIS = 20_000L
         private const val BACKGROUND_LINGER_MILLIS = 10_000L
 
         /** Long enough for a few hundred waiting messages on a slow connection. */

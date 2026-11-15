@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +28,7 @@ import org.maun.messenger.AppLock
 import org.maun.messenger.BuildConfig
 import org.maun.messenger.Messenger
 import org.maun.messenger.crypto.SafetyNumber
+import org.maun.messenger.network.RelayState
 
 private const val HOME = "home"
 private const val MY_CODE = "my-code"
@@ -73,7 +75,41 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
 
         else -> {
             val registered = current is AccountState.Present && current.registered
+            val banned by viewModel.banned.collectAsStateWithLifecycle()
+            // Once the relay has asked for the email login, the login screen
+            // stays until the relay has let this phone in (or refused it for
+            // good), also while the answer to a token is still on its way.
+            var loginProblem by rememberSaveable { mutableStateOf<String?>(null) }
+            var loginNeeded by rememberSaveable { mutableStateOf(false) }
+            when (val state = relay) {
+                is RelayState.LoginNeeded -> {
+                    loginNeeded = true
+                    loginProblem = state.problem
+                }
+                RelayState.Online, RelayState.Banned, is RelayState.Rejected -> loginNeeded = false
+                else -> Unit
+            }
+            DisposableEffect(loginNeeded) {
+                AppLock.loggingIn = loginNeeded
+                onDispose { AppLock.loggingIn = false }
+            }
             when {
+                // A member-only relay comes first: nothing else is shown to
+                // someone it has shut out, or does not know yet.
+                current is AccountState.Present && banned ->
+                    BannedScreen(relayName = current.code.relay, onCheckAgain = viewModel::checkBanAgain)
+
+                current is AccountState.Present && loginNeeded -> LoginScreen(
+                    relayName = current.code.relay,
+                    relayUrl = current.relayUrl,
+                    problem = loginProblem,
+                    checking = relay !is RelayState.LoginNeeded,
+                    onToken = { token ->
+                        loginProblem = null
+                        viewModel.onAccessToken(token)
+                    },
+                )
+
                 screen == SETUP_CHECK -> SelfCheckScreen(onBack = goBack)
 
                 !registered -> {
@@ -120,6 +156,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             val delivery by viewModel.delivery.collectAsStateWithLifecycle()
                             val pushProblem by viewModel.pushProblem.collectAsStateWithLifecycle()
                             val privacy by viewModel.privacy.collectAsStateWithLifecycle()
+                            val memberEmail by viewModel.memberEmail.collectAsStateWithLifecycle()
                             // Permissions, push apps and the screen lock change outside Maun.
                             LifecycleResumeEffect(Unit) {
                                 viewModel.refreshDelivery()
@@ -134,6 +171,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 pushProblem = pushProblem,
                                 privacy = privacy,
                                 blockedCount = blocked.size,
+                                memberEmail = memberEmail,
                                 onChoosePushApp = viewModel::choosePushApp,
                                 onGooglePush = viewModel::setGooglePush,
                                 onStayConnected = viewModel::setStayConnected,
@@ -159,6 +197,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             val conversation by remember(chatPeer) { viewModel.conversation(chatPeer, windows) }
                                 .collectAsStateWithLifecycle(initialValue = Conversation())
                             val waiting by viewModel.waiting.collectAsStateWithLifecycle()
+                            val fileProgress by viewModel.fileProgress.collectAsStateWithLifecycle()
+                            val fileProblem by viewModel.fileProblem.collectAsStateWithLifecycle()
                             ChatScreen(
                                 peerId = chatPeer,
                                 contactName = contacts.firstOrNull { it.id == chatPeer }?.name,
@@ -168,6 +208,15 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 relay = relay,
                                 onSend = { text -> viewModel.sendText(chatPeer, text) },
                                 onSeen = { viewModel.markRead(chatPeer) },
+                                files = FileActions(
+                                    progress = fileProgress,
+                                    problem = fileProblem,
+                                    onProblemShown = viewModel::clearFileProblem,
+                                    onAttach = { uri -> viewModel.sendFile(chatPeer, uri) },
+                                    onStart = viewModel::startFile,
+                                    onSave = viewModel::saveFile,
+                                    loadImage = viewModel::image,
+                                ),
                                 onLoadOlder = {
                                     // Counted from what is on screen, so asking twice asks for the same page.
                                     window = conversation.messages.size + Messenger.MESSAGE_PAGE

@@ -37,6 +37,9 @@ object MessageKind {
 
     /** A message arrived that this phone could not decrypt. There is no text. */
     const val UNREADABLE = 1
+
+    /** A file. The text is its record: see [org.maun.messenger.Attachment]. */
+    const val FILE = 2
 }
 
 /**
@@ -163,6 +166,19 @@ interface ChatDao {
         """,
     )
     fun observeChats(): Flow<List<ChatSummary>>
+
+    @Query("UPDATE messages SET text = :text WHERE seq = :seq")
+    fun setText(seq: Long, text: String): Int
+
+    /** Every message that has a file, for telling which stored files still belong to one. */
+    @Query("SELECT seq FROM messages WHERE kind = 2")
+    fun fileMessages(): List<Long>
+
+    @Query("DELETE FROM messages")
+    fun deleteAllMessages(): Int
+
+    @Query("DELETE FROM outbox")
+    fun deleteAllOutbox(): Int
 
     // ---- Outbox ------------------------------------------------------------
 

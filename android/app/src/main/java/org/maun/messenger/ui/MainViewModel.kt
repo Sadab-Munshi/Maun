@@ -1,6 +1,9 @@
 package org.maun.messenger.ui
 
 import android.app.Application
+import android.graphics.Bitmap
+import android.net.Uri
+import org.maun.messenger.Attachment
 import android.content.Context
 import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
@@ -50,6 +53,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val blocked = messenger.blocked
     val waiting = messenger.waiting
     val pushProblem = messenger.pushProblem
+
+    /** On a member-only relay: the email address this ID is tied to. */
+    val memberEmail = messenger.memberEmail
+
+    /** The relay's owner has shut this member out. */
+    val banned = messenger.banned
+
+    val fileProgress = messenger.fileProgress
+
+    private val attachProblem = MutableStateFlow<String?>(null)
+
+    /** Why a file could not be picked up, sent or fetched: said once, then cleared. */
+    val fileProblem: StateFlow<String?> = combine(attachProblem, messenger.fileProblem) { mine, theirs -> mine ?: theirs }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    fun clearFileProblem() {
+        attachProblem.value = null
+        messenger.clearFileProblem()
+    }
+
+    /** Proof of an approved email address has come back from the login page. */
+    fun onAccessToken(token: String) = messenger.onAccessToken(token)
+
+    fun checkBanAgain() = messenger.checkBanAgain()
+
+    fun sendFile(peer: String, uri: Uri) {
+        viewModelScope.launch { attachProblem.value = messenger.sendFile(peer, uri) }
+    }
+
+    fun startFile(seq: Long) = messenger.startFile(seq)
+
+    fun saveFile(seq: Long, file: Attachment, target: Uri) {
+        viewModelScope.launch {
+            if (!messenger.saveFile(seq, file, target)) attachProblem.value = "The file could not be saved there."
+        }
+    }
+
+    suspend fun image(seq: Long, file: Attachment, maxPixels: Int): Bitmap? = messenger.image(seq, file, maxPixels)
 
     private val _delivery = MutableStateFlow(DeliveryUi())
 
