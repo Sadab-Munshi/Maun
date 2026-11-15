@@ -7,10 +7,11 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 
-## Status: Milestone 2 (text messaging)
+## Status: Milestone 3 (background delivery)
 
-Two phones can exchange end-to-end encrypted text. Voice notes, files, calls
-and delivery while the app is closed are not built yet.
+Two phones can exchange end-to-end encrypted text, and are told about new
+messages while the app is closed. Voice notes, files and calls are not built
+yet.
 
 | Piece | Where |
 |---|---|
@@ -21,17 +22,40 @@ and delivery while the app is closed are not built yet.
 | Signal protocol sessions (PQXDH and Double Ratchet, via libsignal) | `android/.../crypto/Sessions.kt` |
 | Sending, receiving, Sent / Delivered / Read, message requests, blocking | `android/.../ChatEngine.kt` |
 | Offline queue that deletes each message once it is collected | `backend/src/mailbox.ts` |
+| Wake-ups for a phone that is not connected: encrypted, signed, content-free | `backend/src/crypto/webpush.ts`, `backend/src/mailbox.ts` |
+| Being woken by a push app (UnifiedPush), fetching, notifying | `android/.../push/` |
+| "Stay connected" for phones without a push app | `android/.../push/ConnectedService.kt` |
 | Rate limits and mailbox caps | `backend/src/index.ts`, `backend/src/protocol.ts`, `backend/wrangler.toml` |
 | CI: tests the relay, runs the app's messaging code against it, builds the APK | `.github/workflows/` |
 
 What the relay stores: per account, the public half of the login key and the
 public pre-keys others need to start a conversation; per waiting message, the
 encrypted bytes, the sender's ID and the arrival time, until the recipient's
-phone collects it or 30 days pass. It has no names, no phone numbers, no
-contact lists and no message history.
+phone collects it or 30 days pass; and, if the phone left one, the address of
+its push app's server. It has no names, no phone numbers, no contact lists and
+no message history.
 
 What it can see: which ID sends to which, and when. It cannot read messages or
 tell a message from a read receipt.
+
+### Messages while the app is closed
+
+Maun does not use Google's push service. Pick one:
+
+- **A push app (recommended).** Install [Sunup](https://f-droid.org/packages/org.unifiedpush.distributor.sunup/)
+  from F-Droid, open it once and allow it to run in the background, then open
+  Maun. The relay asks Mozilla's push service to wake the phone; Maun then
+  connects and fetches. Mozilla learns that the phone was woken and when,
+  nothing else.
+- **Stay connected.** A switch on Maun's home screen. Maun keeps its
+  connection open behind a permanent notification. Nobody else is involved; it
+  uses more battery.
+
+Without either, Maun looks for messages about once an hour.
+
+ntfy's public server (ntfy.sh) does not work with a relay on Cloudflare: it
+turns away the addresses all Cloudflare Workers share. ntfy with your own
+server does.
 
 ## Try it
 

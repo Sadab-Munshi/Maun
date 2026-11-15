@@ -9,9 +9,43 @@ App name: **Maun** (Hindi/Sanskrit for "silence"). Package ID: `org.maun.messeng
 |---|---|
 | M0. Foundations and risk checks | **Done.** Setup check passed on a real phone against the deployed relay. |
 | M1. Identity and login | **Done.** Two phones registered and added each other by QR. |
-| M2. Text messaging | **Built, tested in CI and deployed (app 0.2.0, relay protocol 2). Waiting for the two-phone check.** |
-| M3. Background delivery | Next |
+| M2. Text messaging | **Done.** Two phones exchanged messages both ways, with Sent, Delivered and Read. |
+| M3. Background delivery | **Built, tested in CI and deployed (app 0.3.0, relay still protocol 2). Waiting for the two-phone check.** |
 | M4 to M6 | Not started |
+
+### M3 results
+
+Checked automatically, on every push:
+
+- Relay: 98 tests pass in Cloudflare's local runtime. The 22 new ones cover: the wake-up encryption producing exactly the worked example of RFC 8291; a wake-up being readable only with the phone's keys; one wake-up when a message arrives for someone offline, carrying nothing but the word "wake" and no ID of anyone; no repeat until the phone has been, except one every ten minutes; none while the phone is connected; a wake-up for a message lost as the phone disconnected, but not over and over for one it never accepts; the daily cap of 200; forgetting an address the push service reports dead; retrying after a failure; the signature on each wake-up verifying against the key the phone was told, with a different key per mailbox; and refusing addresses that are not public https names (private networks, IP numbers, other ports).
+- App and relay together: 16 tests. The 4 new ones cover a phone woken to fetch: it takes in everything that was waiting, sends the delivery receipts, and can disconnect at once with nothing left behind in either direction; and the wake-up address reaching the relay once, again when it changes, and being withdrawn when the push app is gone.
+- What a notification says is tested not to contain message text or anyone's ID.
+- Lint reports 0 errors. The debug APK is 72 MB (66 MB before; the two new libraries).
+
+Checked by hand, from a development machine:
+
+- **Deployed relay to Mozilla's push service and back, 4 times out of 4:** a script standing in for the Sunup app registered with Mozilla's push service using the relay's key; a message was sent to an offline account on the deployed relay; the wake-up arrived through Mozilla about 0.8 seconds later and decrypted to "wake".
+- The same through ntfy.sh works from a relay on a development machine and **failed from the deployed relay 4 times out of 4**, see below.
+- These checks left about a dozen unused test accounts on the relay, each with one undelivered test message that expires after 30 days.
+
+Not checked yet, because it needs phones:
+
+- **Everything on the Android side of waking up has never run on a phone:** registering with a push app, being woken by it, WorkManager starting the fetch with the app closed, the notification, "Stay connected", starting again after a restart. It compiles, passes lint, and the logic underneath is tested, but phone makers' battery savers are exactly what breaks this kind of feature.
+- The delay between sending and the notification, and the battery cost of "Stay connected" over 24 hours.
+
+### Changed while building M3
+
+- **The public ntfy.sh server does not work with this relay.** ntfy.sh limits its free service per sending address, and all Cloudflare Workers share a few. The deployed relay's wake-ups to ntfy.sh timed out all four times they were tried; others report the same ([ntfy issue 1963](https://github.com/binwiederhier/ntfy/issues/1963)). The spec's "UnifiedPush (ntfy)" therefore becomes **UnifiedPush with Sunup** (Mozilla's push service) as the recommended push app. ntfy still works with a self-hosted ntfy server, or a relay that is not on Cloudflare.
+- **Wake-ups are signed (VAPID), with a key per mailbox.** Mozilla's push service only takes wake-ups from a sender the phone named in advance. Each mailbox makes its own key pair; the phone learns the public half at login and passes it to the push app. A relay-wide key would have needed a secret configured by hand and would have let the push service see which phones share a relay.
+- **Wake-ups are encrypted even though they say nothing.** UnifiedPush now requires Web Push encryption. The content is always the word "wake".
+- **What the push service learns:** that this phone was woken, when, and from Cloudflare. Not by whom, and not how many messages are waiting: there is one wake-up until the phone has collected, however many arrive.
+- **Three ways to get messages with the app closed**, in order of preference: a push app wakes Maun (no extra battery; needs Sunup or similar installed); "Stay connected" keeps the connection open behind a permanent notification (no other app or server involved; uses more battery; off until turned on); and an hourly check that always runs, as a safety net.
+- **Notifications never contain the message.** They say that a message arrived and, on an unlocked phone, the contact's name. Android stores notification text outside the app's encrypted storage and lets other apps with notification access read it.
+- **The relay tells the phone what became of its last wake-up**, so a push service that turns the relay away shows up on the home screen instead of looking like silence.
+- **No protocol bump.** The relay still speaks protocol 2 and 0.2.0 keeps working against it, without background delivery.
+- **Known limit:** a wake-up address on a port other than 443 is refused, which rules out some self-hosted push servers.
+- **Known limit:** tapping the notification opens the chat list, not the conversation.
+- **Known limit:** the ping that keeps the connection alive goes out every 30 seconds, also in "Stay connected". Its battery cost is unmeasured.
 
 ### M2 results
 
@@ -208,7 +242,7 @@ Order: prove the risky pieces first, then text, then background delivery, then m
 
 - UnifiedPush receiver plus WorkManager fetch; fallback foreground service; notifications that show no content on the lock screen by default.
 - Backend: wake-up ping with debounce; validation of the push URL.
-- Check whether the UnifiedPush library now requires encrypted (Web Push) payloads rather than an empty ping.
+- Check whether the UnifiedPush library now requires encrypted (Web Push) payloads rather than an empty ping. (It does. See "Changed while building M3".)
 
 **Done when:** with the app force-closed, a message produces a notification in both modes. Measure the delay and battery cost of the fallback over 24 hours.
 
