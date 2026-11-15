@@ -1,0 +1,72 @@
+name: Compile classpath
+
+# Run by hand. Packs everything the app's Kotlin code is compiled against
+# (the libraries' class files, the Android API, and the generated sources)
+# into one artifact, so the code can be type-checked on a machine that is too
+# small to run the full Gradle build.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: android
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Export
+        run: |
+          cat > "$RUNNER_TEMP/export.gradle" <<'GRADLE'
+          allprojects {
+            afterEvaluate { p ->
+              if (p.path == ':app') {
+                p.tasks.register('exportCompileClasspath') {
+                  def files = p.configurations.getByName('debugCompileClasspath').incoming.artifactView {
+                    attributes { attribute(org.gradle.api.attributes.Attribute.of('artifactType', String), 'android-classes-jar') }
+                  }.files
+                  def out = new File(p.layout.buildDirectory.get().asFile, 'compile-classpath')
+                  inputs.files(files)
+                  doLast {
+                    out.deleteDir()
+                    out.mkdirs()
+                    files.files.eachWithIndex { f, i ->
+                      java.nio.file.Files.copy(f.toPath(), new File(out, String.format('%03d-%s', i, f.name)).toPath())
+                    }
+                  }
+                }
+              }
+            }
+          }
+          GRADLE
+          ./gradlew --no-configuration-cache --init-script "$RUNNER_TEMP/export.gradle" :app:exportCompileClasspath :app:compileDebugKotlin
+          out="$RUNNER_TEMP/classpath"
+          mkdir -p "$out/libs" "$out/generated"
+          cp app/build/compile-classpath/* "$out/libs/"
+          sdk=$(sed -n 's/.*compileSdk = \([0-9]*\).*/\1/p' app/build.gradle.kts)
+          cp "$ANDROID_HOME/platforms/android-$sdk/android.jar" "$out/android.jar"
+          find app/build/intermediates -name R.jar -exec cp {} "$out/R.jar" \;
+          cp -r app/build/generated/. "$out/generated/"
+          ls "$out" "$out/libs" | head -200
+          du -sh "$out"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: compile-classpath
+          path: ${{ runner.temp }}/classpath
+          if-no-files-found: error
+          retention-days: 30
