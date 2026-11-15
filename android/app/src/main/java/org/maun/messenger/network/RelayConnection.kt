@@ -53,6 +53,10 @@ data class Ready(
     val hasKeys: Boolean,
     /** One-time pre-keys the relay has left to hand out. */
     val oneTimeKeys: Int,
+    /** The relay has a wake-up address for this phone. */
+    val hasPush: Boolean = false,
+    /** How many messages were waiting at the moment of login. They follow right away. */
+    val queued: Int = 0,
 )
 
 /** What the messaging code needs from a connection. */
@@ -80,7 +84,8 @@ interface RelayLink {
  *
  * [isRegistered] says whether this account has ever been accepted by the
  * relay; [onLoggedIn] is called after every successful login, before the state
- * becomes [RelayState.Online], and [onOnline] right after it has.
+ * becomes [RelayState.Online], and [onOnline] right after it has. [onOffline]
+ * is called when a connection that had logged in has ended.
  *
  * [onFrame] receives the messages the relay delivers, one at a time and in
  * order. It runs on the connection's own loop, so it must not wait for an
@@ -97,6 +102,7 @@ class RelayConnection(
     private val backoff: Backoff = Backoff(),
     private val onOnline: () -> Unit = {},
     private val onFrame: suspend (JSONObject) -> Unit = {},
+    private val onOffline: () -> Unit = {},
 ) : RelayLink {
     private val request = Request.Builder().url(RelayClient.socketUrl(relayUrl, identity.id)).build()
 
@@ -210,6 +216,8 @@ class RelayConnection(
                                     fresh = frame.optBoolean("fresh"),
                                     hasKeys = frame.optBoolean("keys"),
                                     oneTimeKeys = frame.optInt("otks"),
+                                    hasPush = frame.optBoolean("push"),
+                                    queued = frame.optInt("queued"),
                                 )
                                 live = socket
                                 _state.value = RelayState.Online
@@ -233,6 +241,7 @@ class RelayConnection(
         } finally {
             live = null
             ready = null
+            if (online) onOffline()
             pending.values.forEach { it.completeExceptionally(RelayException("The connection was lost")) }
             // A polite close when we are the ones leaving; no effect if already closed.
             if (!socket.close(1000, null)) socket.cancel()

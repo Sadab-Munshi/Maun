@@ -32,6 +32,11 @@ fun HomeScreen(
     relay: RelayState,
     lists: HomeLists,
     blockedCount: Int,
+    delivery: DeliveryUi,
+    pushProblem: String?,
+    onChoosePushApp: (String) -> Unit,
+    onStayConnected: (Boolean) -> Unit,
+    onDeliveryChanged: () -> Unit,
     onShowMyCode: () -> Unit,
     onAddContact: () -> Unit,
     onOpenChat: (String) -> Unit,
@@ -41,6 +46,12 @@ fun HomeScreen(
 ) {
     ScreenFrame(title = "Maun") {
         ConnectionStatus(relay, onReconnect)
+
+        // Up here while something about background delivery needs doing; below the chats once it is settled.
+        val deliveryCard = @Composable {
+            DeliveryCard(delivery, pushProblem, onChoosePushApp, onStayConnected, onDeliveryChanged)
+        }
+        if (delivery.needsAttention) deliveryCard()
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             Button(onClick = onShowMyCode, modifier = Modifier.weight(1f)) { Text("My code") }
@@ -60,12 +71,9 @@ fun HomeScreen(
             )
         } else {
             lists.chats.forEach { row -> ChatRowItem(row, onClick = { onOpenChat(row.peer) }) }
-            Text(
-                text = "Messages arrive while Maun is open. Delivery in the background comes in the next version.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
+
+        if (!delivery.needsAttention) deliveryCard()
 
         if (blockedCount > 0) {
             TextButton(onClick = onOpenBlocked, modifier = Modifier.fillMaxWidth()) { Text("Blocked ($blockedCount)") }
@@ -186,6 +194,11 @@ private fun HomePreview() {
                 ),
             ),
             blockedCount = 1,
+            delivery = DeliveryUi(pushApp = "ntfy"),
+            pushProblem = null,
+            onChoosePushApp = {},
+            onStayConnected = {},
+            onDeliveryChanged = {},
             onShowMyCode = {},
             onAddContact = {},
             onOpenChat = {},

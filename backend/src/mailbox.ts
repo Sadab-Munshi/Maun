@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { verifyDeviceSignature, verifyIdentitySignature } from "./crypto/signatures";
+import { PUSH_AUTH_BYTES, encryptWebPush, importPushKey, isPushUrl } from "./crypto/webpush";
 import {
   CLOSE_AUTH_FAILED,
   CLOSE_AUTH_TIMEOUT,
@@ -8,6 +9,10 @@ import {
   MAX_ONE_TIME_KEYS,
   NONCE_BYTES,
   PROTOCOL_VERSION,
+  PUSH_DAILY_CAP,
+  PUSH_PAYLOAD,
+  PUSH_REPEAT_MS,
+  PUSH_TTL_SECONDS,
   QUEUE_CAP,
   QUEUE_CAP_PER_SENDER,
   QUEUE_TTL_MS,
@@ -41,10 +46,11 @@ type SocketState =
   /** A signature is being checked; a second attempt on the same socket is refused. */
   | { s: "checking"; m: string }
   /**
-   * Logged in. `c` is the highest queue position sent on this socket and `o`
-   * how many of those messages are still waiting for their `ack`.
+   * Logged in. `c` is the highest queue position sent on this socket, `o` how
+   * many of those messages are still waiting for their `ack`, and `t` when the
+   * login happened.
    */
-  | { s: "ready"; m: string; c: number; o: number };
+  | { s: "ready"; m: string; c: number; o: number; t: number };
 
 type ReadyState = Extract<SocketState, { s: "ready" }>;
 
@@ -71,6 +77,12 @@ export type StoreOutcome = "stored" | "no_account" | "mailbox_full";
  *     happens to it, sent to the phone when one is connected, and deleted the
  *     moment the phone acknowledges it. Nothing else is kept: no history, no
  *     record of who wrote.
+ *
+ * A phone that is not always connected may also leave a wake-up address (a
+ * Web Push endpoint from the push app it uses). When a message arrives and no
+ * phone is connected, the mailbox sends one encrypted, content-free wake-up
+ * there. The push service learns that this phone was woken and when; it does
+ * not learn by whom or why.
  */
 export class Mailbox extends DurableObject<Env> {
   // Mirrors of what is in storage, rebuilt after the object has been evicted.
@@ -145,8 +157,18 @@ export class Mailbox extends DurableObject<Env> {
         if (other !== ws) closeQuietly(other, CLOSE_REPLACED, "replaced");
       }
       this.ensureTables();
-      setState(ws, { s: "ready", m: state.m, c: 0, o: 0 });
-      send(ws, { t: "ready", fresh, keys: this.hasKeys(), otks: this.oneTimeKeyCount() });
+      const sql = this.ctx.storage.sql;
+      // The phone is here: whatever wake-up was on its way has done its job.
+      sql.exec("UPDATE push SET pending = 0 WHERE id = 1 AND pending = 1");
+      setState(ws, { s: "ready", m: state.m, c: 0, o: 0, t: Date.now() });
+      send(ws, {
+        t: "ready",
+        fresh,
+        keys: this.hasKeys(),
+        otks: this.oneTimeKeyCount(),
+        push: sql.exec("SELECT 1 FROM push WHERE id = 1").toArray().length > 0,
+        queued: this.size().total,
+      });
       // Everything that arrived while the phone was away.
       this.pump(ws);
       return;
@@ -255,6 +277,31 @@ export class Mailbox extends DurableObject<Env> {
         this.pump(ws);
         return;
       }
+
+      case "put_push": {
+        const usable =
+          isPushUrl(frame.url) && frame.auth.length === PUSH_AUTH_BYTES && (await importPushKey(frame.key)) !== null;
+        if (!usable) {
+          send(ws, { t: "failed", id: frame.id, code: "bad_push" });
+          return;
+        }
+        // The daily count survives a change of address, so changing it over
+        // and over does not buy more wake-ups.
+        sql.exec(
+          `INSERT INTO push (id, url, key, auth, last, pending, day, sent) VALUES (1, ?, ?, ?, 0, 0, 0, 0)
+           ON CONFLICT (id) DO UPDATE SET url = excluded.url, key = excluded.key, auth = excluded.auth, pending = 0`,
+          frame.url,
+          blob(frame.key),
+          blob(frame.auth),
+        );
+        send(ws, { t: "saved", id: frame.id, otks: this.oneTimeKeyCount() });
+        return;
+      }
+
+      case "drop_push":
+        sql.exec("DELETE FROM push WHERE id = 1");
+        send(ws, { t: "saved", id: frame.id, otks: this.oneTimeKeyCount() });
+        return;
     }
   }
 
@@ -288,6 +335,7 @@ export class Mailbox extends DurableObject<Env> {
       this.expiryArmed = true;
     }
     for (const ws of this.ctx.getWebSockets()) this.pump(ws);
+    if (!this.connected()) this.wake(now);
     return "stored";
   }
 
@@ -310,6 +358,81 @@ export class Mailbox extends DurableObject<Env> {
       kpk: { id: row.kpk_id as number, key: bytes(row.kpk), sig: bytes(row.kpk_sig) },
       otk: taken ? { id: taken.id as number, key: bytes(taken.key) } : null,
     };
+  }
+
+  // ---- Wake-ups --------------------------------------------------------------
+
+  /** Whether a logged-in phone is connected, not counting `except`. */
+  private connected(except?: WebSocket): boolean {
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws !== except && getState(ws)?.s === "ready") return true;
+    }
+    return false;
+  }
+
+  /**
+   * Sends a wake-up to the phone's push address, if it left one and has not
+   * just been sent one. Returns at once; the request runs in the background.
+   */
+  private wake(now: number): void {
+    const sql = this.ctx.storage.sql;
+    const row = sql.exec("SELECT url, key, auth, last, pending, day, sent FROM push WHERE id = 1").toArray()[0];
+    if (!row) return;
+    // One is on its way and the phone has not come yet. Sending more would
+    // only tell the push service how many messages are waiting.
+    if (row.pending === 1 && now - (row.last as number) < PUSH_REPEAT_MS) return;
+    const today = Math.floor(now / 86_400_000);
+    const sentToday = row.day === today ? (row.sent as number) : 0;
+    if (sentToday >= PUSH_DAILY_CAP) return;
+    sql.exec("UPDATE push SET last = ?, pending = 1, day = ?, sent = ? WHERE id = 1", now, today, sentToday + 1);
+    this.ctx.waitUntil(this.deliverWake(row.url as string, bytes(row.key), bytes(row.auth)));
+  }
+
+  private async deliverWake(url: string, key: Uint8Array, auth: Uint8Array): Promise<void> {
+    const sql = this.ctx.storage.sql;
+    let status = 0;
+    try {
+      const body = await encryptWebPush(new TextEncoder().encode(PUSH_PAYLOAD), key, auth);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Encoding": "aes128gcm",
+          "Content-Type": "application/octet-stream",
+          TTL: String(PUSH_TTL_SECONDS),
+          Urgency: "high",
+        },
+        body,
+        // A wake-up address must answer for itself; it may not send the relay elsewhere.
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+      });
+      status = response.status;
+      await response.body?.cancel();
+    } catch {
+      // The push service could not be reached.
+    }
+    if (status >= 200 && status < 300) return;
+    if (status === 404 || status === 410) {
+      // The push service says this address no longer exists. The phone leaves
+      // a new one the next time it connects.
+      sql.exec("DELETE FROM push WHERE id = 1 AND url = ?", url);
+    } else {
+      // It did not get through, so the next message may try again at once.
+      sql.exec("UPDATE push SET pending = 0 WHERE id = 1 AND url = ?", url);
+    }
+  }
+
+  /**
+   * A phone has gone. Anything that arrived while it was connected and was
+   * never acknowledged was probably lost on the way, so the phone is woken to
+   * fetch it. Older messages are left alone: it has already been woken for
+   * those, and a message it cannot accept must not wake it for ever.
+   */
+  private left(ws: WebSocket): void {
+    const state = getState(ws);
+    if (state?.s !== "ready" || this.connected(ws)) return;
+    const waiting = this.ctx.storage.sql.exec("SELECT 1 FROM queue WHERE at >= ? LIMIT 1", state.t).toArray();
+    if (waiting.length > 0) this.wake(Date.now());
   }
 
   /** Deletes messages nobody collected in time. */
@@ -388,6 +511,17 @@ export class Mailbox extends DurableObject<Env> {
     sql.exec("CREATE TABLE IF NOT EXISTS otks (id INTEGER PRIMARY KEY, key BLOB NOT NULL)");
     // seq is the only index, to keep each message at one row written and one
     // deleted. `at` is when it arrived, used only to expire it.
+    // One row: where to send a wake-up, and the keys to encrypt it with.
+    // `last` is when one was last sent, `pending` whether the phone has yet
+    // to answer it, `day` and `sent` count the day's wake-ups.
+    sql.exec(
+      `CREATE TABLE IF NOT EXISTS push (
+         id INTEGER PRIMARY KEY CHECK (id = 1),
+         url TEXT NOT NULL, key BLOB NOT NULL, auth BLOB NOT NULL,
+         last INTEGER NOT NULL, pending INTEGER NOT NULL,
+         day INTEGER NOT NULL, sent INTEGER NOT NULL
+       )`,
+    );
     sql.exec(
       `CREATE TABLE IF NOT EXISTS queue (
          seq INTEGER PRIMARY KEY,
@@ -448,11 +582,13 @@ export class Mailbox extends DurableObject<Env> {
   }
 
   override async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
+    this.left(ws);
     // 1005 and 1006 are reserved and cannot be sent back.
     closeQuietly(ws, code === 1005 || code === 1006 ? 1000 : code, reason);
   }
 
   override async webSocketError(ws: WebSocket): Promise<void> {
+    this.left(ws);
     closeQuietly(ws, 1011, "error");
   }
 

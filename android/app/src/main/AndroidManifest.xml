@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
 
@@ -8,6 +9,22 @@
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />
+
+    <!-- To say that a message has arrived. Asked for from the home screen. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+        "Stay connected": for phones without a push app, Maun can keep its
+        connection open while closed. Off until the user turns it on. Android
+        then requires the permanent notification, and the last permission lets
+        Maun ask to be left running while the phone rests.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission
+        android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        tools:ignore="BatteryLife" />
 
     <!--
         Backups are off everywhere: messages and keys must never leave the
@@ -33,6 +50,31 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Hears from the push app on this phone: a new wake-up address, or a wake-up. -->
+        <service
+            android:name=".push.WakeService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Holds the connection open while "Stay connected" is on. -->
+        <service
+            android:name=".push.ConnectedService"
+            android:exported="false"
+            android:foregroundServiceType="remoteMessaging" />
+
+        <!-- After a restart or an update: register with the push app again, resume staying connected. -->
+        <receiver
+            android:name=".push.StartReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

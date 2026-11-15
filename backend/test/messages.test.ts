@@ -325,7 +325,9 @@ describe("refusals", () => {
     const bob = await registered();
     const a = await online(alice);
     const outcomes = new Set<string>();
-    for (let i = 0; i < 130; i++) {
+    // The limit is 120 a minute, counted in whole minutes. Twice that, and a
+    // little more, exceeds it even when the test straddles a minute boundary.
+    for (let i = 0; i < 250 && !outcomes.has("rate_limited"); i++) {
       const answer = await sendMessage(a, bob.id, new Uint8Array([1]));
       outcomes.add(answer.t === "stored" ? "stored" : (answer.code as string));
     }

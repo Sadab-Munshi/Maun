@@ -100,7 +100,9 @@ describe("rate limits", () => {
     const ip = "203.0.113.7";
     const statuses: number[] = [];
     // Every one of these is to an address with no account: a possible sign-up.
-    for (let i = 0; i < 16; i++) {
+    // Limits are counted in whole minutes, so go past twice the limit of 10:
+    // enough even when the loop straddles a minute boundary.
+    for (let i = 0; i < 25 && !statuses.includes(429); i++) {
       const { mailboxId } = await makeIdentity();
       const response = await SELF.fetch(`https://relay.test/v1/ws/${mailboxId}`, {
         headers: { Upgrade: "websocket", "CF-Connecting-IP": ip },
@@ -116,7 +118,7 @@ describe("rate limits", () => {
   it("turns away a flood of connections to one mailbox", async () => {
     const { mailboxId } = await makeIdentity();
     const statuses: number[] = [];
-    for (let i = 0; i < 26; i++) {
+    for (let i = 0; i < 45 && !statuses.includes(429); i++) {
       // A different address each time: only the per-mailbox limit can trip.
       const response = await SELF.fetch(`https://relay.test/v1/ws/${mailboxId}`, {
         headers: { Upgrade: "websocket", "CF-Connecting-IP": `203.0.114.${i + 1}` },

@@ -173,7 +173,7 @@ export async function register(identity: Identity, device: Device): Promise<Inbo
   const { inbox, nonce, registered } = await connect(identity.mailboxId);
   expect(registered).toBe(false);
   inbox.sendJson(await registerFrame(identity, device, nonce));
-  expect(await inbox.nextJson()).toEqual({ t: "ready", fresh: true, keys: false, otks: 0 });
+  expect(await inbox.nextJson()).toEqual({ t: "ready", fresh: true, keys: false, otks: 0, push: false, queued: 0 });
   return inbox;
 }
 
@@ -252,4 +252,56 @@ export function keysFrame(id: string = requestId()) {
 
 export function oneTimeKeys(firstId: number, count: number) {
   return Array.from({ length: count }, (_, i) => ({ id: firstId + i, key: toBase64(randomBytes(33)) }));
+}
+
+// ---- Wake-up helpers -------------------------------------------------------
+
+function fromBase64Url(text: string): Uint8Array {
+  const padded = text.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(text.length / 4) * 4, "=");
+  return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+}
+
+export { fromBase64Url };
+
+async function hkdf(salt: Uint8Array, secret: Uint8Array, info: Uint8Array, length: number): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey("raw", secret, "HKDF", false, ["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info }, key, length * 8));
+}
+
+/** The receiving side of Web Push: what a phone's push app holds. */
+export type PushKeys = { publicKey: Uint8Array; auth: Uint8Array; decrypt(body: Uint8Array): Promise<Uint8Array> };
+
+/**
+ * Makes the keys a push app would hand out, with the matching decryption
+ * (RFC 8291 read from the receiver's side, written separately from the
+ * relay's encryption so that one checks the other).
+ */
+export async function makePushKeys(): Promise<PushKeys> {
+  const pair = (await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, [
+    "deriveBits",
+  ])) as CryptoKeyPair;
+  const publicKey = new Uint8Array((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer);
+  const auth = randomBytes(16);
+  return {
+    publicKey,
+    auth,
+    async decrypt(body) {
+      const salt = body.subarray(0, 16);
+      const keyLength = body[20]!;
+      const senderPublic = body.subarray(21, 21 + keyLength);
+      const sealed = body.subarray(21 + keyLength);
+      const sender = await crypto.subtle.importKey("raw", senderPublic, { name: "ECDH", namedCurve: "P-256" }, false, []);
+      const ecdh = { name: "ECDH", public: sender } as unknown as SubtleCryptoDeriveKeyAlgorithm;
+      const shared = new Uint8Array(await crypto.subtle.deriveBits(ecdh, pair.privateKey, 256));
+      const text = new TextEncoder();
+      const info = new Uint8Array([...text.encode("WebPush: info\0"), ...publicKey, ...senderPublic]);
+      const material = await hkdf(auth, shared, info, 32);
+      const contentKey = await hkdf(salt, material, text.encode("Content-Encoding: aes128gcm\0"), 16);
+      const nonce = await hkdf(salt, material, text.encode("Content-Encoding: nonce\0"), 12);
+      const aes = await crypto.subtle.importKey("raw", contentKey, "AES-GCM", false, ["decrypt"]);
+      const record = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce }, aes, sealed));
+      // Strip the padding: everything from the last 0x02 on.
+      return record.subarray(0, record.lastIndexOf(2));
+    },
+  };
 }

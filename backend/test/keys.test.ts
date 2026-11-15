@@ -36,7 +36,7 @@ describe("pre-keys", () => {
 
     const { inbox, nonce } = await connect(alice.id);
     inbox.sendJson(await loginFrame(alice.identity, alice.device, nonce));
-    expect(await inbox.nextJson()).toEqual({ t: "ready", fresh: false, keys: true, otks: 30 });
+    expect(await inbox.nextJson()).toEqual({ t: "ready", fresh: false, keys: true, otks: 30, push: false, queued: 0 });
     await hangUp(inbox);
   });
 

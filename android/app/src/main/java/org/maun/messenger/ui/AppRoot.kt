@@ -13,6 +13,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.maun.messenger.AccountState
@@ -132,10 +133,22 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                         else -> {
                             val lists by viewModel.home.collectAsStateWithLifecycle()
                             val blocked by viewModel.blocked.collectAsStateWithLifecycle()
+                            val delivery by viewModel.delivery.collectAsStateWithLifecycle()
+                            val pushProblem by viewModel.pushProblem.collectAsStateWithLifecycle()
+                            // Permissions and push apps change outside Maun; look again on every return.
+                            LifecycleResumeEffect(Unit) {
+                                viewModel.refreshDelivery()
+                                onPauseOrDispose { }
+                            }
                             HomeScreen(
                                 relay = relay,
                                 lists = lists,
                                 blockedCount = blocked.size,
+                                delivery = delivery,
+                                pushProblem = pushProblem,
+                                onChoosePushApp = viewModel::choosePushApp,
+                                onStayConnected = viewModel::setStayConnected,
+                                onDeliveryChanged = viewModel::refreshDelivery,
                                 onShowMyCode = { screen = MY_CODE },
                                 onAddContact = { screen = ADD_CONTACT },
                                 onOpenChat = { id -> screen = CHAT_PREFIX + id },

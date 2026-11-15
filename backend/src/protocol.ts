@@ -11,12 +11,18 @@
 //     with `ack`, and only then is the message deleted;
 //   - `put_keys` and `put_otks` publish the pre-keys other people need to start
 //     an encrypted session; `get_keys` fetches someone else's;
-//   - `send` hands a message to another mailbox, answered by `stored`.
+//   - `send` hands a message to another mailbox, answered by `stored`;
+//   - `put_push` tells the relay where to send a wake-up when a message arrives
+//     and the phone is not connected; `drop_push` withdraws it.
 // Every request carries an `id` that comes back in its answer.
 //
 // The relay never sees plaintext: `body` is a Signal ciphertext.
 
-/** Bumped whenever a frame changes in a way old clients cannot read. */
+/**
+ * Bumped whenever a frame changes in a way old clients cannot read. Wake-ups
+ * (`put_push`, `drop_push`, and `push` and `queued` in `ready`) were added
+ * without a bump: a client that does not know them is not affected.
+ */
 export const PROTOCOL_VERSION = 2;
 
 /** Largest frame the mailbox will read. Chat envelopes are small; files go to R2. */
@@ -46,6 +52,19 @@ export const DELIVERY_WINDOW = 50;
 /** libsignal's message types: a normal message, and one that also carries the key exchange. */
 export const KIND_MESSAGE = 2;
 export const KIND_PREKEY_MESSAGE = 3;
+
+/**
+ * Wake-ups. One is sent when a message arrives and the phone is not connected.
+ * No more follow until the phone has logged in, except one every
+ * PUSH_REPEAT_MS in case the first was lost. PUSH_DAILY_CAP bounds what a
+ * mailbox can make the relay send to an address of its choosing.
+ */
+export const PUSH_REPEAT_MS = 10 * 60 * 1000;
+export const PUSH_DAILY_CAP = 200;
+/** How long the push service should keep a wake-up for a phone it cannot reach, in seconds. */
+export const PUSH_TTL_SECONDS = 24 * 60 * 60;
+/** What a wake-up says once decrypted. It names nobody and carries nothing. */
+export const PUSH_PAYLOAD = "wake";
 
 export const NONCE_BYTES = 32;
 
@@ -84,14 +103,20 @@ export type ClientFrame =
   | { t: "put_otks"; id: string; keys: OneTimeKey[] }
   | { t: "get_keys"; id: string; of: string }
   | { t: "send"; id: string; to: string; kind: number; body: Uint8Array }
-  | { t: "ack"; seq: number };
+  | { t: "ack"; seq: number }
+  /** `key` and `auth` are the Web Push keys the phone's push app handed out. */
+  | { t: "put_push"; id: string; url: string; key: Uint8Array; auth: Uint8Array }
+  | { t: "drop_push"; id: string };
 
 type WireSignedKey = { id: number; key: string; sig: string };
 
 export type ServerFrame =
   | { t: "hello"; proto: number; nonce: string; registered: boolean }
-  /** `keys`: pre-keys are published. `otks`: one-time pre-keys left. */
-  | { t: "ready"; fresh: boolean; keys: boolean; otks: number }
+  /**
+   * `keys`: pre-keys are published. `otks`: one-time pre-keys left.
+   * `push`: a wake-up address is on file. `queued`: messages waiting right now.
+   */
+  | { t: "ready"; fresh: boolean; keys: boolean; otks: number; push: boolean; queued: number }
   | { t: "echo"; id: string; body: string; at: number }
   | { t: "saved"; id: string; otks: number }
   | {
@@ -107,8 +132,16 @@ export type ServerFrame =
   | { t: "msg"; seq: number; from: string; kind: number; body: string; at: number }
   | { t: "error"; code: ErrorCode };
 
-/** Why a `get_keys` or `send` could not be carried out. The connection stays open. */
-export type FailureCode = "no_account" | "no_keys" | "mailbox_full" | "rate_limited" | "self" | "unavailable";
+/** Why a request could not be carried out. The connection stays open. */
+export type FailureCode =
+  | "no_account"
+  | "no_keys"
+  | "mailbox_full"
+  | "rate_limited"
+  | "self"
+  | "unavailable"
+  /** The wake-up address or its keys are not ones the relay will use. */
+  | "bad_push";
 
 export type ErrorCode =
   | "bad_frame"
@@ -213,6 +246,17 @@ export function parseClientFrame(raw: string | ArrayBuffer): ClientFrame | Error
     case "ack":
       if (typeof frame.seq !== "number" || !Number.isSafeInteger(frame.seq) || frame.seq <= 0) return "bad_frame";
       return { t: "ack", seq: frame.seq };
+    case "put_push": {
+      // Only the shape is checked here. Whether the address is acceptable is
+      // answered with a reason, so the app can tell the user.
+      const key = fromBase64(frame.key, 128);
+      const auth = fromBase64(frame.auth, 128);
+      if (!isRequestId(frame.id) || typeof frame.url !== "string" || !key || !auth) return "bad_frame";
+      return { t: "put_push", id: frame.id, url: frame.url, key, auth };
+    }
+    case "drop_push":
+      if (!isRequestId(frame.id)) return "bad_frame";
+      return { t: "drop_push", id: frame.id };
     default:
       return "unknown_type";
   }

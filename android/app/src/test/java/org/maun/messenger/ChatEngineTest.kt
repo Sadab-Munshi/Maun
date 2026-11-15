@@ -7,12 +7,15 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -28,6 +31,8 @@ import org.maun.messenger.data.MessageKind
 import org.maun.messenger.data.MessageStatus
 import org.maun.messenger.data.ReceiptLevel
 import org.maun.messenger.network.Backoff
+import org.maun.messenger.network.PushAddress
+import org.maun.messenger.network.PushState
 import org.maun.messenger.network.Ready
 import org.maun.messenger.network.RelayConnection
 import org.maun.messenger.network.RelayLink
@@ -51,6 +56,14 @@ class ChatEngineTest {
         val id = identity.id
         val db = FakeDb()
         val delivered = CopyOnWriteArrayList<JSONObject>()
+
+        /** The wake-up address this phone wants, and the one it believes the relay has. */
+        @Volatile
+        var pushWanted: PushAddress? = null
+
+        @Volatile
+        var pushUploaded: PushAddress? = null
+
         val engine = ChatEngine(
             selfId = id,
             signal = SignalSessions(identity, SignalSessions.newRegistrationId(), db),
@@ -58,6 +71,13 @@ class ChatEngineTest {
             tx = db,
             scope = scope,
             retryMillis = 300,
+            push = object : PushState {
+                override suspend fun wanted() = pushWanted
+                override suspend fun uploaded() = pushUploaded
+                override suspend fun setUploaded(address: PushAddress?) {
+                    pushUploaded = address
+                }
+            },
         )
         private val device = SoftwareDeviceSigner()
         private var registered = false
@@ -81,6 +101,7 @@ class ChatEngineTest {
                     delivered += frame
                     if (withEngine) engine.onFrame(frame)
                 },
+                onOffline = { engine.onOffline() },
             )
             engine.link = object : RelayLink by created {
                 override suspend fun request(frame: JSONObject, timeoutMillis: Long): JSONObject {
@@ -112,6 +133,9 @@ class ChatEngineTest {
             offline()
             return this
         }
+
+        /** Waits, as a phone woken to fetch its messages does, until there is nothing left to do. */
+        fun caughtUp(timeoutMillis: Long = 15_000) = runBlocking { withTimeout(timeoutMillis) { engine.awaitCaughtUp() } }
 
         fun knows(vararg others: Phone): Phone {
             others.forEach { db.addContact(it.id) }
@@ -452,5 +476,112 @@ class ChatEngineTest {
         val longest = "म".repeat(Payload.MAX_TEXT_BYTES / 3) + "x".repeat(Payload.MAX_TEXT_BYTES % 3)
         alice.send(bob, longest)
         eventually("arrived") { bob.chat(alice).singleOrNull()?.text == longest }
+    }
+
+    // ---- Woken up to fetch ----------------------------------------------------
+
+    @Test
+    fun `a phone woken to fetch takes everything in, confirms it, and can leave at once`() {
+        val alice = Phone().registeredAndOffline()
+        val bob = Phone().registeredAndOffline()
+        alice.knows(bob)
+        bob.knows(alice)
+
+        alice.online()
+        val texts = (1..7).map { "message $it" }
+        texts.forEach { alice.send(bob, it) }
+        eventually("stored on the relay") { texts.all { alice.statusOf(bob, it) == MessageStatus.SENT } }
+
+        // Bob's phone is woken: it connects, and leaves the moment it has caught up.
+        val ready = bob.online()
+        assertEquals(7, ready.queued)
+        bob.caughtUp()
+        bob.offline()
+
+        // Nothing was left behind, in either direction.
+        assertEquals(texts.map { "< $it" }, bob.texts(alice))
+        assertEquals(0, bob.db.outboxSize())
+        eventually("delivery receipts") { texts.all { alice.statusOf(bob, it) == MessageStatus.DELIVERED } }
+        assertEquals(0, bob.online().queued)
+        bob.offline()
+        alice.offline()
+    }
+
+    @Test
+    fun `there is nothing to wait for when nothing is waiting, and no end to it without a connection`() {
+        val bob = Phone().registeredAndOffline()
+        try {
+            bob.caughtUp(timeoutMillis = 500)
+            throw AssertionError("caught up without a connection")
+        } catch (_: TimeoutCancellationException) {
+        }
+        bob.online()
+        bob.caughtUp()
+        bob.offline()
+        try {
+            bob.caughtUp(timeoutMillis = 500)
+            throw AssertionError("still caught up after the connection ended")
+        } catch (_: TimeoutCancellationException) {
+        }
+    }
+
+    @Test
+    fun `the relay is given the wake-up address once, told when it changes, and told when it is gone`() {
+        // Nobody writes to this phone, so the relay never calls the address.
+        fun address(topic: String) = PushAddress.fromWebPush(
+            "https://push.example.org/$topic",
+            "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+            "BTBZMqHH6r4Tts7J_aSIgg",
+        )!!
+        val bob = Phone()
+        bob.pushWanted = address("up1")
+        assertFalse(bob.online().hasPush)
+        bob.caughtUp()
+        assertEquals(1, bob.saved.count { it == "put_push" })
+        assertEquals(address("up1"), bob.pushUploaded)
+        bob.offline()
+
+        // The relay remembers; the phone does not send it again.
+        assertTrue(bob.online().hasPush)
+        bob.caughtUp()
+        assertEquals(1, bob.saved.count { it == "put_push" })
+
+        // The push app hands out a new address while connected.
+        bob.pushWanted = address("up2")
+        bob.engine.pushChanged()
+        eventually("new address uploaded") { bob.pushUploaded == address("up2") }
+        assertEquals(2, bob.saved.count { it == "put_push" })
+        bob.offline()
+
+        // The push app is removed.
+        bob.pushWanted = null
+        assertTrue(bob.online().hasPush)
+        bob.caughtUp()
+        assertEquals(listOf("drop_push"), bob.saved.filter { it == "drop_push" })
+        assertNull(bob.pushUploaded)
+        bob.offline()
+        assertFalse(bob.online().hasPush)
+        bob.caughtUp()
+        assertEquals(1, bob.saved.count { it == "drop_push" })
+        assertNull(bob.engine.pushProblem.value)
+        bob.offline()
+    }
+
+    @Test
+    fun `an address the relay will not call is reported and not remembered`() {
+        val bob = Phone()
+        // A relay must never be made to call into a private network.
+        bob.pushWanted = PushAddress(
+            "https://192.168.1.10/up1",
+            "BCVxsr7N/eNgVRqvHtD0zTZsEc6+VV+JvLexhqUzORcxaOzi6+AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4=",
+            "BTBZMqHH6r4Tts7J/aSIgg==",
+        )
+        bob.online()
+        bob.caughtUp()
+        assertNotNull(bob.engine.pushProblem.value)
+        assertNull(bob.pushUploaded)
+        bob.offline()
+        assertFalse(bob.online().hasPush)
+        bob.offline()
     }
 }

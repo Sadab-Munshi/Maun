@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import org.maun.messenger.push.Background
 import org.maun.messenger.ui.AppRoot
 import org.maun.messenger.ui.MaunTheme
 
@@ -25,6 +26,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         messenger.onForeground()
+        Background.resume(this)
     }
 
     override fun onStop() {

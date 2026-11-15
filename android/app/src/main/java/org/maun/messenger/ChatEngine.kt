@@ -12,7 +12,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -33,6 +38,7 @@ import org.maun.messenger.data.MessageStatus
 import org.maun.messenger.data.OutboxEntity
 import org.maun.messenger.data.ReceiptLevel
 import org.maun.messenger.data.Transactor
+import org.maun.messenger.network.PushState
 import org.maun.messenger.network.RelayException
 import org.maun.messenger.network.RelayLink
 
@@ -57,6 +63,7 @@ class ChatEngine(
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val now: () -> Long = System::currentTimeMillis,
     private val retryMillis: Long = 30_000,
+    private val push: PushState? = null,
 ) {
     /** The connection to use. Set once, before the connection is started. */
     @Volatile
@@ -67,12 +74,31 @@ class ChatEngine(
     /** For each person whose messages are stuck: why, in words for the screen. */
     val waiting: StateFlow<Map<String, String>> = _waiting.asStateFlow()
 
+    private val _pushProblem = MutableStateFlow<String?>(null)
+
+    /** Why the relay cannot wake this phone, in words for the screen. Null when it can, or need not. */
+    val pushProblem: StateFlow<String?> = _pushProblem.asStateFlow()
+
     private val wakeUps = Channel<Unit>(Channel.CONFLATED)
     private var retry: Job? = null
+
+    // What is still to do before this phone has caught up with the relay:
+    // messages that were waiting at login and have not been handled (-1 while
+    // there is no connection), the work done right after login, and passes
+    // over the outbox that have been asked for and not finished.
+    private val backlog = MutableStateFlow(-1)
+    private val settingUp = MutableStateFlow(false)
+    private val outboxRuns = MutableStateFlow(0)
+
+    private val pushLock = Mutex()
+
+    @Volatile
+    private var relayHasPush = false
 
     init {
         scope.launch {
             for (wakeUp in wakeUps) {
+                val asked = outboxRuns.value
                 try {
                     drainOutbox()
                 } catch (e: CancellationException) {
@@ -81,29 +107,74 @@ class ChatEngine(
                     // A storage error. The entries are still there for the next attempt.
                     retryLater()
                 }
+                // Anything asked for while this pass ran gets a pass of its own.
+                outboxRuns.compareAndSet(asked, 0)
             }
         }
+    }
+
+    /** Asks for a pass over the outbox. */
+    private fun kick() {
+        outboxRuns.update { it + 1 }
+        wakeUps.trySend(Unit)
+    }
+
+    /**
+     * Returns once this phone is connected, has taken in every message that
+     * was waiting for it, and has sent everything it had to send, receipts
+     * included. Used when the phone was woken up to fetch its messages: after
+     * this, the connection can be dropped without losing anything.
+     */
+    suspend fun awaitCaughtUp() {
+        combine(backlog, settingUp, outboxRuns) { waiting, busy, runs -> waiting == 0 && !busy && runs == 0 }
+            .first { it }
     }
 
     // ---- Called by the connection --------------------------------------------
 
     /** The connection has just logged in. */
     fun onOnline() {
+        val ready = link?.ready
+        relayHasPush = ready?.hasPush == true
+        settingUp.value = true
+        backlog.value = ready?.queued ?: 0
         scope.launch {
             try {
-                publishKeys()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                // Tried again at the next login. Sending does not depend on it.
+                // Each is tried again at the next login. Sending does not depend on either.
+                quietly { publishKeys() }
+                quietly { syncPush() }
+            } finally {
+                kick()
+                settingUp.value = false
             }
-            wakeUps.trySend(Unit)
+        }
+    }
+
+    /** The connection that had logged in is gone. */
+    fun onOffline() {
+        backlog.value = -1
+    }
+
+    private suspend fun quietly(block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
         }
     }
 
     /** A message delivered by the relay. Called for one frame at a time, in order. */
     suspend fun onFrame(frame: JSONObject) {
         if (frame.optString("t") != "msg") return
+        try {
+            handle(frame)
+        } finally {
+            backlog.update { if (it > 0) it - 1 else it }
+        }
+    }
+
+    private suspend fun handle(frame: JSONObject) {
         val seq = frame.optLong("seq", -1)
         if (seq <= 0) return
         val from = frame.optString("from")
@@ -122,7 +193,12 @@ class ChatEngine(
             return
         }
         link?.send(JSONObject().put("t", "ack").put("seq", seq))
-        if (replies) wakeUps.trySend(Unit)
+        if (replies) kick()
+    }
+
+    /** The phone's wake-up address has changed. Tells the relay if there is a connection. */
+    fun pushChanged() {
+        scope.launch { quietly { syncPush() } }
     }
 
     // ---- Called by the app ---------------------------------------------------
@@ -143,7 +219,7 @@ class ChatEngine(
                 dao.insertOutbox(OutboxEntity(peer = peer, messageId = id, payload = Payload.encode(Payload.Text(id, at, trimmed))))
             }
         }
-        wakeUps.trySend(Unit)
+        kick()
     }
 
     /**
@@ -158,7 +234,7 @@ class ChatEngine(
                 dao.isContact(peer) && sendReceipts(peer, ReceiptLevel.READ)
             }
         }
-        if (replies) wakeUps.trySend(Unit)
+        if (replies) kick()
     }
 
     /**
@@ -169,7 +245,7 @@ class ChatEngine(
         val replies = withContext(io) {
             tx.inTransaction { dao.isContact(peer) && sendReceipts(peer, ReceiptLevel.DELIVERED) }
         }
-        if (replies) wakeUps.trySend(Unit)
+        if (replies) kick()
     }
 
     /** Deletes the conversation with [peer] from this phone and forgets them as a contact. */
@@ -379,7 +455,7 @@ class ChatEngine(
         if (retry?.isActive == true) return
         retry = scope.launch {
             delay(retryMillis)
-            wakeUps.trySend(Unit)
+            kick()
         }
     }
 
@@ -412,6 +488,48 @@ class ChatEngine(
             val list = JSONArray()
             fresh.forEach { list.put(JSONObject().put("id", it.id).put("key", encode(it.key))) }
             link.request(JSONObject().put("t", "put_otks").put("keys", list))
+        }
+    }
+
+    // ---- Wake-up address -------------------------------------------------------
+
+    /** Makes sure the relay has this phone's current wake-up address, or none. */
+    private suspend fun syncPush() = pushLock.withLock {
+        val state = push ?: return@withLock
+        val link = link ?: return@withLock
+        if (link.ready == null) return@withLock
+        val wanted = withContext(io) { state.wanted() }
+        if (wanted == null) {
+            _pushProblem.value = null
+            if (relayHasPush && link.request(JSONObject().put("t", "drop_push")).optString("t") == "saved") {
+                relayHasPush = false
+                withContext(io) { state.setUploaded(null) }
+            }
+            return@withLock
+        }
+        // The relay forgets an address the push service says is dead, so its
+        // word counts as well as this phone's memory.
+        if (relayHasPush && withContext(io) { state.uploaded() } == wanted) {
+            _pushProblem.value = null
+            return@withLock
+        }
+        val answer = link.request(
+            JSONObject().put("t", "put_push").put("url", wanted.url).put("key", wanted.key).put("auth", wanted.auth),
+        )
+        when (answer.optString("t")) {
+            "saved" -> {
+                relayHasPush = true
+                withContext(io) { state.setUploaded(wanted) }
+                _pushProblem.value = null
+            }
+            "failed" -> _pushProblem.value =
+                if (answer.optString("code") == "bad_push") {
+                    "The relay does not accept the address your push app gave Maun."
+                } else {
+                    "The relay could not take this phone's wake-up address just now."
+                }
+            // A relay from before wake-ups existed.
+            else -> _pushProblem.value = "This relay cannot wake phones yet. It needs an update."
         }
     }
 

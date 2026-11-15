@@ -12,10 +12,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.maun.messenger.crypto.ContactCode
 import org.maun.messenger.crypto.DeviceKey
@@ -30,10 +32,16 @@ import org.maun.messenger.data.DatabaseKey
 import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.data.MetaEntry
 import org.maun.messenger.data.RoomSignalStorage
+import org.maun.messenger.network.PushAddress
+import org.maun.messenger.network.PushState
 import org.maun.messenger.network.RelayClient
 import org.maun.messenger.network.RelayConnection
 import org.maun.messenger.network.RelayException
 import org.maun.messenger.network.RelayState
+import org.maun.messenger.push.FetchWorker
+import org.maun.messenger.push.Notifications
+import org.maun.messenger.push.UnreadTracker
+import org.maun.messenger.push.announce
 
 sealed interface AccountState {
     data object Loading : AccountState
@@ -93,6 +101,17 @@ class Messenger(context: Context) {
     /** For each person whose messages are stuck: why, in words for the screen. */
     val waiting: StateFlow<Map<String, String>> = _waiting.asStateFlow()
 
+    private val _pushProblem = MutableStateFlow<String?>(null)
+
+    /** Why this phone cannot be woken for new messages, in words for the screen. Null when all is well. */
+    val pushProblem: StateFlow<String?> = _pushProblem.asStateFlow()
+
+    private val notifications = Notifications(appContext)
+    private val unread = UnreadTracker()
+
+    /** Whether the notification about unread messages is showing. */
+    private var announced = false
+
     private val setup = Mutex()
 
     @Volatile
@@ -104,7 +123,12 @@ class Messenger(context: Context) {
     private var connection: RelayConnection? = null
     private var connectionWatcher: Job? = null
     private var pendingStop: Job? = null
+
+    // The three reasons to be connected: the app is on screen, the phone was
+    // woken to fetch, or the user asked Maun to stay connected.
     private var inForeground = false
+    private var fetches = 0
+    private var stayingConnected = false
 
     init {
         scope.launch { load() }
@@ -117,7 +141,12 @@ class Messenger(context: Context) {
                 val row = db.account().get()
                 database = db
                 scope.launch { db.contacts().observeAll().collect { _contacts.value = it } }
-                scope.launch { db.chat().observeChats().collect { _chats.value = it } }
+                scope.launch {
+                    db.chat().observeChats().collect {
+                        _chats.value = it
+                        announceUnread(it)
+                    }
+                }
                 scope.launch { db.chat().observeBlocked().collect { _blocked.value = it } }
                 if (row == null) {
                     _account.value = AccountState.None
@@ -172,6 +201,8 @@ class Messenger(context: Context) {
                 db.signal().clearKyberUses()
             }
             db.meta().put(MetaEntry(KEY_REGISTRATION_ID, SignalSessions.newRegistrationId().toString()))
+            // The new account's mailbox has never been given a wake-up address.
+            db.meta().put(MetaEntry(KEY_PUSH_UPLOADED, ""))
             db.account().put(row)
         }
         open(db, row)
@@ -195,8 +226,15 @@ class Messenger(context: Context) {
             dao = db.chat(),
             tx = db,
             scope = chatScope,
+            push = object : PushState {
+                override suspend fun wanted() = PushAddress.parse(db.meta().get(KEY_PUSH_WANTED))
+                override suspend fun uploaded() = PushAddress.parse(db.meta().get(KEY_PUSH_UPLOADED))
+                override suspend fun setUploaded(address: PushAddress?) =
+                    db.meta().put(MetaEntry(KEY_PUSH_UPLOADED, address?.serialize().orEmpty()))
+            },
         )
         chatScope.launch { chat.waiting.collect { _waiting.value = it } }
+        chatScope.launch { chat.pushProblem.collect { _pushProblem.value = it } }
         _account.value = AccountState.Present(
             code = ContactCode(identity.id, ContactCode.relayName(relayUrl)),
             relayUrl = row.relayUrl,
@@ -211,6 +249,7 @@ class Messenger(context: Context) {
             onLoggedIn = ::markRegistered,
             onOnline = chat::onOnline,
             onFrame = chat::onFrame,
+            onOffline = chat::onOffline,
         )
         chat.link = created
         synchronized(this) {
@@ -218,7 +257,7 @@ class Messenger(context: Context) {
             engineScope = chatScope
             connection = created
             connectionWatcher = scope.launch { created.state.collect { _relay.value = it } }
-            if (inForeground) created.start()
+            if (wanted()) created.start()
         }
     }
 
@@ -241,25 +280,127 @@ class Messenger(context: Context) {
         _waiting.value = emptyMap()
     }
 
-    /** The app came on screen: connect, or keep the connection that is about to be dropped. */
-    fun onForeground() = synchronized(this) {
-        inForeground = true
+    // ---- When to be connected --------------------------------------------------
+
+    private fun wanted() = inForeground || fetches > 0 || stayingConnected
+
+    /**
+     * Connects if there is a reason to be connected, disconnects if not. With
+     * [linger] the connection is kept a little longer first. Call with the
+     * lock held.
+     */
+    private fun connectOrDrop(linger: Boolean = false) {
         pendingStop?.cancel()
         pendingStop = null
-        connection?.start()
+        when {
+            wanted() -> connection?.start()
+            linger -> pendingStop = scope.launch {
+                delay(BACKGROUND_LINGER_MILLIS)
+                synchronized(this@Messenger) { if (!wanted()) connection?.stop() }
+            }
+            else -> connection?.stop()
+        }
+    }
+
+    /** The app came on screen. */
+    fun onForeground() = synchronized(this) {
+        inForeground = true
+        // The user is looking at the app; there is nothing left to announce.
+        notifications.clearMessages()
+        announced = false
+        connectOrDrop()
     }
 
     /**
      * The app left the screen. The connection lingers briefly, so turning the
-     * phone or answering a permission prompt does not reconnect. Staying
-     * connected in the background arrives with push delivery.
+     * phone or answering a permission prompt does not reconnect.
      */
     fun onBackground() = synchronized(this) {
         inForeground = false
-        pendingStop?.cancel()
-        pendingStop = scope.launch {
-            delay(BACKGROUND_LINGER_MILLIS)
-            synchronized(this@Messenger) { if (!inForeground) connection?.stop() }
+        connectOrDrop(linger = true)
+    }
+
+    /** "Stay connected" was switched on or off: [ConnectedService][org.maun.messenger.push.ConnectedService] started or stopped. */
+    fun onStayConnected(on: Boolean) = synchronized(this) {
+        stayingConnected = on
+        connectOrDrop()
+    }
+
+    /**
+     * Connects, takes in every message that is waiting, confirms them, and
+     * lets go of the connection again. Returns false when that could not be
+     * finished within [timeoutMillis]; whatever was not fetched stays on the
+     * relay. Used when the phone is woken up while Maun is closed.
+     */
+    suspend fun fetch(timeoutMillis: Long = FETCH_TIMEOUT_MILLIS): Boolean {
+        val current = account.first { it !is AccountState.Loading }
+        if (current !is AccountState.Present || !current.registered) return true
+        synchronized(this) {
+            fetches++
+            connectOrDrop()
+        }
+        try {
+            return withTimeoutOrNull(timeoutMillis) {
+                engine?.awaitCaughtUp()
+                true
+            } ?: false
+        } finally {
+            synchronized(this) {
+                fetches--
+                connectOrDrop()
+            }
+        }
+    }
+
+    // ---- Being woken up --------------------------------------------------------
+
+    /**
+     * The push app on this phone handed out a wake-up address, or (with null)
+     * there is none any more. The relay is told the next time there is a
+     * connection, and one is made for the purpose if the app is closed.
+     */
+    fun onPushAddress(address: PushAddress?) {
+        scope.launch {
+            account.first { it !is AccountState.Loading }
+            val db = database ?: return@launch
+            val text = address?.serialize().orEmpty()
+            val changed = withContext(Dispatchers.IO) {
+                if (db.meta().get(KEY_PUSH_WANTED).orEmpty() == text) {
+                    false
+                } else {
+                    db.meta().put(MetaEntry(KEY_PUSH_WANTED, text))
+                    true
+                }
+            }
+            if (address != null) _pushProblem.value = null
+            if (!changed) return@launch
+            engine?.pushChanged()
+            if (!synchronized(this@Messenger) { wanted() }) FetchWorker.schedule(appContext)
+        }
+    }
+
+    /** The push app could not give this phone a wake-up address. [reason] is for the screen. */
+    fun onPushFailed(reason: String) {
+        _pushProblem.value = reason
+    }
+
+    /** Tells the user about messages that arrived while they were not looking. Never says what is in them. */
+    private fun announceUnread(chats: List<ChatSummary>) = synchronized(this) {
+        val news = unread.hasNew(chats)
+        val announcement = announce(chats, _contacts.value.associate { it.id to it.name })
+        when {
+            announcement == null -> {
+                notifications.clearMessages()
+                announced = false
+            }
+            inForeground -> Unit
+            news -> {
+                notifications.showMessages(announcement, alert = true)
+                announced = true
+            }
+            // Something was read elsewhere, or a contact was renamed: keep it accurate, quietly.
+            announced -> notifications.showMessages(announcement, alert = false)
+            else -> Unit
         }
     }
 
@@ -341,6 +482,11 @@ class Messenger(context: Context) {
         const val MESSAGE_WINDOW = 500
 
         private const val KEY_REGISTRATION_ID = "signal_registration_id"
+        private const val KEY_PUSH_WANTED = "push_wanted"
+        private const val KEY_PUSH_UPLOADED = "push_uploaded"
         private const val BACKGROUND_LINGER_MILLIS = 10_000L
+
+        /** Long enough for a few hundred waiting messages on a slow connection. */
+        private const val FETCH_TIMEOUT_MILLIS = 45_000L
     }
 }

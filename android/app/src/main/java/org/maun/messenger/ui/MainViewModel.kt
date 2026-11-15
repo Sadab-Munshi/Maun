@@ -20,6 +20,9 @@ import org.maun.messenger.CodeCheck
 import org.maun.messenger.MaunApp
 import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.network.RelayException
+import org.maun.messenger.push.Background
+import org.maun.messenger.push.Notifications
+import org.maun.messenger.push.PushApps
 
 /** What the welcome screen needs beyond the account and relay state. */
 data class OnboardingUiState(
@@ -39,6 +42,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val contacts = messenger.contacts
     val blocked = messenger.blocked
     val waiting = messenger.waiting
+    val pushProblem = messenger.pushProblem
+
+    private val _delivery = MutableStateFlow(DeliveryUi())
+
+    /** How messages arrive while Maun is closed. Call [refreshDelivery] to bring it up to date. */
+    val delivery: StateFlow<DeliveryUi> = _delivery.asStateFlow()
 
     val home: StateFlow<HomeLists> = combine(messenger.contacts, messenger.chats, ::homeLists)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeLists())
@@ -77,6 +86,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun reconnect() = messenger.reconnect()
+
+    /** Reads the things that change outside the app: permissions, installed push apps. */
+    fun refreshDelivery() {
+        val context = getApplication<Application>()
+        val pushApp = PushApps.current(context)
+        _delivery.value = DeliveryUi(
+            notificationsAllowed = Notifications(context).allowed,
+            pushApp = pushApp?.label,
+            pushChoices = if (pushApp == null) PushApps.installed(context) else emptyList(),
+            stayConnected = Background.stayConnected(context),
+            unrestricted = Background.unrestricted(context),
+        )
+    }
+
+    fun choosePushApp(packageName: String) {
+        PushApps.choose(getApplication(), packageName)
+        refreshDelivery()
+    }
+
+    fun setStayConnected(on: Boolean) {
+        Background.setStayConnected(getApplication(), on)
+        refreshDelivery()
+    }
 
     suspend fun checkCode(text: String, typed: Boolean): CodeCheck = messenger.checkCode(text, typed)
 
