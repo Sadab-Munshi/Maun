@@ -7,6 +7,7 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 import java.util.Locale
 import org.junit.Assert.assertTrue
+import org.maun.messenger.Attachment
 import org.maun.messenger.data.ChatSummary
 import org.maun.messenger.data.ContactEntity
 import org.maun.messenger.data.MessageEntity
@@ -46,6 +47,26 @@ class ChatListsTest {
     @Test
     fun `nothing at all gives two empty lists`() {
         assertEquals(HomeLists(), homeLists(emptyList(), emptyList()))
+    }
+
+    @Test
+    fun `a file's preview says what kind of thing it is`() {
+        val record = Attachment(key = "ab".repeat(32), secret = "c2VjcmV0", name = "Lease.pdf", mime = "application/pdf", size = 1000)
+        fun preview(file: Attachment) = previewOf(summary("a", 1, text = file.toLocal(), kind = MessageKind.FILE))
+        assertEquals("Lease.pdf", preview(record))
+        assertEquals("Photo", preview(record.copy(name = "IMG_1.jpg", mime = "image/jpeg")))
+        assertEquals("Voice message (0:12)", preview(record.copy(name = "Voice message.ogg", mime = Attachment.VOICE_MIME, duration = 12_300)))
+        assertEquals("File", previewOf(summary("a", 1, text = "not a record", kind = MessageKind.FILE)))
+    }
+
+    @Test
+    fun `a length of time reads like a player shows it`() {
+        assertEquals("0:00", formatDuration(0))
+        assertEquals("0:01", formatDuration(700))
+        assertEquals("0:59", formatDuration(59_400))
+        assertEquals("1:00", formatDuration(59_600))
+        assertEquals("5:00", formatDuration(300_000))
+        assertEquals("0:00", formatDuration(-5))
     }
 
     @Test

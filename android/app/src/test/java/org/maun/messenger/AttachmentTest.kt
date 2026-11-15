@@ -51,6 +51,20 @@ class AttachmentTest {
     }
 
     @Test
+    fun `a voice message says how long it is, and only sound counts as one`() {
+        val voice = file.copy(name = "Voice message.ogg", mime = Attachment.VOICE_MIME, duration = 12_345)
+        assertTrue(voice.isVoice)
+        assertEquals(voice, Attachment.fromWire(voice.toWire()))
+        assertEquals(voice.copy(state = Attachment.READY), Attachment.fromLocal(voice.copy(state = Attachment.READY).toLocal()))
+        // A picture that claims a length is still a picture, and a length out of range is cut down.
+        assertFalse(file.copy(duration = 5_000).isVoice)
+        assertFalse(file.copy(mime = Attachment.VOICE_MIME).isVoice)
+        assertEquals(Attachment.MAX_VOICE_MILLIS, Attachment.fromWire(voice.toWire().put("dur", 999_999_999))!!.duration)
+        assertEquals(0, Attachment.fromWire(voice.toWire().put("dur", -5))!!.duration)
+        assertFalse(file.toWire().has("dur"))
+    }
+
+    @Test
     fun `records that cannot be a file are refused`() {
         fun wire(change: JSONObject.() -> Unit) = Attachment.fromWire(file.toWire().apply(change))
         assertTrue(wire { } != null)

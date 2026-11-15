@@ -4,12 +4,13 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-// Address of the deployed relay, e.g. https://maun.example.workers.dev
-// Set with -Pmaun.relayUrl=... or the MAUN_RELAY_URL environment variable.
-// When empty, the app asks for it on the welcome screen.
+// Address of the relay the app uses. A fresh install makes its ID there
+// without asking. Building for another relay: -Pmaun.relayUrl=... or the
+// MAUN_RELAY_URL environment variable. Set to an empty string, the app asks
+// for the address on a welcome screen instead.
 val relayUrl: String = providers.gradleProperty("maun.relayUrl")
     .orElse(providers.environmentVariable("MAUN_RELAY_URL"))
-    .getOrElse("")
+    .getOrElse("https://maun.sadab.workers.dev")
 
 android {
     namespace = "org.maun.messenger"
@@ -22,8 +23,8 @@ android {
         applicationId = "org.maun.messenger"
         minSdk = 29 // Android 10: built-in Ogg/Opus recording, StrongBox API.
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.7.0"
+        versionCode = 10
+        versionName = "0.8.0"
 
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
 

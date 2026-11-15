@@ -120,50 +120,87 @@ class FileTransfers(
         }
         if (size > Attachment.MAX_BYTES) return@withContext TOO_LARGE
         val mime = resolver.getType(uri)?.lowercase() ?: "application/octet-stream"
+        encryptAndQueue(peer, name, mime, open = { resolver.openInputStream(uri) }) { record ->
+            val picture = if (record.isImage) pictureSize(uri) else null
+            if (picture == null) record else record.copy(width = picture.first, height = picture.second)
+        }
+    }
 
+    /**
+     * Sends a voice message that was just recorded into [recording], which is
+     * deleted whatever happens: the encrypted copy is the only one kept.
+     */
+    suspend fun sendVoice(peer: String, recording: File, millis: Long): String? = withContext(Dispatchers.IO) {
+        try {
+            encryptAndQueue(peer, "Voice message.ogg", Attachment.VOICE_MIME, open = { recording.inputStream() }) {
+                it.copy(duration = millis.coerceIn(1, Attachment.MAX_VOICE_MILLIS))
+            }
+        } finally {
+            recording.delete()
+        }
+    }
+
+    /** Encrypts what [open] gives into the app's folder, adds the message, and starts the upload. */
+    private suspend fun encryptAndQueue(
+        peer: String,
+        name: String,
+        mime: String,
+        open: () -> java.io.InputStream?,
+        describe: (Attachment) -> Attachment,
+    ): String? {
         dir.mkdirs()
         val secret = FileCipher.newKey()
         val temp = File(dir, "out-${UUID.randomUUID()}.tmp")
         val plainBytes = try {
-            val input = resolver.openInputStream(uri) ?: return@withContext UNREADABLE
+            val input = open() ?: return UNREADABLE
             input.use { source ->
                 temp.outputStream().buffered().use { FileCipher.encrypt(source, it, secret, Attachment.MAX_BYTES) }
             }
         } catch (_: FileCipher.TooLargeException) {
             temp.delete()
-            return@withContext TOO_LARGE
+            return TOO_LARGE
         } catch (_: IOException) {
             temp.delete()
-            return@withContext UNREADABLE
+            return UNREADABLE
         } catch (_: SecurityException) {
             temp.delete()
-            return@withContext UNREADABLE
+            return UNREADABLE
         }
 
-        val file = Attachment(
-            key = "",
-            secret = Base64.getEncoder().encodeToString(secret),
-            name = Attachment.cleanName(name),
-            mime = mime,
-            size = plainBytes,
-            state = Attachment.UPLOADING,
-        ).let { record ->
-            val size = if (record.isImage) pictureSize(uri) else null
-            if (size == null) record else record.copy(width = size.first, height = size.second)
-        }
+        val file = describe(
+            Attachment(
+                key = "",
+                secret = Base64.getEncoder().encodeToString(secret),
+                name = Attachment.cleanName(name),
+                mime = mime,
+                size = plainBytes,
+                state = Attachment.UPLOADING,
+            ),
+        )
         val message = try {
             engine.addFile(peer, file)
         } catch (_: IllegalStateException) {
             temp.delete()
-            return@withContext "Add this person as a contact before sending a file."
+            return "Add this person as a contact before sending a file."
         }
         if (!temp.renameTo(stored(message.seq))) {
             temp.delete()
             engine.deleteMessage(message.seq)
-            return@withContext UNREADABLE
+            return UNREADABLE
         }
         start(message.seq)
-        null
+        return null
+    }
+
+    /** The whole file of message [seq], decrypted into memory. For small things only: a voice message. */
+    suspend fun bytes(seq: Long, file: Attachment, maxBytes: Long): ByteArray? = withContext(Dispatchers.IO) {
+        val source = stored(seq)
+        if (!source.exists() || file.size > maxBytes) return@withContext null
+        try {
+            open(source, file.secretBytes()).use { it.readBytes() }
+        } catch (_: IOException) {
+            null
+        }
     }
 
     /**

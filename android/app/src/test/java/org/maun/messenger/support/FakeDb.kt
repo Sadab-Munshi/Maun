@@ -93,7 +93,7 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
 
     override fun owedReceipts(peer: String, level: Int): List<String> = lock.withLock {
         state.messages
-            .filter { it.peer == peer && !it.outgoing && it.kind == 0 && it.receipt < level }
+            .filter { it.peer == peer && !it.outgoing && (it.kind == MessageKind.TEXT || it.kind == MessageKind.FILE) && it.receipt < level }
             .sortedBy { it.seq }
             .map { it.id }
     }

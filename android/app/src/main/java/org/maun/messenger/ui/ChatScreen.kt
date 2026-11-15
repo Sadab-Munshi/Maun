@@ -1,5 +1,20 @@
 package org.maun.messenger.ui
 
+import androidx.compose.ui.draw.alpha
+import org.maun.messenger.voice.VoiceRecorder
+import kotlinx.coroutines.delay
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.background
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.DisposableEffect
+import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
+import android.Manifest
+import java.io.File
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
@@ -217,7 +232,13 @@ fun ChatScreen(
                                     onCopy = { copyMessage(context, it) },
                                     onDelete = { deleting = it },
                                     files = files,
-                                    onOpenFile = { seq, file -> if (file.isImage) viewing = seq else save(seq, file) },
+                                    onOpenFile = { seq, file ->
+                                        when {
+                                            file.isVoice -> files.onPlay(seq, file)
+                                            file.isImage -> viewing = seq
+                                            else -> save(seq, file)
+                                        }
+                                    },
                                     onSaveFile = save,
                                 )
                             }
@@ -249,7 +270,7 @@ fun ChatScreen(
 
                 if (waiting != null) Notice(waiting)
                 if (isContact) {
-                    Composer(peerId = peerId, onSend = onSend, onAttach = { pickFile.launch("*/*") })
+                    Composer(peerId = peerId, onSend = onSend, onAttach = { pickFile.launch("*/*") }, onVoice = files.onVoice)
                 } else {
                     RequestBar(peerId = peerId, onAccept = onAccept, onBlock = onBlock)
                 }
@@ -551,53 +572,178 @@ private fun Notice(text: String) {
     }
 }
 
+/**
+ * Where a message is written. While the field is empty the button on the
+ * right is a microphone: hold it to record a voice message, let go to send
+ * it, or slide the finger to the left first to throw it away.
+ */
 @Composable
-private fun Composer(peerId: String, onSend: (String) -> Unit, onAttach: () -> Unit) {
+private fun Composer(peerId: String, onSend: (String) -> Unit, onAttach: () -> Unit, onVoice: (File, Long) -> Unit) {
     var draft by rememberSaveable(peerId) { mutableStateOf("") }
     val bytes = draft.trim().toByteArray(Charsets.UTF_8).size
     val tooLong = bytes > Payload.MAX_TEXT_BYTES
     val field = MaterialTheme.colorScheme.surfaceContainerHigh
+
+    val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
+    val recorder = remember { VoiceRecorder(context) }
+    DisposableEffect(Unit) { onDispose { recorder.cancel() } }
+    var recording by remember { mutableStateOf(false) }
+    var cancelling by remember { mutableStateOf(false) }
+    var seconds by remember { mutableIntStateOf(0) }
+    var hint by remember { mutableStateOf<String?>(null) }
+    var micAllowed by remember {
+        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+    }
+    val askForMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        micAllowed = granted
+        hint = if (granted) "Now hold the button to record." else "Maun needs the microphone to record a voice message."
+    }
+    val currentOnVoice by rememberUpdatedState(onVoice)
+
+    /** Ends the recording and sends it, unless it was only a tap. */
+    fun finish() {
+        if (!recorder.active) return
+        val done = recorder.stop()
+        recording = false
+        if (done == null) hint = "Hold the button to record, let go to send." else currentOnVoice(done.file, done.millis)
+    }
+    LaunchedEffect(recording) {
+        seconds = 0
+        while (recording) {
+            delay(1000)
+            seconds++
+            // The longest a voice message can be: send what there is.
+            if (seconds * 1000L >= Attachment.MAX_VOICE_MILLIS) finish()
+        }
+    }
+    LaunchedEffect(hint) {
+        if (hint != null) {
+            delay(4000)
+            hint = null
+        }
+    }
+
     Column(modifier = Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 8.dp)) {
-        if (tooLong) {
+        val note = if (tooLong) "Too long for one message. Shorten it or send it in parts." else hint
+        if (note != null) {
             Text(
-                text = "Too long for one message. Shorten it or send it in parts.",
+                text = note,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
+                color = if (tooLong) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 8.dp, bottom = 4.dp),
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Bottom) {
-            IconButton(onClick = onAttach, modifier = Modifier.padding(bottom = 4.dp).size(48.dp)) {
+            IconButton(onClick = onAttach, enabled = !recording, modifier = Modifier.padding(bottom = 4.dp).size(48.dp)) {
                 Icon(MaunIcons.Attach, contentDescription = "Send a file", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            TextField(
-                value = draft,
-                onValueChange = { draft = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Message") },
-                maxLines = 5,
-                isError = tooLong,
-                shape = RoundedCornerShape(26.dp),
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                // A plain rounded field: no line underneath in any state.
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = field,
-                    unfocusedContainerColor = field,
-                    errorContainerColor = field,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    errorIndicatorColor = Color.Transparent,
-                    disabledIndicatorColor = Color.Transparent,
-                ),
-            )
-            FilledIconButton(
-                onClick = {
-                    onSend(draft)
-                    draft = ""
-                },
-                enabled = bytes > 0 && !tooLong,
-                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp).size(48.dp),
-            ) { Icon(MaunIcons.Send, contentDescription = "Send") }
+            Box(modifier = Modifier.weight(1f)) {
+                // The field stays where it is while recording, only out of sight:
+                // taking it away would close the keyboard under the finger.
+                TextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    modifier = Modifier.fillMaxWidth().alpha(if (recording) 0f else 1f),
+                    placeholder = { Text("Message") },
+                    maxLines = 5,
+                    isError = tooLong,
+                    readOnly = recording,
+                    shape = RoundedCornerShape(26.dp),
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                    // A plain rounded field: no line underneath in any state.
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = field,
+                        unfocusedContainerColor = field,
+                        errorContainerColor = field,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        errorIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                    ),
+                )
+                if (recording) {
+                    // Over the field: how long it has been, and how to get out of it.
+                    Surface(color = field, shape = RoundedCornerShape(26.dp), modifier = Modifier.matchParentSize()) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 18.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.error, modifier = Modifier.size(10.dp)) {}
+                            Text(formatDuration(seconds * 1000L), style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                text = if (cancelling) "Let go to cancel" else "Slide left to cancel",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (cancelling) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+            }
+            if (bytes > 0) {
+                FilledIconButton(
+                    onClick = {
+                        onSend(draft)
+                        draft = ""
+                    },
+                    enabled = !tooLong,
+                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp).size(48.dp),
+                ) { Icon(MaunIcons.Send, contentDescription = "Send") }
+            } else {
+                val cancelDistance = with(LocalDensity.current) { 72.dp.toPx() }
+                Box(
+                    modifier = Modifier
+                        .padding(start = 4.dp, bottom = 4.dp)
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(if (recording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                        .semantics { contentDescription = "Hold to record a voice message" }
+                        .pointerInput(micAllowed) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown()
+                                down.consume()
+                                if (!micAllowed) {
+                                    askForMic.launch(Manifest.permission.RECORD_AUDIO)
+                                    return@awaitEachGesture
+                                }
+                                if (!recorder.start()) {
+                                    hint = "The microphone could not be started. Is a call using it?"
+                                    return@awaitEachGesture
+                                }
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                cancelling = false
+                                recording = true
+                                // Until the finger lifts, or the gesture is taken away.
+                                var held = true
+                                while (held) {
+                                    val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                                    if (change == null || !change.pressed) {
+                                        held = false
+                                    } else {
+                                        cancelling = change.position.x - down.position.x < -cancelDistance
+                                        change.consume()
+                                    }
+                                }
+                                if (cancelling) {
+                                    recorder.cancel()
+                                    recording = false
+                                } else {
+                                    finish()
+                                }
+                                cancelling = false
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        MaunIcons.Mic,
+                        contentDescription = null,
+                        tint = if (recording) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary,
+                    )
+                }
+            }
         }
     }
 }

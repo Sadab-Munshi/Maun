@@ -38,7 +38,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.material3.LinearProgressIndicator
+import java.io.File
 import java.util.Locale
+import org.maun.messenger.voice.VoiceState
 import org.maun.messenger.Attachment
 import org.maun.messenger.data.MessageEntity
 
@@ -62,6 +65,12 @@ class FileActions(
     val loadImage: suspend (Long, Attachment, Int) -> Bitmap? = { _, _, _ -> null },
     /** The same without waiting, when it has been shown since the app started. */
     val cachedImage: (Long, Int) -> Bitmap? = { _, _ -> null },
+    /** A voice message was recorded: the file it is in, and how long it is. */
+    val onVoice: (File, Long) -> Unit = { file, _ -> file.delete() },
+    /** Play the voice message of a message, or pause it. */
+    val onPlay: (Long, Attachment) -> Unit = { _, _ -> },
+    /** The voice message that is loaded for playing, if any. */
+    val voice: VoiceState? = null,
 )
 
 /** Pictures up to this size are fetched as soon as their message is on screen. */
@@ -120,7 +129,13 @@ fun FileContent(
 
     // A small picture someone sent is fetched without being asked for.
     LaunchedEffect(message.seq, step) {
-        if (step == FileStep.Fetch && file.isImage && file.size <= AUTO_FETCH_BYTES) files.onStart(message.seq)
+        val small = (file.isImage && file.size <= AUTO_FETCH_BYTES) || file.isVoice
+        if (step == FileStep.Fetch && small) files.onStart(message.seq)
+    }
+
+    if (file.isVoice) {
+        VoiceContent(message, file, files.voice?.takeIf { it.seq == message.seq }, step, fraction, text, quiet)
+        return
     }
 
     // A picture that is on this phone is shown as a picture: one that arrived,
@@ -212,6 +227,67 @@ fun FileContent(
             )
             Text(
                 text = fileLine(file, message.outgoing, step, fraction),
+                style = MaterialTheme.typography.bodySmall,
+                color = quiet,
+            )
+        }
+    }
+}
+
+/**
+ * A voice message: a round button, a bar that fills while it plays, and its
+ * length. Tapping the bubble plays or pauses; that is wired where the bubble is.
+ */
+@Composable
+private fun VoiceContent(
+    message: MessageEntity,
+    file: Attachment,
+    playing: VoiceState?,
+    step: FileStep,
+    fraction: Float?,
+    text: Color,
+    quiet: Color,
+) {
+    Row(
+        modifier = Modifier.width(220.dp).padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier.size(44.dp).clip(CircleShape).background(text.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            when {
+                step == FileStep.Working -> CircularProgressIndicator(
+                    progress = { fraction ?: 0f },
+                    modifier = Modifier.size(28.dp),
+                    strokeWidth = 3.dp,
+                    color = text,
+                    trackColor = text.copy(alpha = 0.2f),
+                )
+                step == FileStep.Retry -> Icon(MaunIcons.Retry, contentDescription = null, tint = text)
+                step == FileStep.Gone -> Icon(MaunIcons.Mic, contentDescription = null, tint = quiet)
+                playing?.playing == true -> Icon(MaunIcons.Pause, contentDescription = "Pause", tint = text)
+                else -> Icon(MaunIcons.Play, contentDescription = "Play voice message", tint = text)
+            }
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            LinearProgressIndicator(
+                progress = { playing?.fraction ?: 0f },
+                modifier = Modifier.fillMaxWidth(),
+                color = text,
+                trackColor = text.copy(alpha = 0.2f),
+            )
+            Text(
+                text = when (step) {
+                    FileStep.Working -> if (file.key.isEmpty()) "Sending…" else "Fetching…"
+                    FileStep.Retry -> if (message.outgoing && file.key.isEmpty()) "Not sent. Tap to try again" else "Tap to try again"
+                    FileStep.Gone -> "No longer available"
+                    FileStep.Fetch -> formatDuration(file.duration)
+                    FileStep.Open ->
+                        if (playing != null) "${formatDuration(playing.positionMillis)} / ${formatDuration(file.duration)}"
+                        else formatDuration(file.duration)
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = quiet,
             )

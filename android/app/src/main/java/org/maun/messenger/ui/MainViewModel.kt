@@ -1,6 +1,9 @@
 package org.maun.messenger.ui
 
 import android.app.Application
+import java.io.File
+import org.maun.messenger.voice.VoicePlayer
+import org.maun.messenger.voice.VoiceState
 import android.graphics.Bitmap
 import android.net.Uri
 import org.maun.messenger.Attachment
@@ -158,6 +161,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun image(seq: Long, file: Attachment, maxPixels: Int): Bitmap? = messenger.image(seq, file, maxPixels)
 
     fun cachedImage(seq: Long, maxPixels: Int): Bitmap? = messenger.cachedImage(seq, maxPixels)
+
+    private val player = VoicePlayer(viewModelScope)
+
+    /** The voice message that is loaded for playing, if any. */
+    val voice: StateFlow<VoiceState?> = player.state
+
+    /** A voice message was recorded for [peer]. The file is taken over and deleted. */
+    fun sendVoice(peer: String, recording: File, millis: Long) {
+        viewModelScope.launch { attachProblem.value = messenger.sendVoice(peer, recording, millis) }
+    }
+
+    /** Plays the voice message of message [seq], or pauses it. */
+    fun toggleVoice(seq: Long, file: Attachment) {
+        viewModelScope.launch {
+            val played = player.toggle(seq) { messenger.voiceBytes(seq, file) }
+            if (!played) attachProblem.value = "That voice message could not be played."
+        }
+    }
+
+    fun stopVoice() = player.stop()
+
+    override fun onCleared() {
+        player.stop()
+        super.onCleared()
+    }
 
     // The conversations looked at lately, and the ones at the top of the list,
     // are kept in memory so that opening one shows its messages at once.

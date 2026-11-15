@@ -235,6 +235,9 @@ class ChatEngineTest {
             val theirs = Attachment.fromLocal(arrived.text)!!
             assertEquals(record.copy(key = key, state = Attachment.REMOTE), theirs)
             eventually("delivered") { alice.chat(bob).single().status == MessageStatus.DELIVERED }
+            // Opening the conversation tells the sender a file was seen, the same as a text.
+            bob.read(alice)
+            eventually("read") { alice.chat(bob).single().status == MessageStatus.READ }
 
             // What the relay holds is not the file: it opens only with the key from the message.
             val fetched = File(folder, "2.part")

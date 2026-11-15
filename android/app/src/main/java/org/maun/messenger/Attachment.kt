@@ -26,8 +26,13 @@ data class Attachment(
     /** A picture's size in pixels, the way it is shown; 0 when not known. Lets the screen keep room for it. */
     val width: Int = 0,
     val height: Int = 0,
+    /** How long a voice message is, in milliseconds; 0 for anything else. */
+    val duration: Long = 0,
 ) {
     val isImage: Boolean get() = mime in IMAGE_TYPES
+
+    /** A voice message: recorded in the conversation, and played there. */
+    val isVoice: Boolean get() = duration > 0 && mime.startsWith("audio/")
 
     fun secretBytes(): ByteArray = Base64.getDecoder().decode(secret)
 
@@ -35,6 +40,7 @@ data class Attachment(
     fun toWire(json: JSONObject = JSONObject()): JSONObject {
         json.put("key", key).put("secret", secret).put("name", name).put("mime", mime).put("size", size)
         if (width > 0 && height > 0) json.put("w", width).put("h", height)
+        if (duration > 0) json.put("dur", duration)
         return json
     }
 
@@ -44,6 +50,10 @@ data class Attachment(
     companion object {
         /** Largest file that can be sent. The relay refuses more. */
         const val MAX_BYTES = 25_000_000L
+
+        /** The longest voice message that can be recorded. */
+        const val MAX_VOICE_MILLIS = 5 * 60 * 1000L
+        const val VOICE_MIME = "audio/ogg"
 
         /** On the relay; not fetched yet. */
         const val REMOTE = 0
@@ -86,7 +96,10 @@ data class Attachment(
             }
             if (!secretOk) return null
             val mime = json.optString("mime").lowercase().take(100).ifEmpty { "application/octet-stream" }
-            return Attachment(key, secret, cleanName(json.optString("name")), mime, size, REMOTE, side(json, "w"), side(json, "h"))
+            return Attachment(
+                key, secret, cleanName(json.optString("name")), mime, size, REMOTE, side(json, "w"), side(json, "h"),
+                duration = json.optLong("dur", 0).coerceIn(0, MAX_VOICE_MILLIS),
+            )
         }
 
         /** Reads the record kept in a message row. */
@@ -101,6 +114,7 @@ data class Attachment(
                 state = json.optInt("state", REMOTE),
                 width = side(json, "w"),
                 height = side(json, "h"),
+                duration = json.optLong("dur", 0),
             )
         } catch (_: JSONException) {
             null

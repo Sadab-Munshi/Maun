@@ -69,6 +69,30 @@ object MaunIcons {
         )
     }
 
+    /** Record a voice message. */
+    val Mic: ImageVector by lazy {
+        icon(
+            "Mic",
+            "M12,14c1.66,0 2.99,-1.34 2.99,-3L15,5c0,-1.66 -1.34,-3 -3,-3S9,3.34 9,5v6c0,1.66 1.34,3 3,3zM17.3,11c0,3 -2.54,5.1 -5.3,5.1S6.7,14 6.7,11H5c0,3.41 2.72,6.23 6,6.72V21h2v-3.28c3.28,-0.48 6,-3.3 6,-6.72h-1.7z",
+        )
+    }
+
+    /** Play a voice message. */
+    val Play: ImageVector by lazy {
+        icon(
+            "Play",
+            "M8,5v14l11,-7z",
+        )
+    }
+
+    /** Pause a voice message. */
+    val Pause: ImageVector by lazy {
+        icon(
+            "Pause",
+            "M6,19h4V5H6v14zM14,5v14h4V5h-4z",
+        )
+    }
+
     /** Back to the previous screen. */
     val Back: ImageVector by lazy {
         icon(

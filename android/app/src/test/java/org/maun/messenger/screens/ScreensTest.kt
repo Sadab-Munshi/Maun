@@ -15,6 +15,8 @@ import org.maun.messenger.ui.LoginScreen
 import org.maun.messenger.ui.LoginUi
 import org.maun.messenger.ui.MyCodeScreen
 import org.maun.messenger.ui.PendingScreen
+import org.maun.messenger.ui.SettingUpScreen
+import org.maun.messenger.voice.VoiceState
 import androidx.compose.runtime.Composable
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Test
@@ -136,7 +138,7 @@ class ScreensTest {
         SettingsScreen(
             memberEmail = memberEmail,
             username = username,
-            version = "0.7.0",
+            version = "0.8.0",
             relayName = "maun.example.workers.dev",
             relay = RelayState.Online,
             delivery = DeliveryUi(pushApp = "Google's push service", google = true),
@@ -292,6 +294,48 @@ class ScreensTest {
             onAccept = {},
             onBlock = {},
         )
+    }
+
+    @Composable
+    private fun ChatWithVoice() {
+        fun voice(millis: Long, state: Int, key: String = "ab".repeat(32)) =
+            attachment("Voice message.ogg", Attachment.VOICE_MIME, millis * 3, state, key).copy(duration = millis)
+        ChatScreen(
+            peerId = asha.id,
+            contactName = asha.name,
+            // Newest first.
+            messages = listOf(
+                fileMessage(5, true, voice(8_000, Attachment.UPLOADING, key = ""), minute, MessageStatus.PENDING),
+                fileMessage(4, false, voice(95_000, Attachment.REMOTE), 2 * minute),
+                fileMessage(3, false, voice(42_000, Attachment.READY), 3 * minute),
+                message(2, false, "Listen to this", 4 * minute),
+                fileMessage(1, true, voice(17_000, Attachment.READY), 5 * minute),
+            ),
+            hasOlder = false,
+            waiting = null,
+            relay = RelayState.Online,
+            files = FileActions(progress = mapOf(5L to 0.4f), voice = VoiceState(seq = 3, playing = true, positionMillis = 15_000, durationMillis = 42_000)),
+            onSend = {},
+            onSeen = {},
+            onLoadOlder = {},
+            onDelete = {},
+            onBack = {},
+            onOpenDetails = {},
+            onAccept = {},
+            onBlock = {},
+        )
+    }
+
+    @Test
+    fun chatWithVoice() = shoot("chat-voice") { ChatWithVoice() }
+
+    @Test
+    @Config(qualifiers = "+night")
+    fun chatWithVoiceDark() = shoot("chat-voice-dark") { ChatWithVoice() }
+
+    @Test
+    fun settingUpFailed() = shoot("setting-up-failed") {
+        SettingUpScreen(problem = "Could not reach the relay: no route to host", working = false, onRetry = {}, onChooseServer = {})
     }
 
     @Test

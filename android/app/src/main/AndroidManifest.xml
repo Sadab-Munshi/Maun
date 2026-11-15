@@ -6,6 +6,9 @@
 
     <!-- Only to read another person's QR code. Asked for when the scanner opens. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Used only while the button for a voice message is held down. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />

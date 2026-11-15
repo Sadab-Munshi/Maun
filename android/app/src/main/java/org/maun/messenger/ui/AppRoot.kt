@@ -154,7 +154,26 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
 
                 !registered -> {
                     val onboarding by viewModel.onboarding.collectAsStateWithLifecycle()
-                    OnboardingScreen(
+                    // The relay is built into the app, so a fresh install makes
+                    // its ID by itself. The welcome screen with the address
+                    // field is for builds without one, and for choosing another.
+                    var manual by rememberSaveable { mutableStateOf(BuildConfig.RELAY_URL.isBlank()) }
+                    if (!manual) {
+                        LaunchedEffect(current) {
+                            if (current is AccountState.None && onboarding.error == null) viewModel.createAccount()
+                        }
+                        SettingUpScreen(
+                            problem = onboarding.error ?: when (val state = relay) {
+                                is RelayState.Retrying -> state.reason
+                                is RelayState.Rejected -> state.reason
+                                else -> null
+                            },
+                            working = onboarding.working,
+                            // Once the ID exists the connection keeps trying by itself.
+                            onRetry = if (current is AccountState.None) viewModel::createAccount else viewModel::reconnect,
+                            onChooseServer = if (current is AccountState.None) ({ manual = true }) else null,
+                        )
+                    } else OnboardingScreen(
                         ui = onboarding,
                         account = current,
                         relay = relay,
@@ -253,6 +272,9 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             val waiting by viewModel.waiting.collectAsStateWithLifecycle()
                             val fileProgress by viewModel.fileProgress.collectAsStateWithLifecycle()
                             val fileProblem by viewModel.fileProblem.collectAsStateWithLifecycle()
+                            val voice by viewModel.voice.collectAsStateWithLifecycle()
+                            // Leaving the conversation ends what was playing in it.
+                            DisposableEffect(chatPeer) { onDispose { viewModel.stopVoice() } }
                             ChatScreen(
                                 peerId = chatPeer,
                                 contactName = contacts.firstOrNull { it.id == chatPeer }?.name,
@@ -273,6 +295,9 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                     onSave = viewModel::saveFile,
                                     loadImage = viewModel::image,
                                     cachedImage = viewModel::cachedImage,
+                                    onVoice = { recording, millis -> viewModel.sendVoice(chatPeer, recording, millis) },
+                                    onPlay = viewModel::toggleVoice,
+                                    voice = voice,
                                 ),
                                 onLoadOlder = {
                                     // Counted from what is on screen, so asking twice asks for the same page.

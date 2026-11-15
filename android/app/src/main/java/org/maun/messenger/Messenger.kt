@@ -588,6 +588,19 @@ class Messenger(context: Context) {
         return transfers.send(peer, uri)
     }
 
+    /** Encrypts a voice message that was just recorded and starts sending it. [recording] is deleted. */
+    suspend fun sendVoice(peer: String, recording: java.io.File, millis: Long): String? {
+        val transfers = files
+        if (transfers == null) {
+            recording.delete()
+            return "Maun is not ready yet. Try again in a moment."
+        }
+        return transfers.sendVoice(peer, recording, millis)
+    }
+
+    /** The sound of the voice message [seq], decrypted into memory; null when it is not on this phone. */
+    suspend fun voiceBytes(seq: Long, file: Attachment): ByteArray? = files?.bytes(seq, file, MAX_VOICE_BYTES)
+
     /** Sends or fetches the file of message [seq], whichever it still needs. */
     fun startFile(seq: Long) {
         files?.start(seq)
@@ -841,6 +854,8 @@ class Messenger(context: Context) {
         private const val KEY_USERNAME = "username"
         private const val KEY_AWAITING = "awaiting_approval"
         private const val TICKET_SHOWN_WAIT_MILLIS = 3_000L
+        /** Five minutes of speech are well under a megabyte; nothing bigger is played from memory. */
+        private const val MAX_VOICE_BYTES = 4_000_000L
         private const val NOT_READY = "Maun is not ready yet. Try again in a moment."
         private const val DAY_MILLIS = 24 * 60 * 60 * 1000L
         private const val ONLINE_WAIT_MILLIS = 20_000L

@@ -47,8 +47,20 @@ fun previewOf(last: ChatSummary?): String = when {
     last == null -> "No messages yet"
     last.kind == MessageKind.UNREADABLE -> "A message could not be decrypted"
     last.kind == MessageKind.NOTICE -> last.text
-    last.kind == MessageKind.FILE -> Attachment.fromLocal(last.text)?.let { if (it.isImage) "Photo" else it.name } ?: "File"
+    last.kind == MessageKind.FILE -> Attachment.fromLocal(last.text)?.let {
+        when {
+            it.isVoice -> "Voice message (${formatDuration(it.duration)})"
+            it.isImage -> "Photo"
+            else -> it.name
+        }
+    } ?: "File"
     else -> last.text.replace('\n', ' ')
+}
+
+/** A length of time as minutes and seconds, the way a player shows it: 0:07, 1:30. */
+fun formatDuration(millis: Long): String {
+    val seconds = (millis.coerceAtLeast(0) + 500) / 1000
+    return "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
 }
 
 /** Sent, Delivered and Read, in words: the three states the product promises. */

@@ -140,9 +140,9 @@ interface ChatDao {
     @Query("UPDATE messages SET unread = 0 WHERE peer = :peer AND unread = 1")
     fun markSeen(peer: String): Int
 
-    /** Incoming messages from [peer] that have not had a receipt of [level] yet, oldest first. */
+    /** Incoming messages from [peer], text and files alike, that have not had a receipt of [level] yet, oldest first. */
     @Query(
-        "SELECT id FROM messages WHERE peer = :peer AND outgoing = 0 AND kind = 0 AND receipt < :level ORDER BY seq",
+        "SELECT id FROM messages WHERE peer = :peer AND outgoing = 0 AND kind IN (0, 2) AND receipt < :level ORDER BY seq",
     )
     fun owedReceipts(peer: String, level: Int): List<String>
 
