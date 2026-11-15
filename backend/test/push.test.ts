@@ -5,6 +5,8 @@ import {
   PUSH_DAILY_CAP,
   PUSH_PAYLOAD,
   PUSH_REPEAT_MS,
+  PUSH_SETTLE_MS,
+  PUSH_SETTLE_WAITS_MS,
   PUSH_TTL_SECONDS,
   toBase64,
 } from "../src/protocol";
@@ -325,9 +327,53 @@ describe("waking a phone", () => {
     expect(await wakeCount(1)).toBe(1);
   });
 
+  it("tries again when the push service says a new address is gone, and keeps it", async () => {
+    // Google's push service does this for some seconds after handing out an address.
+    const waits: number[] = [];
+    vi.spyOn(scheduler, "wait").mockImplementation(async (delay) => {
+      waits.push(delay);
+    });
+    const alice = await registered();
+    const bob = await withPush();
+    let refusals = 2;
+    pushServiceAnswer = () => new Response(null, { status: refusals-- > 0 ? 410 : 201 });
+    const a = await online(alice);
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(3)).toBe(3);
+    expect(waits).toEqual(PUSH_SETTLE_WAITS_MS.slice(0, 2));
+    await vi.waitFor(async () => expect(await readyOf(bob)).toMatchObject({ push: true, pushStatus: 201 }));
+
+    // It never comes round: the address is still kept, and the next message tries again.
+    pushServiceAnswer = () => new Response(null, { status: 410 });
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(3 + 1 + PUSH_SETTLE_WAITS_MS.length)).toBe(3 + 1 + PUSH_SETTLE_WAITS_MS.length);
+    await vi.waitFor(async () => expect((await pushRow(bob.id))?.pending).toBe(0));
+    await hangUp(a);
+    expect(await readyOf(bob)).toMatchObject({ push: true, pushStatus: 410 });
+  });
+
+  it("stops trying a new address once the phone has come by itself", async () => {
+    // Long enough for Bob to log in during the first wait, short enough for a test.
+    vi.spyOn(scheduler, "wait").mockImplementation(() => new Promise<void>((resolve) => setTimeout(resolve, 400)));
+    const alice = await registered();
+    const bob = await withPush();
+    pushServiceAnswer = () => new Response(null, { status: 404 });
+    const a = await online(alice);
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(1)).toBe(1);
+    const b = await online(bob);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(await wakeCount(1)).toBe(1);
+    await hangUp(b);
+    await hangUp(a);
+    expect(await pushRow(bob.id)).toMatchObject({ url: bob.url });
+  });
+
   it("forgets an address the push service says is gone", async () => {
     const alice = await registered();
     const bob = await withPush();
+    // The address has been in use for a while.
+    await editPush(bob.id, "UPDATE push_since SET at = at - ?", PUSH_SETTLE_MS + 1000);
     pushServiceAnswer = () => new Response(null, { status: 410 });
     const a = await online(alice);
     await sendMessage(a, bob.id, randomBytes(8));

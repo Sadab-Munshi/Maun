@@ -21,6 +21,8 @@ import {
   PUSH_DAILY_CAP,
   PUSH_PAYLOAD,
   PUSH_REPEAT_MS,
+  PUSH_SETTLE_MS,
+  PUSH_SETTLE_WAITS_MS,
   PUSH_TTL_SECONDS,
   PUSH_UNFINISHED,
   QUEUE_CAP,
@@ -298,6 +300,11 @@ export class Mailbox extends DurableObject<Env> {
           send(ws, { t: "failed", id: frame.id, code: "bad_push" });
           return;
         }
+        // When this address was first seen: a push service may need a
+        // moment before it accepts a new one.
+        if (sql.exec("SELECT 1 FROM push WHERE id = 1 AND url = ?", frame.url).toArray().length === 0) {
+          sql.exec("INSERT OR REPLACE INTO push_since (id, at) VALUES (1, ?)", Date.now());
+        }
         // The daily count survives a change of address, so changing it over
         // and over does not buy more wake-ups.
         sql.exec(
@@ -315,6 +322,7 @@ export class Mailbox extends DurableObject<Env> {
 
       case "drop_push":
         sql.exec("DELETE FROM push WHERE id = 1");
+        sql.exec("DELETE FROM push_since");
         sql.exec("DELETE FROM push_result");
         send(ws, { t: "saved", id: frame.id, otks: this.oneTimeKeyCount() });
         return;
@@ -407,6 +415,42 @@ export class Mailbox extends DurableObject<Env> {
 
   private async deliverWake(url: string, key: Uint8Array, auth: Uint8Array): Promise<void> {
     const sql = this.ctx.storage.sql;
+    const gone = (status: number) => status === 404 || status === 410;
+    let status = await this.postWake(url, key, auth);
+    // "Gone" from a push service that only just handed the address out means
+    // it is not ready yet. Waiting a little is all it takes.
+    for (const wait of PUSH_SETTLE_WAITS_MS) {
+      if (!gone(status) || !this.isNewAddress(url)) break;
+      await scheduler.wait(wait);
+      // The phone has come by itself; there is nobody left to wake.
+      if (this.connected()) return;
+      status = await this.postWake(url, key, auth);
+    }
+    // Kept for the phone to see at its next login. Without it, a push service
+    // that turns the relay away would look exactly like one that works. Not
+    // kept if the phone has left another address in the meantime.
+    sql.exec("UPDATE push_result SET status = ? WHERE id = 1 AND EXISTS (SELECT 1 FROM push WHERE id = 1 AND url = ?)", status, url);
+    if (status >= 200 && status < 300) return;
+    if (gone(status) && !this.isNewAddress(url)) {
+      // The push service says this address no longer exists. The phone leaves
+      // a new one the next time it connects.
+      sql.exec("DELETE FROM push WHERE id = 1 AND url = ?", url);
+    } else {
+      // It did not get through, so the next message may try again at once.
+      sql.exec("UPDATE push SET pending = 0 WHERE id = 1 AND url = ?", url);
+    }
+  }
+
+  /** Whether `url` is the phone's wake-up address and was left less than PUSH_SETTLE_MS ago. */
+  private isNewAddress(url: string): boolean {
+    const row = this.ctx.storage.sql
+      .exec("SELECT s.at AS at FROM push p JOIN push_since s ON s.id = p.id WHERE p.id = 1 AND p.url = ?", url)
+      .toArray()[0];
+    return row !== undefined && Date.now() - (row.at as number) < PUSH_SETTLE_MS;
+  }
+
+  /** Sends one wake-up. Returns the push service's HTTP status, or 0 if it could not be reached. */
+  private async postWake(url: string, key: Uint8Array, auth: Uint8Array): Promise<number> {
     let status = 0;
     try {
       const body = await encryptWebPush(new TextEncoder().encode(PUSH_PAYLOAD), key, auth);
@@ -431,18 +475,7 @@ export class Mailbox extends DurableObject<Env> {
     } catch {
       // The push service could not be reached.
     }
-    // Kept for the phone to see at its next login. Without it, a push service
-    // that turns the relay away would look exactly like one that works.
-    sql.exec("UPDATE push_result SET status = ? WHERE id = 1", status);
-    if (status >= 200 && status < 300) return;
-    if (status === 404 || status === 410) {
-      // The push service says this address no longer exists. The phone leaves
-      // a new one the next time it connects.
-      sql.exec("DELETE FROM push WHERE id = 1 AND url = ?", url);
-    } else {
-      // It did not get through, so the next message may try again at once.
-      sql.exec("UPDATE push SET pending = 0 WHERE id = 1 AND url = ?", url);
-    }
+    return status;
   }
 
   /**
@@ -564,6 +597,8 @@ export class Mailbox extends DurableObject<Env> {
          day INTEGER NOT NULL, sent INTEGER NOT NULL
        )`,
     );
+    // One row: when the address in `push` was first left here.
+    sql.exec("CREATE TABLE IF NOT EXISTS push_since (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL)");
     // One row: the key pair wake-ups are signed with.
     sql.exec("CREATE TABLE IF NOT EXISTS vapid (id INTEGER PRIMARY KEY CHECK (id = 1), pub BLOB NOT NULL, jwk TEXT NOT NULL)");
     // One row: what the push service answered to the last wake-up. An HTTP

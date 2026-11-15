@@ -70,6 +70,15 @@ export const PUSH_PAYLOAD = "wake";
  * every wake-up, as Web Push asks. Change it if you run your own relay.
  */
 export const PUSH_CONTACT = "https://github.com/Sadab-Munshi/Maun";
+/**
+ * A push service may turn away an address it handed out moments ago. Google's
+ * answered "gone" for some seconds after creating one, then accepted it. So
+ * for PUSH_SETTLE_MS after an address is saved, "gone" is taken to mean "not
+ * yet": the wake-up is tried again after each of PUSH_SETTLE_WAITS_MS, and the
+ * address is kept whatever the outcome.
+ */
+export const PUSH_SETTLE_MS = 10 * 60 * 1000;
+export const PUSH_SETTLE_WAITS_MS = [5_000, 10_000, 15_000];
 /** Recorded as the outcome of a wake-up that has been started and has not finished. */
 export const PUSH_UNFINISHED = -1;
 
