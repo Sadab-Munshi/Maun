@@ -7,9 +7,9 @@ name: Android
 on:
   push:
     branches: [main]
-    paths: ["android/**", "backend/src/**", "backend/wrangler.toml", ".github/workflows/build-android.yml"]
+    paths: ["android/**", "backend/src/**", "backend/scripts/**", "backend/wrangler.toml", ".github/workflows/build-android.yml"]
   pull_request:
-    paths: ["android/**", "backend/src/**", "backend/wrangler.toml", ".github/workflows/build-android.yml"]
+    paths: ["android/**", "backend/src/**", "backend/scripts/**", "backend/wrangler.toml", ".github/workflows/build-android.yml"]
   workflow_dispatch:
 
 permissions:
@@ -56,12 +56,14 @@ jobs:
           cache-dependency-path: backend/package-lock.json
 
       - name: Start a local relay
-        # The app's connection tests register and log in against the real relay
-        # code, running in Cloudflare's local runtime. Nothing is deployed.
+        # The app's connection and messaging tests run against the real relay
+        # code in Cloudflare's local runtime. Nothing is deployed. The script
+        # lifts the per-address connection limits, because here every test
+        # phone connects from the same address.
         working-directory: backend
         run: |
           npm ci
-          nohup npx wrangler dev --ip 127.0.0.1 --port 8787 > "$RUNNER_TEMP/relay.log" 2>&1 &
+          nohup ./scripts/test-relay.sh 8787 > "$RUNNER_TEMP/relay.log" 2>&1 &
           for _ in $(seq 1 90); do
             if curl -fsS http://127.0.0.1:8787/health; then
               echo
@@ -78,16 +80,18 @@ jobs:
           MAUN_TEST_RELAY_URL: http://127.0.0.1:8787
         run: ./gradlew :app:testDebugUnitTest
 
-      - name: Check that the connection tests really ran
+      - name: Check that the relay tests really ran
         # They skip themselves when no relay is configured. Here one is, so a
         # skip would mean the app and the relay were never tested together.
         run: |
-          report=app/build/test-results/testDebugUnitTest/TEST-org.maun.messenger.network.RelayConnectionTest.xml
-          grep -o '<testsuite [^>]*>' "$report"
-          if ! grep -q 'skipped="0"' "$report"; then
-            echo "::error::Connection tests were skipped"
-            exit 1
-          fi
+          for name in network.RelayConnectionTest ChatEngineTest; do
+            report="app/build/test-results/testDebugUnitTest/TEST-org.maun.messenger.$name.xml"
+            grep -o '<testsuite [^>]*>' "$report"
+            if ! grep -q 'skipped="0"' "$report"; then
+              echo "::error::$name was skipped"
+              exit 1
+            fi
+          done
 
       - name: Lint
         run: ./gradlew :app:lintDebug
@@ -110,6 +114,24 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
+      - name: Check that the database schema is committed
+        # Room writes the schema of the current database version while
+        # compiling. Upgrades are generated from these files, so a version
+        # that is not in the repository could not be upgraded from later.
+        run: |
+          if [ -n "$(git status --porcelain -- app/schemas)" ]; then
+            git status --short -- app/schemas
+            echo "::error::android/app/schemas has changed. Commit the files from the database-schemas artifact."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: database-schemas
+          path: android/app/schemas
+          if-no-files-found: warn
+
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -117,3 +139,4 @@ jobs:
           path: |
             android/app/build/reports
             android/app/build/test-results
+            ${{ runner.temp }}/relay.log

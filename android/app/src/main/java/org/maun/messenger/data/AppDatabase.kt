@@ -1,6 +1,7 @@
 package org.maun.messenger.data
 
 import android.content.Context
+import androidx.room.AutoMigration
 import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
@@ -11,6 +12,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import java.util.concurrent.Callable
 import kotlinx.coroutines.flow.Flow
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
@@ -92,17 +94,37 @@ interface ContactDao {
  * AES-256 encrypted with the key from [DatabaseKey].
  */
 @Database(
-    entities = [MetaEntry::class, AccountEntity::class, ContactEntity::class],
-    version = 2,
+    entities = [
+        MetaEntry::class,
+        AccountEntity::class,
+        ContactEntity::class,
+        MessageEntity::class,
+        OutboxEntity::class,
+        BlockedEntity::class,
+        SessionEntity::class,
+        PreKeyEntity::class,
+        KyberUseEntity::class,
+    ],
+    version = 3,
     exportSchema = true,
+    // Version 3 only adds tables (messages and encryption sessions). Room
+    // writes this migration itself from the two committed schema files, so it
+    // cannot disagree with them.
+    autoMigrations = [AutoMigration(from = 2, to = 3)],
 )
-abstract class AppDatabase : RoomDatabase() {
+abstract class AppDatabase : RoomDatabase(), Transactor {
 
     abstract fun meta(): MetaDao
 
     abstract fun account(): AccountDao
 
     abstract fun contacts(): ContactDao
+
+    abstract fun chat(): ChatDao
+
+    abstract fun signal(): SignalDao
+
+    override fun <T> inTransaction(block: () -> T): T = runInTransaction(Callable { block() })
 
     companion object {
         const val FILE_NAME = "maun.db"
@@ -121,7 +143,8 @@ abstract class AppDatabase : RoomDatabase() {
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
                 // Version 1 was the setup-check build and held nothing worth
                 // keeping. From version 2 on the database holds the identity
-                // key, so every later change needs a real migration.
+                // key, so every later change needs a real migration. There is
+                // deliberately no destructive fallback for those.
                 .fallbackToDestructiveMigrationFrom(dropAllTables = true, 1)
                 .build()
         }

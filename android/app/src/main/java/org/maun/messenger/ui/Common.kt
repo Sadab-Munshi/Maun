@@ -34,6 +34,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import java.text.DateFormat
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.util.Date
 import kotlin.math.floor
 import org.maun.messenger.crypto.QrCodec
 
@@ -88,6 +93,22 @@ fun BodyText(text: String, modifier: Modifier = Modifier) {
 /** A Maun ID split into groups of four so that two people can compare it by eye. */
 fun groupedId(id: String): String =
     id.chunked(4).chunked(4).joinToString("\n") { it.joinToString(" ") }
+
+/**
+ * A message's time the way the phone's language writes it: just the time for
+ * today, date and time for anything older.
+ */
+fun formatWhen(atMillis: Long, nowMillis: Long = System.currentTimeMillis()): String {
+    val zone = ZoneId.systemDefault()
+    val day = Instant.ofEpochMilli(atMillis).atZone(zone).toLocalDate()
+    val today: LocalDate = Instant.ofEpochMilli(nowMillis).atZone(zone).toLocalDate()
+    val format = if (day == today) {
+        DateFormat.getTimeInstance(DateFormat.SHORT)
+    } else {
+        DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+    }
+    return format.format(Date(atMillis))
+}
 
 /** The first and last few characters, enough to tell contacts apart in a list. */
 fun shortId(id: String): String = if (id.length <= 12) id else "${id.take(6)}…${id.takeLast(6)}"

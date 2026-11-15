@@ -173,7 +173,7 @@ export async function register(identity: Identity, device: Device): Promise<Inbo
   const { inbox, nonce, registered } = await connect(identity.mailboxId);
   expect(registered).toBe(false);
   inbox.sendJson(await registerFrame(identity, device, nonce));
-  expect(await inbox.nextJson()).toEqual({ t: "ready", fresh: true });
+  expect(await inbox.nextJson()).toEqual({ t: "ready", fresh: true, keys: false, otks: 0 });
   return inbox;
 }
 
@@ -182,7 +182,7 @@ export async function login(identity: Identity, device: Device): Promise<Inbox> 
   const { inbox, nonce, registered } = await connect(identity.mailboxId);
   expect(registered).toBe(true);
   inbox.sendJson(await loginFrame(identity, device, nonce));
-  expect(await inbox.nextJson()).toEqual({ t: "ready", fresh: false });
+  expect(await inbox.nextJson()).toMatchObject({ t: "ready", fresh: false });
   return inbox;
 }
 
@@ -190,4 +190,66 @@ export async function login(identity: Identity, device: Device): Promise<Inbox> 
 export async function expectRefused(inbox: Inbox, code: string): Promise<void> {
   expect(await inbox.nextJson()).toEqual({ t: "error", code });
   expect((await inbox.closed).code).toBe(4003);
+}
+
+// ---- Messaging helpers -----------------------------------------------------
+
+export type User = { identity: Identity; device: Device; id: string };
+
+export async function makeUser(): Promise<User> {
+  const identity = await makeIdentity();
+  return { identity, device: await makeDevice(), id: identity.mailboxId };
+}
+
+/** Creates an account and leaves it offline. */
+export async function registered(): Promise<User> {
+  const user = await makeUser();
+  const inbox = await register(user.identity, user.device);
+  await hangUp(inbox);
+  return user;
+}
+
+export async function hangUp(inbox: Inbox): Promise<void> {
+  inbox.ws.close(1000, "done");
+  await inbox.closed;
+}
+
+export function randomBytes(length: number): Uint8Array {
+  return crypto.getRandomValues(new Uint8Array(length));
+}
+
+let requestCounter = 0;
+
+export function requestId(): string {
+  requestCounter += 1;
+  return `r${requestCounter}`;
+}
+
+/** Sends a message and returns the relay's answer to it. */
+export async function sendMessage(
+  from: Inbox,
+  to: string,
+  body: Uint8Array,
+  kind = 2,
+): Promise<Record<string, unknown>> {
+  const id = requestId();
+  from.sendJson({ t: "send", id, to, kind, body: toBase64(body) });
+  const answer = await from.nextJson();
+  expect(answer.id).toBe(id);
+  return answer;
+}
+
+/** Key material of the right sizes. The relay stores it without looking inside. */
+export function keysFrame(id: string = requestId()) {
+  return {
+    t: "put_keys",
+    id,
+    regId: 4242,
+    spk: { id: 1, key: toBase64(randomBytes(33)), sig: toBase64(randomBytes(64)) },
+    kpk: { id: 1, key: toBase64(randomBytes(1569)), sig: toBase64(randomBytes(64)) },
+  };
+}
+
+export function oneTimeKeys(firstId: number, count: number) {
+  return Array.from({ length: count }, (_, i) => ({ id: firstId + i, key: toBase64(randomBytes(33)) }));
 }

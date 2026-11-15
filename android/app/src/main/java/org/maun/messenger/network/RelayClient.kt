@@ -52,7 +52,7 @@ class RelayClient(private val http: OkHttpClient = defaultHttp) {
 
     companion object {
         /** Must match PROTOCOL_VERSION in backend/src/protocol.ts. */
-        const val PROTOCOL_VERSION = 1
+        const val PROTOCOL_VERSION = 2
 
         private const val SERVICE_NAME = "maun-relay"
         private const val MAX_HEALTH_BYTES = 4096L

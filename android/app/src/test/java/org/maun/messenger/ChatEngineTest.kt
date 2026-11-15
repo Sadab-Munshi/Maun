@@ -1,0 +1,456 @@
+package org.maun.messenger
+
+import java.util.concurrent.CopyOnWriteArrayList
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import org.json.JSONObject
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
+import org.junit.Before
+import org.junit.Test
+import org.maun.messenger.crypto.Identity
+import org.maun.messenger.crypto.SignalSessions
+import org.maun.messenger.crypto.SignalStorage
+import org.maun.messenger.crypto.SoftwareDeviceSigner
+import org.maun.messenger.data.MessageEntity
+import org.maun.messenger.data.MessageKind
+import org.maun.messenger.data.MessageStatus
+import org.maun.messenger.data.ReceiptLevel
+import org.maun.messenger.network.Backoff
+import org.maun.messenger.network.Ready
+import org.maun.messenger.network.RelayConnection
+import org.maun.messenger.network.RelayLink
+import org.maun.messenger.network.RelayState
+import org.maun.messenger.support.FakeDb
+
+/**
+ * Two (or three) phones' worth of the app's real messaging code, talking
+ * through a real relay running on this machine. Only the database and the
+ * secure hardware are stand-ins.
+ *
+ * Skipped unless MAUN_TEST_RELAY_URL is set; CI sets it.
+ */
+class ChatEngineTest {
+
+    private lateinit var relayUrl: HttpUrl
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    private inner class Phone(var withEngine: Boolean = true) {
+        val identity: Identity = Identity.generate()
+        val id = identity.id
+        val db = FakeDb()
+        val delivered = CopyOnWriteArrayList<JSONObject>()
+        val engine = ChatEngine(
+            selfId = id,
+            signal = SignalSessions(identity, SignalSessions.newRegistrationId(), db),
+            dao = db,
+            tx = db,
+            scope = scope,
+            retryMillis = 300,
+        )
+        private val device = SoftwareDeviceSigner()
+        private var registered = false
+        private var connection: RelayConnection? = null
+
+        /** The types of the requests the relay has answered with "saved". */
+        val saved = CopyOnWriteArrayList<String>()
+
+        /** Connects and waits until logged in. Returns what the relay said about the account. */
+        fun online(): Ready {
+            val created = RelayConnection(
+                relayUrl = relayUrl,
+                identity = identity,
+                device = device,
+                scope = scope,
+                isRegistered = { registered },
+                onLoggedIn = { registered = true },
+                backoff = Backoff(baseMillis = 50, maxMillis = 200),
+                onOnline = { if (withEngine) engine.onOnline() },
+                onFrame = { frame ->
+                    delivered += frame
+                    if (withEngine) engine.onFrame(frame)
+                },
+            )
+            engine.link = object : RelayLink by created {
+                override suspend fun request(frame: JSONObject, timeoutMillis: Long): JSONObject {
+                    val answer = created.request(frame, timeoutMillis)
+                    if (answer.optString("t") == "saved") saved += frame.optString("t")
+                    return answer
+                }
+            }
+            connection = created
+            created.start()
+            val state = runBlocking {
+                withTimeout(15_000) { created.state.first { it is RelayState.Online || it is RelayState.Rejected } }
+            }
+            assertEquals(RelayState.Online, state)
+            return created.ready!!
+        }
+
+        fun offline() {
+            connection?.stop()
+            connection = null
+        }
+
+        /** Registers, publishes keys, and goes away again. */
+        fun registeredAndOffline(): Phone {
+            online()
+            // Leaving before the relay has answered could lose the upload, and
+            // the next login would then publish a second batch.
+            eventually("keys on the relay") { "put_keys" in saved && "put_otks" in saved }
+            offline()
+            return this
+        }
+
+        fun knows(vararg others: Phone): Phone {
+            others.forEach { db.addContact(it.id) }
+            return this
+        }
+
+        fun send(to: Phone, text: String) = runBlocking { engine.sendText(to.id, text) }
+
+        fun read(from: Phone) = runBlocking { engine.markRead(from.id) }
+
+        fun chat(with: Phone): List<MessageEntity> = db.messagesWith(with.id)
+
+        fun texts(with: Phone): List<String> = chat(with).map { (if (it.outgoing) "> " else "< ") + it.text }
+
+        fun statusOf(to: Phone, text: String): Int = chat(to).single { it.outgoing && it.text == text }.status
+    }
+
+    private fun eventually(what: String, timeoutMillis: Long = 10_000, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return
+            Thread.sleep(25)
+        }
+        throw AssertionError("did not happen in time: $what")
+    }
+
+    /** Gives something that should not happen a fair chance to happen. */
+    private fun pause() = Thread.sleep(700)
+
+    @Before
+    fun requireRelay() {
+        val configured = System.getenv("MAUN_TEST_RELAY_URL")
+        assumeTrue("MAUN_TEST_RELAY_URL not set", !configured.isNullOrBlank())
+        relayUrl = configured!!.toHttpUrl()
+    }
+
+    @After
+    fun stopEverything() {
+        scope.cancel()
+    }
+
+    @Test
+    fun `a message for someone offline arrives when they connect, and each step is reported`() {
+        val bob = Phone().registeredAndOffline()
+        val alice = Phone().knows(bob)
+        bob.knows(alice)
+
+        alice.online()
+        alice.send(bob, "hello Bob")
+        eventually("stored by the relay") { alice.statusOf(bob, "hello Bob") == MessageStatus.SENT }
+        pause()
+        assertEquals("nothing has reached Bob's phone yet", MessageStatus.SENT, alice.statusOf(bob, "hello Bob"))
+        assertEquals(0, alice.db.outboxSize())
+        assertTrue(bob.chat(alice).isEmpty())
+
+        bob.online()
+        eventually("arrived") { bob.texts(alice) == listOf("< hello Bob") }
+        assertTrue(bob.chat(alice).single().unread)
+        eventually("delivered") { alice.statusOf(bob, "hello Bob") == MessageStatus.DELIVERED }
+        pause()
+        assertEquals("Bob has not opened it", MessageStatus.DELIVERED, alice.statusOf(bob, "hello Bob"))
+
+        bob.read(alice)
+        assertFalse(bob.chat(alice).single().unread)
+        eventually("read") { alice.statusOf(bob, "hello Bob") == MessageStatus.READ }
+        eventually("nothing left to send") { alice.db.outboxSize() == 0 && bob.db.outboxSize() == 0 }
+
+        // Reading again sends nothing more.
+        val before = alice.delivered.size
+        bob.read(alice)
+        pause()
+        assertEquals(before, alice.delivered.size)
+    }
+
+    @Test
+    fun `a conversation keeps its order in both directions`() {
+        val alice = Phone()
+        val bob = Phone()
+        alice.knows(bob).online()
+        bob.knows(alice).online()
+
+        val fromAlice = (1..25).map { "a$it" }
+        fromAlice.forEach { alice.send(bob, it) }
+        eventually("all arrived") { bob.chat(alice).size == 25 }
+        assertEquals(fromAlice.map { "< $it" }, bob.texts(alice))
+
+        val fromBob = (1..10).map { "b$it" }
+        fromBob.forEach { bob.send(alice, it) }
+        eventually("replies arrived") { alice.chat(bob).count { !it.outgoing } == 10 }
+        assertEquals(fromBob, alice.chat(bob).filter { !it.outgoing }.map { it.text })
+
+        bob.read(alice)
+        alice.read(bob)
+        eventually("everything read") {
+            alice.chat(bob).filter { it.outgoing }.all { it.status == MessageStatus.READ } &&
+                bob.chat(alice).filter { it.outgoing }.all { it.status == MessageStatus.READ }
+        }
+        eventually("outboxes empty") { alice.db.outboxSize() == 0 && bob.db.outboxSize() == 0 }
+    }
+
+    @Test
+    fun `messages written without a connection go out on the next one`() {
+        val bob = Phone().registeredAndOffline()
+        val alice = Phone().knows(bob)
+        bob.knows(alice)
+
+        listOf("one", "two", "three").forEach { alice.send(bob, it) }
+        pause()
+        assertTrue(alice.chat(bob).all { it.status == MessageStatus.PENDING })
+        assertEquals(3, alice.db.outboxSize())
+
+        alice.online()
+        eventually("sent") { alice.chat(bob).all { it.status == MessageStatus.SENT } }
+        alice.offline()
+
+        bob.online()
+        eventually("arrived") { bob.chat(alice).size == 3 }
+        assertEquals(listOf("< one", "< two", "< three"), bob.texts(alice))
+    }
+
+    @Test
+    fun `a stranger's message waits as a request and tells them nothing`() {
+        val alice = Phone()
+        val bob = Phone()
+        alice.knows(bob).online()
+        bob.online() // Bob has never heard of Alice.
+
+        alice.send(bob, "hi, it's Alice")
+        eventually("arrived") { bob.texts(alice) == listOf("< hi, it's Alice") }
+        assertEquals(ReceiptLevel.NONE, bob.chat(alice).single().receipt)
+        bob.read(alice) // Bob looks at the request.
+        pause()
+        assertEquals("a stranger learns nothing", MessageStatus.SENT, alice.statusOf(bob, "hi, it's Alice"))
+        assertEquals(0, bob.db.outboxSize())
+        assertThrows(IllegalStateException::class.java) { bob.send(alice, "who are you?") }
+
+        // Bob accepts.
+        bob.knows(alice)
+        runBlocking { bob.engine.onContactAdded(alice.id) }
+        eventually("delivered") { alice.statusOf(bob, "hi, it's Alice") == MessageStatus.DELIVERED }
+        bob.read(alice)
+        eventually("read") { alice.statusOf(bob, "hi, it's Alice") == MessageStatus.READ }
+        bob.send(alice, "hello Alice")
+        eventually("reply arrived") { alice.texts(bob) == listOf("> hi, it's Alice", "< hello Alice") }
+    }
+
+    @Test
+    fun `a blocked sender is thrown away unread`() {
+        val alice = Phone()
+        val bob = Phone()
+        alice.knows(bob).online()
+        bob.knows(alice).online()
+        alice.send(bob, "first")
+        eventually("arrived") { bob.chat(alice).size == 1 }
+
+        runBlocking { bob.engine.block(alice.id) }
+        assertTrue(bob.chat(alice).isEmpty())
+        assertFalse(bob.db.isContact(alice.id))
+
+        val seen = bob.delivered.size
+        alice.send(bob, "second")
+        eventually("the relay delivered it") { bob.delivered.size > seen }
+        eventually("stored by the relay") { alice.statusOf(bob, "second") == MessageStatus.SENT }
+        pause()
+        assertTrue(bob.chat(alice).isEmpty())
+        assertEquals(MessageStatus.SENT, alice.statusOf(bob, "second"))
+
+        // It was acknowledged, so it does not come back on the next connection.
+        bob.offline()
+        val before = bob.delivered.size
+        bob.online()
+        pause()
+        assertEquals(before, bob.delivered.size)
+
+        runBlocking { bob.engine.unblock(alice.id) }
+        alice.send(bob, "third")
+        eventually("arrives as a request") { bob.texts(alice) == listOf("< third") }
+    }
+
+    @Test
+    fun `a delivery that could not be saved comes again, exactly once`() {
+        val alice = Phone()
+        val bob = Phone()
+        alice.knows(bob).online()
+        bob.knows(alice).online()
+
+        // Bob's phone dies while saving: the transaction is rolled back.
+        bob.db.failNextMessageInsert = true
+        alice.send(bob, "do not lose me")
+        eventually("the relay delivered it") { bob.delivered.isNotEmpty() }
+        eventually("stored by the relay") { alice.statusOf(bob, "do not lose me") == MessageStatus.SENT }
+        pause()
+        assertTrue(bob.chat(alice).isEmpty())
+        assertFalse("the session must not have moved without the message", bob.db.hasSession(alice.id))
+
+        bob.offline()
+        bob.online()
+        eventually("arrived the second time") { bob.texts(alice) == listOf("< do not lose me") }
+        eventually("delivered") { alice.statusOf(bob, "do not lose me") == MessageStatus.DELIVERED }
+
+        // And the session works in both directions afterwards.
+        bob.send(alice, "got it")
+        eventually("reply arrived") { alice.texts(bob) == listOf("> do not lose me", "< got it") }
+        alice.send(bob, "good")
+        eventually("arrived") { bob.texts(alice).last() == "< good" }
+        assertEquals(3, bob.chat(alice).size)
+    }
+
+    @Test
+    fun `the same delivery twice is saved once`() {
+        val alice = Phone()
+        val bob = Phone()
+        alice.knows(bob).online()
+        bob.knows(alice).online()
+        alice.send(bob, "one")
+        alice.send(bob, "two")
+        eventually("arrived") { bob.chat(alice).size == 2 }
+        bob.send(alice, "three")
+        eventually("arrived") { alice.chat(bob).size == 3 }
+        eventually("settled") { alice.db.outboxSize() == 0 && bob.db.outboxSize() == 0 }
+
+        // The relay never got the acknowledgements and sends everything again.
+        val again = bob.delivered.toList()
+        assertTrue(again.size >= 2)
+        runBlocking { again.forEach { bob.engine.onFrame(it) } }
+        assertEquals(listOf("< one", "< two", "> three"), bob.texts(alice))
+        assertTrue(bob.chat(alice).none { it.kind == MessageKind.UNREADABLE })
+        pause()
+        assertEquals("no second receipt", 0, bob.db.outboxSize())
+    }
+
+    @Test
+    fun `a message nobody can decrypt leaves a note for a contact only`() {
+        val alice = Phone()
+        val bob = Phone()
+        val carol = Phone()
+        bob.knows(alice).online()
+        alice.online()
+        carol.online()
+
+        val garbage = java.util.Base64.getEncoder().encodeToString(ByteArray(200) { 5 })
+        fun frame(from: Phone, seq: Long) =
+            JSONObject().put("t", "msg").put("seq", seq).put("from", from.id).put("kind", 2).put("body", garbage)
+        runBlocking {
+            bob.engine.onFrame(frame(alice, 1))
+            bob.engine.onFrame(frame(carol, 2))
+            bob.engine.onFrame(frame(bob, 3))
+            bob.engine.onFrame(JSONObject().put("t", "msg").put("seq", 4).put("from", "nonsense").put("body", garbage))
+            bob.engine.onFrame(JSONObject().put("t", "msg").put("seq", 5).put("from", alice.id).put("body", "***"))
+        }
+        assertEquals(listOf(MessageKind.UNREADABLE), bob.chat(alice).map { it.kind })
+        assertTrue(bob.chat(carol).isEmpty())
+        assertTrue(bob.chat(bob).isEmpty())
+        assertEquals(0, bob.db.outboxSize())
+    }
+
+    @Test
+    fun `writing to an ID nobody registered waits and says why`() {
+        val alice = Phone()
+        val nobody = Phone()
+        alice.knows(nobody).online()
+        alice.send(nobody, "anyone there?")
+        eventually("explained") { alice.engine.waiting.value[nobody.id]?.contains("not registered") == true }
+        assertEquals(MessageStatus.PENDING, alice.statusOf(nobody, "anyone there?"))
+        assertEquals(1, alice.db.outboxSize())
+
+        // Other conversations are not held up by it.
+        val bob = Phone()
+        bob.knows(alice).online()
+        alice.knows(bob)
+        alice.send(bob, "hello")
+        eventually("arrived") { bob.texts(alice) == listOf("< hello") }
+
+        // Forgetting the contact drops what was queued for them.
+        runBlocking { alice.engine.forget(nobody.id) }
+        assertTrue(alice.chat(nobody).isEmpty())
+        assertEquals(null, alice.engine.waiting.value[nobody.id])
+        eventually("outbox empty") { alice.db.outboxSize() == 0 }
+    }
+
+    @Test
+    fun `someone who has not published keys is reached as soon as they do`() {
+        val alice = Phone()
+        val old = Phone(withEngine = false) // registered with a version that had no messaging
+        old.online()
+        old.offline()
+        alice.knows(old).online()
+
+        alice.send(old, "are you there?")
+        eventually("explained") { alice.engine.waiting.value[old.id]?.contains("newer version") == true }
+        assertEquals(MessageStatus.PENDING, alice.statusOf(old, "are you there?"))
+
+        // They update: same identity, same device key, now with messaging.
+        old.withEngine = true
+        old.knows(alice).online()
+        eventually("arrived") { old.texts(alice) == listOf("< are you there?") }
+        eventually("no longer waiting") { alice.engine.waiting.value.isEmpty() }
+        eventually("delivered") { alice.statusOf(old, "are you there?") == MessageStatus.DELIVERED }
+    }
+
+    @Test
+    fun `one-time keys are published, spent one per new conversation, and counted`() {
+        val bob = Phone().registeredAndOffline()
+        val ready = bob.online()
+        assertTrue(ready.hasKeys)
+        assertEquals(ChatEngine.ONE_TIME_KEY_BATCH, ready.oneTimeKeys)
+        pause()
+        assertEquals("enough on the relay: no top-up", ChatEngine.ONE_TIME_KEY_BATCH, bob.db.preKeyCount(SignalStorage.ONE_TIME))
+
+        val alice = Phone()
+        alice.knows(bob).online()
+        alice.send(bob, "hi")
+        eventually("arrived") { bob.chat(alice).size == 1 }
+        assertEquals(ChatEngine.ONE_TIME_KEY_BATCH - 1, bob.db.preKeyCount(SignalStorage.ONE_TIME))
+        alice.send(bob, "again")
+        eventually("arrived") { bob.chat(alice).size == 2 }
+        assertEquals("only the first message of a conversation spends a key", ChatEngine.ONE_TIME_KEY_BATCH - 1, bob.db.preKeyCount(SignalStorage.ONE_TIME))
+
+        bob.offline()
+        assertEquals(ChatEngine.ONE_TIME_KEY_BATCH - 1, bob.online().oneTimeKeys)
+    }
+
+    @Test
+    fun `empty and oversized messages are refused before anything is saved`() {
+        val alice = Phone()
+        val bob = Phone()
+        alice.knows(bob)
+        assertThrows(IllegalArgumentException::class.java) { alice.send(bob, "   \n ") }
+        assertThrows(IllegalArgumentException::class.java) { alice.send(bob, "x".repeat(Payload.MAX_TEXT_BYTES + 1)) }
+        assertThrows(IllegalArgumentException::class.java) { alice.send(bob, "म".repeat(Payload.MAX_TEXT_BYTES / 3 + 1)) }
+        assertTrue(alice.chat(bob).isEmpty())
+        assertEquals(0, alice.db.outboxSize())
+
+        // The longest allowed message makes it through the relay's size limit,
+        // even as the first message of a conversation, which is the largest kind.
+        bob.knows(alice).online()
+        alice.online()
+        val longest = "म".repeat(Payload.MAX_TEXT_BYTES / 3) + "x".repeat(Payload.MAX_TEXT_BYTES % 3)
+        alice.send(bob, longest)
+        eventually("arrived") { bob.chat(alice).singleOrNull()?.text == longest }
+    }
+}

@@ -16,8 +16,9 @@ import androidx.compose.ui.Modifier
 import org.maun.messenger.data.ContactEntity
 
 @Composable
-fun ContactScreen(contact: ContactEntity, onBack: () -> Unit, onRemove: () -> Unit) {
+fun ContactScreen(contact: ContactEntity, onBack: () -> Unit, onRemove: () -> Unit, onBlock: () -> Unit) {
     var confirming by rememberSaveable { mutableStateOf(false) }
+    var confirmingBlock by rememberSaveable { mutableStateOf(false) }
 
     ScreenFrame(title = contact.name, onBack = onBack) {
         Text(
@@ -34,18 +35,40 @@ fun ContactScreen(contact: ContactEntity, onBack: () -> Unit, onRemove: () -> Un
         Text("Their ID", style = MaterialTheme.typography.titleMedium)
         SelectionContainer { IdText(contact.id) }
 
-        BodyText("Messaging arrives in the next version.")
+        BodyText(
+            "Messages with ${contact.name} are encrypted between your two phones. The relay " +
+                "holds a message only until their phone has collected it.",
+        )
 
         OutlinedButton(onClick = { confirming = true }, modifier = Modifier.fillMaxWidth()) {
-            Text("Remove contact")
+            Text("Remove contact and delete chat")
         }
+        OutlinedButton(onClick = { confirmingBlock = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("Block")
+        }
+    }
+
+    if (confirmingBlock) {
+        BlockDialog(
+            who = contact.name,
+            onConfirm = {
+                confirmingBlock = false
+                onBlock()
+            },
+            onDismiss = { confirmingBlock = false },
+        )
     }
 
     if (confirming) {
         AlertDialog(
             onDismissRequest = { confirming = false },
             title = { Text("Remove ${contact.name}?") },
-            text = { Text("They are removed from this phone only. You can add them again with their code.") },
+            text = {
+                Text(
+                    "The contact and your conversation are deleted from this phone only. If they " +
+                        "write again, it shows up as a message request.",
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     confirming = false

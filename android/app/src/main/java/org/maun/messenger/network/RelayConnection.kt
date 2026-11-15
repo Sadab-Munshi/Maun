@@ -45,6 +45,32 @@ sealed interface RelayState {
     data class Rejected(val reason: String) : RelayState
 }
 
+/** What the relay said about this account when it logged in. */
+data class Ready(
+    /** The account was created by this login. */
+    val fresh: Boolean,
+    /** The relay has this phone's pre-keys. */
+    val hasKeys: Boolean,
+    /** One-time pre-keys the relay has left to hand out. */
+    val oneTimeKeys: Int,
+)
+
+/** What the messaging code needs from a connection. */
+interface RelayLink {
+    /** Set while logged in, null otherwise. */
+    val ready: Ready?
+
+    /**
+     * Sends [frame] with a fresh `id` and waits for the frame that answers it.
+     * Throws [RelayException] when there is no connection, it is lost while
+     * waiting, or no answer comes in time.
+     */
+    suspend fun request(frame: JSONObject, timeoutMillis: Long = 15_000): JSONObject
+
+    /** Sends [frame] and expects no answer. Returns false when there is no connection. */
+    fun send(frame: JSONObject): Boolean
+}
+
 /**
  * The lasting, logged-in connection to this account's mailbox on the relay.
  *
@@ -54,7 +80,11 @@ sealed interface RelayState {
  *
  * [isRegistered] says whether this account has ever been accepted by the
  * relay; [onLoggedIn] is called after every successful login, before the state
- * becomes [RelayState.Online].
+ * becomes [RelayState.Online], and [onOnline] right after it has.
+ *
+ * [onFrame] receives the messages the relay delivers, one at a time and in
+ * order. It runs on the connection's own loop, so it must not wait for an
+ * answer from the relay: none can arrive until it returns.
  */
 class RelayConnection(
     relayUrl: HttpUrl,
@@ -65,7 +95,9 @@ class RelayConnection(
     private val onLoggedIn: suspend () -> Unit,
     private val http: OkHttpClient = RelayClient.defaultHttp,
     private val backoff: Backoff = Backoff(),
-) {
+    private val onOnline: () -> Unit = {},
+    private val onFrame: suspend (JSONObject) -> Unit = {},
+) : RelayLink {
     private val request = Request.Builder().url(RelayClient.socketUrl(relayUrl, identity.id)).build()
 
     private val _state = MutableStateFlow<RelayState>(RelayState.Offline)
@@ -75,7 +107,12 @@ class RelayConnection(
 
     @Volatile
     private var live: WebSocket? = null
-    private val pendingEchoes = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+
+    @Volatile
+    override var ready: Ready? = null
+        private set
+
+    private val pending = ConcurrentHashMap<String, CompletableDeferred<JSONObject>>()
 
     /** Starts connecting, and keeps reconnecting until [stop]. Does nothing if already running. */
     @Synchronized
@@ -96,22 +133,28 @@ class RelayConnection(
      * relay to send it back. Returns the round-trip time in milliseconds.
      */
     suspend fun echo(timeoutMillis: Long = 10_000): Long {
+        val started = System.nanoTime()
+        request(JSONObject().put("t", "echo").put("body", ""), timeoutMillis)
+        return (System.nanoTime() - started) / 1_000_000
+    }
+
+    override suspend fun request(frame: JSONObject, timeoutMillis: Long): JSONObject {
         val socket = live ?: throw RelayException("Not connected to the relay")
         val id = UUID.randomUUID().toString()
-        val reply = CompletableDeferred<Unit>()
-        pendingEchoes[id] = reply
-        val started = System.nanoTime()
+        val reply = CompletableDeferred<JSONObject>()
+        pending[id] = reply
         try {
-            val frame = JSONObject().put("t", "echo").put("id", id).put("body", "")
+            frame.put("id", id)
             if (!socket.send(frame.toString())) throw RelayException("Not connected to the relay")
-            withTimeout(timeoutMillis) { reply.await() }
-            return (System.nanoTime() - started) / 1_000_000
+            return withTimeout(timeoutMillis) { reply.await() }
         } catch (e: TimeoutCancellationException) {
             throw RelayException("The relay did not answer in time", e)
         } finally {
-            pendingEchoes.remove(id)
+            pending.remove(id)
         }
     }
+
+    override fun send(frame: JSONObject): Boolean = live?.send(frame.toString()) == true
 
     private suspend fun run() {
         var failures = 0
@@ -163,11 +206,19 @@ class RelayConnection(
                             "ready" -> {
                                 onLoggedIn()
                                 online = true
+                                ready = Ready(
+                                    fresh = frame.optBoolean("fresh"),
+                                    hasKeys = frame.optBoolean("keys"),
+                                    oneTimeKeys = frame.optInt("otks"),
+                                )
                                 live = socket
                                 _state.value = RelayState.Online
+                                onOnline()
                             }
-                            "echo" -> pendingEchoes.remove(frame.optString("id"))?.complete(Unit)
+                            "msg" -> if (online) onFrame(frame)
                             "error" -> if (!online) refusal = frame.optString("code")
+                            // Everything else answers a request and carries its id.
+                            else -> pending.remove(frame.optString("id"))?.complete(frame)
                         }
                     }
                     is Event.Closed -> return when (event.code) {
@@ -181,7 +232,8 @@ class RelayConnection(
             return End.Dropped("The connection ended.", online)
         } finally {
             live = null
-            pendingEchoes.values.forEach { it.completeExceptionally(RelayException("The connection was lost")) }
+            ready = null
+            pending.values.forEach { it.completeExceptionally(RelayException("The connection was lost")) }
             // A polite close when we are the ones leaving; no effect if already closed.
             if (!socket.close(1000, null)) socket.cancel()
         }

@@ -5,12 +5,47 @@
 // A connection goes: the relay sends `hello` with a fresh nonce; the client
 // answers with `register` (first time) or `login`; the relay answers `ready`.
 // Until `ready`, nothing else is accepted.
+//
+// After `ready`:
+//   - the relay sends every waiting message as `msg`; the client answers each
+//     with `ack`, and only then is the message deleted;
+//   - `put_keys` and `put_otks` publish the pre-keys other people need to start
+//     an encrypted session; `get_keys` fetches someone else's;
+//   - `send` hands a message to another mailbox, answered by `stored`.
+// Every request carries an `id` that comes back in its answer.
+//
+// The relay never sees plaintext: `body` is a Signal ciphertext.
 
 /** Bumped whenever a frame changes in a way old clients cannot read. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** Largest frame the mailbox will read. Chat envelopes are small; files go to R2. */
-export const MAX_FRAME_BYTES = 4096;
+export const MAX_FRAME_BYTES = 16_384;
+
+/** Largest ciphertext in one message. Leaves room for the base64 and the rest of the frame. */
+export const MAX_BODY_BYTES = 8_192;
+
+/** A Curve25519 public key as libsignal serializes it: one type byte, then the key. */
+export const EC_KEY_BYTES = 33;
+/** A Kyber-1024 public key as libsignal serializes it: one type byte, then the key. */
+export const KYBER_KEY_BYTES = 1569;
+export const SIGNATURE_BYTES = 64;
+
+/** One-time pre-keys a mailbox keeps, and how many one frame may add. */
+export const MAX_ONE_TIME_KEYS = 100;
+export const MAX_ONE_TIME_KEYS_PER_FRAME = 50;
+
+/** Messages a mailbox holds for its owner, in total and from any one sender. */
+export const QUEUE_CAP = 1000;
+export const QUEUE_CAP_PER_SENDER = 300;
+/** A message nobody collects is deleted after this long. */
+export const QUEUE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** Messages sent to a phone and not yet acknowledged, at most. */
+export const DELIVERY_WINDOW = 50;
+
+/** libsignal's message types: a normal message, and one that also carries the key exchange. */
+export const KIND_MESSAGE = 2;
+export const KIND_PREKEY_MESSAGE = 3;
 
 export const NONCE_BYTES = 32;
 
@@ -34,16 +69,46 @@ export function isMailboxId(value: string): boolean {
   return MAILBOX_ID.test(value);
 }
 
+/** A pre-key signed by its owner's identity key. */
+export type SignedKey = { id: number; key: Uint8Array; sig: Uint8Array };
+export type OneTimeKey = { id: number; key: Uint8Array };
+
+/** What someone needs to start an encrypted session with a mailbox's owner. */
+export type KeyBundle = { regId: number; spk: SignedKey; kpk: SignedKey; otk: OneTimeKey | null };
+
 export type ClientFrame =
   | { t: "register"; deviceKey: Uint8Array; identitySig: Uint8Array; deviceSig: Uint8Array }
   | { t: "login"; sig: Uint8Array }
-  | { t: "echo"; id: string; body: string };
+  | { t: "echo"; id: string; body: string }
+  | { t: "put_keys"; id: string; regId: number; spk: SignedKey; kpk: SignedKey }
+  | { t: "put_otks"; id: string; keys: OneTimeKey[] }
+  | { t: "get_keys"; id: string; of: string }
+  | { t: "send"; id: string; to: string; kind: number; body: Uint8Array }
+  | { t: "ack"; seq: number };
+
+type WireSignedKey = { id: number; key: string; sig: string };
 
 export type ServerFrame =
   | { t: "hello"; proto: number; nonce: string; registered: boolean }
-  | { t: "ready"; fresh: boolean }
+  /** `keys`: pre-keys are published. `otks`: one-time pre-keys left. */
+  | { t: "ready"; fresh: boolean; keys: boolean; otks: number }
   | { t: "echo"; id: string; body: string; at: number }
+  | { t: "saved"; id: string; otks: number }
+  | {
+      t: "keys";
+      id: string;
+      regId: number;
+      spk: WireSignedKey;
+      kpk: WireSignedKey;
+      otk: { id: number; key: string } | null;
+    }
+  | { t: "stored"; id: string }
+  | { t: "failed"; id: string; code: FailureCode }
+  | { t: "msg"; seq: number; from: string; kind: number; body: string; at: number }
   | { t: "error"; code: ErrorCode };
+
+/** Why a `get_keys` or `send` could not be carried out. The connection stays open. */
+export type FailureCode = "no_account" | "no_keys" | "mailbox_full" | "rate_limited" | "self" | "unavailable";
 
 export type ErrorCode =
   | "bad_frame"
@@ -116,9 +181,67 @@ export function parseClientFrame(raw: string | ArrayBuffer): ClientFrame | Error
     case "echo":
       if (typeof frame.id !== "string" || typeof frame.body !== "string") return "bad_frame";
       return { t: "echo", id: frame.id, body: frame.body };
+    case "put_keys": {
+      const spk = signedKey(frame.spk, EC_KEY_BYTES);
+      const kpk = signedKey(frame.kpk, KYBER_KEY_BYTES);
+      if (!isRequestId(frame.id) || !isRegistrationId(frame.regId) || !spk || !kpk) return "bad_frame";
+      return { t: "put_keys", id: frame.id, regId: frame.regId, spk, kpk };
+    }
+    case "put_otks": {
+      if (!isRequestId(frame.id) || !Array.isArray(frame.keys)) return "bad_frame";
+      if (frame.keys.length === 0 || frame.keys.length > MAX_ONE_TIME_KEYS_PER_FRAME) return "bad_frame";
+      const keys: OneTimeKey[] = [];
+      for (const entry of frame.keys) {
+        if (typeof entry !== "object" || entry === null) return "bad_frame";
+        const { id, key } = entry as Record<string, unknown>;
+        const bytes = fromBase64(key, EC_KEY_BYTES);
+        if (!isKeyId(id) || !bytes || bytes.length !== EC_KEY_BYTES) return "bad_frame";
+        keys.push({ id, key: bytes });
+      }
+      return { t: "put_otks", id: frame.id, keys };
+    }
+    case "get_keys":
+      if (!isRequestId(frame.id) || typeof frame.of !== "string" || !isMailboxId(frame.of)) return "bad_frame";
+      return { t: "get_keys", id: frame.id, of: frame.of };
+    case "send": {
+      if (!isRequestId(frame.id) || typeof frame.to !== "string" || !isMailboxId(frame.to)) return "bad_frame";
+      if (frame.kind !== KIND_MESSAGE && frame.kind !== KIND_PREKEY_MESSAGE) return "bad_frame";
+      const body = fromBase64(frame.body, MAX_BODY_BYTES);
+      if (!body) return "bad_frame";
+      return { t: "send", id: frame.id, to: frame.to, kind: frame.kind, body };
+    }
+    case "ack":
+      if (typeof frame.seq !== "number" || !Number.isSafeInteger(frame.seq) || frame.seq <= 0) return "bad_frame";
+      return { t: "ack", seq: frame.seq };
     default:
       return "unknown_type";
   }
+}
+
+const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+function isRequestId(value: unknown): value is string {
+  return typeof value === "string" && REQUEST_ID.test(value);
+}
+
+/** libsignal numbers pre-keys with 24-bit IDs, starting at 1. */
+function isKeyId(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 0xffffff;
+}
+
+/** libsignal registration IDs are 14 bits. */
+function isRegistrationId(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 0x3fff;
+}
+
+function signedKey(value: unknown, keyBytes: number): SignedKey | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { id, key, sig } = value as Record<string, unknown>;
+  const keyData = fromBase64(key, keyBytes);
+  const signature = fromBase64(sig, SIGNATURE_BYTES);
+  if (!isKeyId(id) || !keyData || keyData.length !== keyBytes) return null;
+  if (!signature || signature.length !== SIGNATURE_BYTES) return null;
+  return { id, key: keyData, sig: signature };
 }
 
 const REGISTER_LABEL = new TextEncoder().encode("maun:register:v1\n");

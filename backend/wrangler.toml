@@ -50,3 +50,14 @@ namespace_id = "4103"
   [ratelimits.simple]
   limit = 10
   period = 60
+
+# Messages sent and pre-keys fetched by one account. A delivered message is
+# answered with a receipt, which counts too, so this is about one message a
+# second in each direction.
+[[ratelimits]]
+name = "SEND_LIMIT"
+namespace_id = "4104"
+
+  [ratelimits.simple]
+  limit = 120
+  period = 60

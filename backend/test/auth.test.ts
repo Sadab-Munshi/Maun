@@ -70,7 +70,7 @@ describe("registration", () => {
     const device = await makeDevice();
     const { inbox, nonce } = await connect(identity.mailboxId);
     inbox.sendJson(await registerFrame(identity, device, nonce));
-    expect(await inbox.nextJson()).toEqual({ t: "ready", fresh: true });
+    expect(await inbox.nextJson()).toMatchObject({ t: "ready", fresh: true });
 
     const row = await runInDurableObject(stubFor(identity.mailboxId), (_instance, state) =>
       state.storage.sql.exec("SELECT device_key, reg_nonce, created_day FROM account").one(),
@@ -221,7 +221,7 @@ describe("login", () => {
     const first = await connect(identity.mailboxId);
     const captured = await loginFrame(identity, device, first.nonce);
     first.inbox.sendJson(captured);
-    expect(await first.inbox.nextJson()).toEqual({ t: "ready", fresh: false });
+    expect(await first.inbox.nextJson()).toMatchObject({ t: "ready", fresh: false });
 
     // ...and sends the same bytes on a connection of their own.
     const second = await connect(identity.mailboxId);
@@ -240,7 +240,7 @@ describe("login", () => {
     const first = await connect(identity.mailboxId);
     const frame = await registerFrame(identity, device, first.nonce);
     first.inbox.sendJson(frame);
-    expect(await first.inbox.nextJson()).toEqual({ t: "ready", fresh: true });
+    expect(await first.inbox.nextJson()).toMatchObject({ t: "ready", fresh: true });
 
     const second = await connect(identity.mailboxId);
     second.inbox.sendJson({ t: "login", sig: frame.deviceSig });
@@ -287,7 +287,7 @@ describe("login", () => {
     const { inbox, nonce } = await connect(identity.mailboxId);
     await evictDurableObject(stubFor(identity.mailboxId));
     inbox.sendJson(await loginFrame(identity, device, nonce));
-    expect(await inbox.nextJson()).toEqual({ t: "ready", fresh: false });
+    expect(await inbox.nextJson()).toMatchObject({ t: "ready", fresh: false });
     inbox.ws.close(1000, "done");
   });
 });

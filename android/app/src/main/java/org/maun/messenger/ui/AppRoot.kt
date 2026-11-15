@@ -8,6 +8,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -20,6 +21,8 @@ private const val HOME = "home"
 private const val MY_CODE = "my-code"
 private const val ADD_CONTACT = "add-contact"
 private const val SETUP_CHECK = "setup-check"
+private const val BLOCKED = "blocked"
+private const val CHAT_PREFIX = "chat:"
 private const val CONTACT_PREFIX = "contact:"
 
 /**
@@ -32,8 +35,12 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
     val relay by viewModel.relay.collectAsStateWithLifecycle()
     var screen by rememberSaveable { mutableStateOf(HOME) }
     val goHome = { screen = HOME }
+    // A contact's details are reached from their conversation, and lead back to it.
+    val goBack = {
+        screen = if (screen.startsWith(CONTACT_PREFIX)) CHAT_PREFIX + screen.removePrefix(CONTACT_PREFIX) else HOME
+    }
 
-    BackHandler(enabled = screen != HOME, onBack = goHome)
+    BackHandler(enabled = screen != HOME, onBack = goBack)
 
     when (val current = account) {
         AccountState.Loading -> Surface(modifier = Modifier.fillMaxSize()) {
@@ -63,7 +70,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
 
                 else -> {
                     val contacts by viewModel.contacts.collectAsStateWithLifecycle()
-                    val contact = screen.takeIf { it.startsWith(CONTACT_PREFIX) }
+                    val chatPeer = screen.takeIf { it.startsWith(CHAT_PREFIX) }?.removePrefix(CHAT_PREFIX)
+                    val detailsOf = screen.takeIf { it.startsWith(CONTACT_PREFIX) }
                         ?.removePrefix(CONTACT_PREFIX)
                         ?.let { id -> contacts.firstOrNull { it.id == id } }
                     when {
@@ -76,29 +84,66 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             checkCode = viewModel::checkCode,
                             onSave = { id, name, verified ->
                                 viewModel.saveContact(id, name, verified)
-                                goHome()
+                                screen = CHAT_PREFIX + id
                             },
                             onBack = goHome,
                         )
 
-                        contact != null -> ContactScreen(
-                            contact = contact,
-                            onBack = goHome,
+                        screen == BLOCKED -> {
+                            val blocked by viewModel.blocked.collectAsStateWithLifecycle()
+                            BlockedScreen(blocked = blocked, onUnblock = viewModel::unblock, onBack = goHome)
+                        }
+
+                        chatPeer != null -> {
+                            val messages by remember(chatPeer) { viewModel.messages(chatPeer) }
+                                .collectAsStateWithLifecycle(initialValue = emptyList())
+                            val waiting by viewModel.waiting.collectAsStateWithLifecycle()
+                            ChatScreen(
+                                peerId = chatPeer,
+                                contactName = contacts.firstOrNull { it.id == chatPeer }?.name,
+                                messages = messages,
+                                waiting = waiting[chatPeer],
+                                relay = relay,
+                                onSend = { text -> viewModel.sendText(chatPeer, text) },
+                                onSeen = { viewModel.markRead(chatPeer) },
+                                onBack = goHome,
+                                onOpenDetails = { screen = CONTACT_PREFIX + chatPeer },
+                                onAccept = { name -> viewModel.saveContact(chatPeer, name, verified = false) },
+                                onBlock = {
+                                    viewModel.block(chatPeer)
+                                    goHome()
+                                },
+                            )
+                        }
+
+                        detailsOf != null -> ContactScreen(
+                            contact = detailsOf,
+                            onBack = goBack,
                             onRemove = {
-                                viewModel.removeContact(contact.id)
+                                viewModel.removeContact(detailsOf.id)
+                                goHome()
+                            },
+                            onBlock = {
+                                viewModel.block(detailsOf.id)
                                 goHome()
                             },
                         )
 
-                        else -> HomeScreen(
-                            relay = relay,
-                            contacts = contacts,
-                            onShowMyCode = { screen = MY_CODE },
-                            onAddContact = { screen = ADD_CONTACT },
-                            onOpenContact = { id -> screen = CONTACT_PREFIX + id },
-                            onReconnect = viewModel::reconnect,
-                            onOpenSetupCheck = { screen = SETUP_CHECK },
-                        )
+                        else -> {
+                            val lists by viewModel.home.collectAsStateWithLifecycle()
+                            val blocked by viewModel.blocked.collectAsStateWithLifecycle()
+                            HomeScreen(
+                                relay = relay,
+                                lists = lists,
+                                blockedCount = blocked.size,
+                                onShowMyCode = { screen = MY_CODE },
+                                onAddContact = { screen = ADD_CONTACT },
+                                onOpenChat = { id -> screen = CHAT_PREFIX + id },
+                                onReconnect = viewModel::reconnect,
+                                onOpenBlocked = { screen = BLOCKED },
+                                onOpenSetupCheck = { screen = SETUP_CHECK },
+                            )
+                        }
                     }
                 }
             }

@@ -6,14 +6,19 @@ import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.maun.messenger.BuildConfig
 import org.maun.messenger.CodeCheck
 import org.maun.messenger.MaunApp
+import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.network.RelayException
 
 /** What the welcome screen needs beyond the account and relay state. */
@@ -32,6 +37,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val account = messenger.account
     val relay = messenger.relay
     val contacts = messenger.contacts
+    val blocked = messenger.blocked
+    val waiting = messenger.waiting
+
+    val home: StateFlow<HomeLists> = combine(messenger.contacts, messenger.chats, ::homeLists)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeLists())
 
     private val _onboarding = MutableStateFlow(
         OnboardingUiState(relayUrl = settings.getString(KEY_RELAY_URL, null) ?: BuildConfig.RELAY_URL),
@@ -76,6 +86,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removeContact(id: String) {
         viewModelScope.launch { messenger.removeContact(id) }
+    }
+
+    /** The conversation with [peer], newest first. */
+    fun messages(peer: String): Flow<List<MessageEntity>> = messenger.messages(peer)
+
+    fun sendText(peer: String, text: String) {
+        viewModelScope.launch {
+            try {
+                messenger.sendText(peer, text)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // The screen only offers Send for text that can be sent to a
+                // contact; a race with removing the contact ends up here.
+            }
+        }
+    }
+
+    fun markRead(peer: String) {
+        viewModelScope.launch { messenger.markRead(peer) }
+    }
+
+    fun block(peer: String) {
+        viewModelScope.launch { messenger.block(peer) }
+    }
+
+    fun unblock(peer: String) {
+        viewModelScope.launch { messenger.unblock(peer) }
     }
 
     companion object {
