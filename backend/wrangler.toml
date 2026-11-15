@@ -5,9 +5,36 @@ main = "src/index.ts"
 compatibility_date = "2026-11-01"
 workers_dev = true
 
+# Settings made in the Cloudflare dashboard (Settings > Variables and Secrets)
+# survive a deploy from this file.
+keep_vars = true
+
+# Member-only mode is switched on by two such settings:
+#   ACCESS_TEAM  your Zero Trust team, for example "myteam" or
+#                "myteam.cloudflareaccess.com"
+#   ACCESS_AUD   the "Application Audience (AUD) Tag" of the Access
+#                application that protects <this relay>/v1/access/*
+# Without them the relay is open, as before: anyone may make an ID.
+
 # Zero tracking: do not ship request logs to Workers Logs.
 [observability]
 enabled = false
+
+# Encrypted files, kept for one day. Created by the first deploy if it does
+# not exist.
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "maun-files"
+
+# The member list of a member-only relay (see src/members.ts). Created by the
+# first deploy if it does not exist; an open relay never writes to it.
+[[d1_databases]]
+binding = "DB"
+database_name = "maun"
+
+# Every hour: delete files older than a day.
+[triggers]
+crons = ["0 * * * *"]
 
 [[durable_objects.bindings]]
 name = "MAILBOX"

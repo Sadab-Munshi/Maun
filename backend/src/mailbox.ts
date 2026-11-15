@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { accessConfig, verifyAccessToken } from "./crypto/access";
 import { verifyDeviceSignature, verifyIdentitySignature } from "./crypto/signatures";
 import {
   PUSH_AUTH_BYTES,
@@ -9,12 +10,19 @@ import {
   isPushUrl,
   vapidAuthorization,
 } from "./crypto/webpush";
+import { bind, memberOf, recordDevice } from "./members";
 import {
+  CLOSE_ACCESS_REQUIRED,
   CLOSE_AUTH_FAILED,
   CLOSE_AUTH_TIMEOUT,
+  CLOSE_BANNED,
   CLOSE_REPLACED,
   DELIVERY_WINDOW,
+  FILE_DAILY_BYTES,
+  FILE_DAILY_COUNT,
+  MAX_FILE_BYTES,
   MAX_ONE_TIME_KEYS,
+  MEMBER_CHECK_MS,
   NONCE_BYTES,
   PROTOCOL_VERSION,
   PUSH_CONTACT,
@@ -68,6 +76,9 @@ type ReadyState = Extract<SocketState, { s: "ready" }>;
 
 type Account = { deviceKey: Uint8Array };
 
+/** What the front door is told when someone wants to upload or download a file. */
+export type FileAnswer = "ok" | "denied" | "banned" | "too_large" | "quota";
+
 /** What another mailbox is told when it hands over a message. */
 export type StoreOutcome = "stored" | "no_account" | "mailbox_full";
 
@@ -103,6 +114,8 @@ export class Mailbox extends DurableObject<Env> {
   private queueSize: { total: number; bySender: Map<string, number> } | null = null;
   private lastSeq: number | null = null;
   private expiryArmed = false;
+  /** Member-only relays: when the member list was last asked about this mailbox's owner. */
+  private memberCheckedAt = 0;
 
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
@@ -127,7 +140,7 @@ export class Mailbox extends DurableObject<Env> {
     const nonce = toBase64(crypto.getRandomValues(new Uint8Array(NONCE_BYTES)));
     this.ctx.acceptWebSocket(server);
     setState(server, { s: "pending", m: mailboxId, n: nonce, at: Date.now() });
-    send(server, { t: "hello", proto: PROTOCOL_VERSION, nonce, registered });
+    send(server, { t: "hello", proto: PROTOCOL_VERSION, nonce, registered, access: accessConfig(this.env) !== null });
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -158,9 +171,19 @@ export class Mailbox extends DurableObject<Env> {
       if (!nonce) return reject(ws, "bad_frame");
 
       const fresh = frame.t === "register";
+      // Asked once the signatures have been checked and before anything is
+      // written: only somebody who holds this ID's keys can tie an email
+      // address to it, and a stranger leaves no account behind.
+      let email: string | null = null;
+      const admit = async (): Promise<ErrorCode | null> => {
+        const answer = await this.admit(state.m, frame.access);
+        if (answer.refused) return answer.refused;
+        email = answer.email;
+        return null;
+      };
       const failure = fresh
-        ? await this.register(identity, nonce, frame.deviceKey, frame.identitySig, frame.deviceSig)
-        : await this.login(identity, nonce, frame.sig);
+        ? await this.register(identity, nonce, frame.deviceKey, frame.identitySig, frame.deviceSig, admit)
+        : await this.login(identity, nonce, frame.sig, admit);
       if (failure) return reject(ws, failure);
 
       // One live connection per account: the newest login wins. Sockets that
@@ -183,6 +206,8 @@ export class Mailbox extends DurableObject<Env> {
         pushStatus: (sql.exec("SELECT status FROM push_result WHERE id = 1").toArray()[0]?.status as number) ?? null,
         vapid: toBase64(vapid.publicKey),
         queued: this.size().total,
+        email,
+        files: this.newFileToken(),
       });
       // Everything that arrived while the phone was away.
       this.pump(ws);
@@ -201,6 +226,9 @@ export class Mailbox extends DurableObject<Env> {
   ): Promise<void> {
     this.ensureTables();
     const sql = this.ctx.storage.sql;
+    // A ban takes effect on a phone that is already connected, at its next
+    // request and at most MEMBER_CHECK_MS late.
+    if (frame.t !== "ack" && frame.t !== "echo" && (await this.banned(state.m))) return;
     switch (frame.t) {
       case "echo":
         // Round-trip check used by the app's connection test.
@@ -320,6 +348,19 @@ export class Mailbox extends DurableObject<Env> {
         return;
       }
 
+      case "device":
+        // Kept only by a member-only relay, next to the member's name.
+        if (accessConfig(this.env)) {
+          try {
+            await recordDevice(this.env, state.m, frame, Date.now());
+          } catch {
+            send(ws, { t: "failed", id: frame.id, code: "unavailable" });
+            return;
+          }
+        }
+        send(ws, { t: "saved", id: frame.id, otks: this.oneTimeKeyCount() });
+        return;
+
       case "drop_push":
         sql.exec("DELETE FROM push WHERE id = 1");
         sql.exec("DELETE FROM push_since");
@@ -327,6 +368,107 @@ export class Mailbox extends DurableObject<Env> {
         send(ws, { t: "saved", id: frame.id, otks: this.oneTimeKeyCount() });
         return;
     }
+  }
+
+  // ---- Members ---------------------------------------------------------------
+
+  /**
+   * Whether this ID may log in. An open relay admits everyone. A member-only
+   * relay admits an ID tied to an email address that is not banned, and ties
+   * a new ID to the address in the Access token it brings.
+   */
+  private async admit(
+    mailboxId: string,
+    token: string | null,
+  ): Promise<{ refused: ErrorCode; email?: undefined } | { refused: null; email: string | null }> {
+    const config = accessConfig(this.env);
+    if (!config) return { refused: null, email: null };
+    const now = Date.now();
+    const member = await memberOf(this.env, mailboxId);
+    if (member) {
+      if (member.banned) return { refused: "banned" };
+      this.memberCheckedAt = now;
+      return { refused: null, email: member.email };
+    }
+    const email = token ? await verifyAccessToken(token, config, now) : null;
+    if (!email) return { refused: "access_required" };
+    if ((await bind(this.env, email, mailboxId, now)) === "banned") return { refused: "banned" };
+    this.memberCheckedAt = now;
+    return { refused: null, email };
+  }
+
+  /**
+   * Asks the member list again when the last answer is old. Closes every
+   * connection and returns true when the owner is banned, or is no longer a
+   * member at all.
+   */
+  private async banned(mailboxId: string): Promise<boolean> {
+    if (!accessConfig(this.env)) return false;
+    const now = Date.now();
+    if (now - this.memberCheckedAt < MEMBER_CHECK_MS) return false;
+    let member;
+    try {
+      member = await memberOf(this.env, mailboxId);
+    } catch {
+      // The list cannot be reached right now. Ask again at the next request.
+      return false;
+    }
+    if (member && !member.banned) {
+      this.memberCheckedAt = now;
+      return false;
+    }
+    const code = member ? "banned" : "access_required";
+    for (const ws of this.ctx.getWebSockets()) {
+      send(ws, { t: "error", code });
+      closeQuietly(ws, member ? CLOSE_BANNED : CLOSE_ACCESS_REQUIRED, code);
+    }
+    return true;
+  }
+
+  // ---- Files -----------------------------------------------------------------
+
+  /** A new token for the file routes. The one handed out at the last login stops working. */
+  private newFileToken(): string {
+    const token = toBase64(crypto.getRandomValues(new Uint8Array(32))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    this.ctx.storage.sql.exec(
+      `INSERT INTO files (id, token, day, bytes, count) VALUES (1, ?, 0, 0, 0)
+       ON CONFLICT (id) DO UPDATE SET token = excluded.token`,
+      token,
+    );
+    return token;
+  }
+
+  /**
+   * Called by the front door before it stores or hands out a file, with the
+   * ID this mailbox was looked up by. `size` is
+   * what an upload says it will send; 0 for a download. An accepted upload is
+   * counted against the day's allowance here.
+   */
+  async fileAccess(mailboxId: string, token: string, size: number): Promise<FileAnswer> {
+    if (!this.account()) return "denied";
+    this.ensureTables();
+    const sql = this.ctx.storage.sql;
+    const row = sql.exec("SELECT token, day, bytes, count FROM files WHERE id = 1").toArray()[0];
+    if (!row || !sameText(row.token as string, token)) return "denied";
+
+    const config = accessConfig(this.env);
+    if (config) {
+      const member = await memberOf(this.env, mailboxId);
+      if (!member || member.banned) {
+        for (const ws of this.ctx.getWebSockets()) {
+          closeQuietly(ws, member ? CLOSE_BANNED : CLOSE_ACCESS_REQUIRED, member ? "banned" : "access_required");
+        }
+        return member ? "banned" : "denied";
+      }
+    }
+    if (size <= 0) return "ok";
+    if (size > MAX_FILE_BYTES) return "too_large";
+    const today = Math.floor(Date.now() / 86_400_000);
+    const bytes = row.day === today ? (row.bytes as number) : 0;
+    const count = row.day === today ? (row.count as number) : 0;
+    if (bytes + size > FILE_DAILY_BYTES || count + 1 > FILE_DAILY_COUNT) return "quota";
+    sql.exec("UPDATE files SET day = ?, bytes = ?, count = ? WHERE id = 1", today, bytes + size, count + 1);
+    return "ok";
   }
 
   // ---- Called by other mailboxes -------------------------------------------
@@ -604,6 +746,14 @@ export class Mailbox extends DurableObject<Env> {
     // One row: what the push service answered to the last wake-up. An HTTP
     // status, 0 when it could not be reached, PUSH_UNFINISHED while in flight.
     sql.exec("CREATE TABLE IF NOT EXISTS push_result (id INTEGER PRIMARY KEY CHECK (id = 1), status INTEGER NOT NULL)");
+    // One row: the token for the file routes, and the day's uploads.
+    sql.exec(
+      `CREATE TABLE IF NOT EXISTS files (
+         id INTEGER PRIMARY KEY CHECK (id = 1),
+         token TEXT NOT NULL,
+         day INTEGER NOT NULL, bytes INTEGER NOT NULL, count INTEGER NOT NULL
+       )`,
+    );
     sql.exec(
       `CREATE TABLE IF NOT EXISTS queue (
          seq INTEGER PRIMARY KEY,
@@ -681,6 +831,7 @@ export class Mailbox extends DurableObject<Env> {
     deviceKey: Uint8Array,
     identitySig: Uint8Array,
     deviceSig: Uint8Array,
+    admit: () => Promise<ErrorCode | null>,
   ): Promise<ErrorCode | null> {
     if (this.account()) return "already_registered";
     const transcript = registerTranscript(identity, nonce, deviceKey);
@@ -689,6 +840,8 @@ export class Mailbox extends DurableObject<Env> {
     const identityOk = await verifyIdentitySignature(identity, transcript, identitySig);
     const deviceOk = identityOk && (await verifyDeviceSignature(deviceKey, transcript, deviceSig));
     if (!deviceOk) return "bad_signature";
+    const refused = await admit();
+    if (refused) return refused;
 
     // Other frames may have been handled while the signatures were checked.
     // From here to the insert nothing waits, so the check and the write cannot
@@ -715,11 +868,16 @@ export class Mailbox extends DurableObject<Env> {
   }
 
   /** Returns an error code, or null when the signature matches the account. */
-  private async login(identity: Uint8Array, nonce: Uint8Array, signature: Uint8Array): Promise<ErrorCode | null> {
+  private async login(
+    identity: Uint8Array,
+    nonce: Uint8Array,
+    signature: Uint8Array,
+    admit: () => Promise<ErrorCode | null>,
+  ): Promise<ErrorCode | null> {
     const account = this.account();
     if (!account) return "not_registered";
     const ok = await verifyDeviceSignature(account.deviceKey, loginTranscript(identity, nonce), signature);
-    return ok ? null : "bad_signature";
+    return ok ? admit() : "bad_signature";
   }
 
   private account(): Account | null {
@@ -776,7 +934,16 @@ function send(ws: WebSocket, frame: ServerFrame): boolean {
 
 function reject(ws: WebSocket, code: ErrorCode): void {
   send(ws, { t: "error", code });
-  closeQuietly(ws, CLOSE_AUTH_FAILED, code);
+  const close = code === "banned" ? CLOSE_BANNED : code === "access_required" ? CLOSE_ACCESS_REQUIRED : CLOSE_AUTH_FAILED;
+  closeQuietly(ws, close, code);
+}
+
+/** Compares two short texts without stopping at the first difference. */
+function sameText(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }
 
 /** A byte array in the form SQLite storage accepts. */

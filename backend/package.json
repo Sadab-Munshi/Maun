@@ -9,7 +9,7 @@
     "deploy": "wrangler deploy",
     "types": "wrangler types",
     "typecheck": "wrangler types && tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && vitest run --config vitest.members.config.ts",
     "bench": "node bench/verify-bench.mjs"
   },
   "devDependencies": {

@@ -9,7 +9,7 @@ describe("http routes", () => {
   it("answers the health check", async () => {
     const response = await SELF.fetch("https://relay.test/health");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, service: "maun-relay", proto: PROTOCOL_VERSION });
+    expect(await response.json()).toEqual({ ok: true, service: "maun-relay", proto: PROTOCOL_VERSION, access: false, files: true });
   });
 
   it("returns 404 for unknown paths", async () => {

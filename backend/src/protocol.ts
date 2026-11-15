@@ -14,7 +14,18 @@
 //   - `send` hands a message to another mailbox, answered by `stored`;
 //   - `put_push` tells the relay where to send a wake-up when a message arrives
 //     and the phone is not connected; `drop_push` withdraws it.
+//   - `device` reports which phone this is (a hash and the model), which a
+//     member-only relay keeps next to the member's name.
 // Every request carries an `id` that comes back in its answer.
+//
+// A relay can be member-only. `hello` then says `access: true`, and an ID the
+// relay has not seen before must bring a Cloudflare Access token (`access` in
+// `register` or `login`): proof of an email address the relay's owner
+// approved. The address is tied to the ID once; after that the ID's own
+// signature is enough. A banned member is closed with CLOSE_BANNED.
+//
+// Files do not travel in frames. `ready` hands out a `files` token; with it
+// the phone may POST an encrypted file to /v1/files and GET /v1/files/<key>.
 //
 // The relay never sees plaintext: `body` is a Signal ciphertext.
 
@@ -87,12 +98,32 @@ export const NONCE_BYTES = 32;
 /** A P-256 public key in SubjectPublicKeyInfo form is always this long. */
 export const DEVICE_KEY_BYTES = 91;
 
+/** Largest encrypted file the relay stores: 25 MB and the encryption's own overhead. */
+export const MAX_FILE_BYTES = 25_000_000 + 65_536;
+/** A file is refused, and deleted, once it is this old. */
+export const FILE_TTL_MS = 24 * 60 * 60 * 1000;
+/** What one account may upload in a day. */
+export const FILE_DAILY_BYTES = 250_000_000;
+export const FILE_DAILY_COUNT = 200;
+/** The key of a stored file: 32 random bytes in lower-case hex. */
+const FILE_KEY = /^[0-9a-f]{64}$/;
+export function isFileKey(value: string): boolean {
+  return FILE_KEY.test(value);
+}
+
+/** How long a member's standing is trusted before the member list is asked again. */
+export const MEMBER_CHECK_MS = 60 * 1000;
+
 /** Close code sent to an older socket when the same account logs in again. */
 export const CLOSE_REPLACED = 4001;
 /** Close code after a failed registration or login. */
 export const CLOSE_AUTH_FAILED = 4003;
 /** Close code for a socket that did not log in in time. */
 export const CLOSE_AUTH_TIMEOUT = 4008;
+/** Close code on a member-only relay for an ID that has not been through the email login. */
+export const CLOSE_ACCESS_REQUIRED = 4401;
+/** Close code for a member the relay's owner has banned. */
+export const CLOSE_BANNED = 4403;
 
 /**
  * A mailbox ID is the user's raw 32-byte Curve25519 identity public key in
@@ -112,8 +143,9 @@ export type OneTimeKey = { id: number; key: Uint8Array };
 export type KeyBundle = { regId: number; spk: SignedKey; kpk: SignedKey; otk: OneTimeKey | null };
 
 export type ClientFrame =
-  | { t: "register"; deviceKey: Uint8Array; identitySig: Uint8Array; deviceSig: Uint8Array }
-  | { t: "login"; sig: Uint8Array }
+  /** `access`: a Cloudflare Access token, for a member-only relay that does not know this ID yet. */
+  | { t: "register"; deviceKey: Uint8Array; identitySig: Uint8Array; deviceSig: Uint8Array; access: string | null }
+  | { t: "login"; sig: Uint8Array; access: string | null }
   | { t: "echo"; id: string; body: string }
   | { t: "put_keys"; id: string; regId: number; spk: SignedKey; kpk: SignedKey }
   | { t: "put_otks"; id: string; keys: OneTimeKey[] }
@@ -122,12 +154,15 @@ export type ClientFrame =
   | { t: "ack"; seq: number }
   /** `key` and `auth` are the Web Push keys the phone's push app handed out. */
   | { t: "put_push"; id: string; url: string; key: Uint8Array; auth: Uint8Array }
-  | { t: "drop_push"; id: string };
+  | { t: "drop_push"; id: string }
+  /** `hash`: SHA-256 of what the phone says about itself, in hex. */
+  | { t: "device"; id: string; hash: string; maker: string; model: string; os: string };
 
 type WireSignedKey = { id: number; key: string; sig: string };
 
 export type ServerFrame =
-  | { t: "hello"; proto: number; nonce: string; registered: boolean }
+  /** `access`: this relay is member-only. */
+  | { t: "hello"; proto: number; nonce: string; registered: boolean; access: boolean }
   /**
    * `keys`: pre-keys are published. `otks`: one-time pre-keys left.
    * `push`: a wake-up address is on file. `queued`: messages waiting right now.
@@ -136,6 +171,8 @@ export type ServerFrame =
    * PUSH_UNFINISHED when the attempt never finished, null when none was sent.
    * `vapid`: the public key this mailbox signs its wake-ups with. The phone
    * passes it to its push app, for push services that ask who will be calling.
+   * `email`: on a member-only relay, the address this ID is tied to.
+   * `files`: the token for uploading and downloading files until the next login.
    */
   | {
       t: "ready";
@@ -146,6 +183,8 @@ export type ServerFrame =
       pushStatus: number | null;
       vapid: string;
       queued: number;
+      email: string | null;
+      files: string;
     }
   | { t: "echo"; id: string; body: string; at: number }
   | { t: "saved"; id: string; otks: number }
@@ -181,7 +220,10 @@ export type ErrorCode =
   | "already_authenticated"
   | "bad_signature"
   | "already_registered"
-  | "not_registered";
+  | "not_registered"
+  /** Member-only relay: go through the email login and come back with the token. */
+  | "access_required"
+  | "banned";
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
@@ -234,12 +276,16 @@ export function parseClientFrame(raw: string | ArrayBuffer): ClientFrame | Error
       const deviceSig = fromBase64(frame.deviceSig, 72);
       if (!deviceKey || deviceKey.length !== DEVICE_KEY_BYTES) return "bad_frame";
       if (!identitySig || identitySig.length !== 64 || !deviceSig) return "bad_frame";
-      return { t: "register", deviceKey, identitySig, deviceSig };
+      const access = accessToken(frame.access);
+      if (access === undefined) return "bad_frame";
+      return { t: "register", deviceKey, identitySig, deviceSig, access };
     }
     case "login": {
       const sig = fromBase64(frame.sig, 72);
       if (!sig) return "bad_frame";
-      return { t: "login", sig };
+      const access = accessToken(frame.access);
+      if (access === undefined) return "bad_frame";
+      return { t: "login", sig, access };
     }
     case "echo":
       if (typeof frame.id !== "string" || typeof frame.body !== "string") return "bad_frame";
@@ -287,9 +333,30 @@ export function parseClientFrame(raw: string | ArrayBuffer): ClientFrame | Error
     case "drop_push":
       if (!isRequestId(frame.id)) return "bad_frame";
       return { t: "drop_push", id: frame.id };
+    case "device": {
+      if (!isRequestId(frame.id) || typeof frame.hash !== "string" || !/^[0-9a-f]{64}$/.test(frame.hash)) return "bad_frame";
+      const maker = shortText(frame.maker);
+      const model = shortText(frame.model);
+      const os = shortText(frame.os);
+      if (maker === null || model === null || os === null) return "bad_frame";
+      return { t: "device", id: frame.id, hash: frame.hash, maker, model, os };
+    }
     default:
       return "unknown_type";
   }
+}
+
+/** A token, null when none was sent, undefined when what was sent cannot be one. */
+function accessToken(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return null;
+  return typeof value === "string" && value.length > 0 && value.length <= 4096 ? value : undefined;
+}
+
+/** A make or model name: short, and without control characters. */
+function shortText(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 64) return null;
+  // eslint-disable-next-line no-control-regex
+  return /[\u0000-\u001f\u007f]/.test(value) ? null : value;
 }
 
 const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
