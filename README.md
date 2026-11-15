@@ -7,21 +7,31 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 
-## Status: Milestone 1 (identity and login)
+## Status: Milestone 2 (text messaging)
 
-There is no messaging yet. What works:
+Two phones can exchange end-to-end encrypted text. Voice notes, files, calls
+and delivery while the app is closed are not built yet.
 
 | Piece | Where |
 |---|---|
 | A private ID made on the phone, with no phone number, email or password | `android/.../crypto/Identity.kt` |
 | A login key that cannot leave the phone (Android Keystore) | `android/.../crypto/DeviceKey.kt` |
 | Registration and challenge-response login on every connection | `backend/src/mailbox.ts`, `android/.../network/RelayConnection.kt` |
-| Rate limits on connections and sign-ups | `backend/src/index.ts`, `backend/wrangler.toml` |
 | "My code" QR screen and scan-to-add contact | `android/.../ui/` |
-| CI: tests the relay, runs the app's connection code against it, builds the APK | `.github/workflows/` |
+| Signal protocol sessions (PQXDH and Double Ratchet, via libsignal) | `android/.../crypto/Sessions.kt` |
+| Sending, receiving, Sent / Delivered / Read, message requests, blocking | `android/.../ChatEngine.kt` |
+| Offline queue that deletes each message once it is collected | `backend/src/mailbox.ts` |
+| Rate limits and mailbox caps | `backend/src/index.ts`, `backend/src/protocol.ts`, `backend/wrangler.toml` |
+| CI: tests the relay, runs the app's messaging code against it, builds the APK | `.github/workflows/` |
 
-The relay stores one row per account: the public half of the login key. It has
-no names, no phone numbers and no contact lists.
+What the relay stores: per account, the public half of the login key and the
+public pre-keys others need to start a conversation; per waiting message, the
+encrypted bytes, the sender's ID and the arrival time, until the recipient's
+phone collects it or 30 days pass. It has no names, no phone numbers, no
+contact lists and no message history.
+
+What it can see: which ID sends to which, and when. It cannot read messages or
+tell a message from a read receipt.
 
 ## Try it
 
@@ -49,7 +59,7 @@ npx wrangler deploy
 
 Either way the relay gets an address like
 `https://maun.<your-subdomain>.workers.dev`. Opening `<address>/health` in a
-browser should show `{"ok":true,"service":"maun-relay","proto":1}`.
+browser should show `{"ok":true,"service":"maun-relay","proto":2}`.
 
 ### 2. Install the app
 
@@ -57,7 +67,7 @@ Download `maun-debug-apk` from the latest run of the **Android** workflow on
 GitHub (Actions tab), unzip it, and install the APK on a phone running
 Android 10 or newer. Android will ask you to allow installing from this source.
 
-### 3. Create an ID and add a contact
+### 3. Create an ID, add a contact, and write
 
 On each of two phones:
 
@@ -66,6 +76,15 @@ On each of two phones:
 2. On one phone tap **My code**; on the other tap **Add contact** and point
    the camera at the code. Give the contact a name.
 3. Repeat the other way round, so both phones have each other.
+4. Tap the contact and write. Under each of your messages the app shows
+   **Sent** (the relay has it), **Delivered** (their phone has it) and
+   **Read** (they opened the conversation).
+
+If only one of you has added the other, the message shows up on the other
+phone as a **message request**, which can be accepted or blocked.
+
+Messages arrive while the app is open. If the other phone is off or the app is
+closed, the relay keeps the encrypted message until that phone opens Maun.
 
 **Setup check** at the bottom of the home screen re-runs the hardware,
 storage, encryption and relay checks at any time.
@@ -112,9 +131,14 @@ cd android
 ./gradlew :app:assembleDebug     # app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The connection tests need a relay: start `npm run dev` in `backend/` and run
-the tests with `MAUN_TEST_RELAY_URL=http://127.0.0.1:8787`. Without it they
-are skipped. CI always runs them.
+The connection and messaging tests need a relay: start
+`backend/scripts/test-relay.sh` and run the tests with
+`MAUN_TEST_RELAY_URL=http://127.0.0.1:8787`. Without it they are skipped. CI
+always runs them. (The script is the normal relay with the per-address
+connection limits lifted, because every test phone connects from one address.)
+
+When the database changes, the build writes a new file under
+`android/app/schemas/`. Commit it: upgrades are generated from those files.
 
 To bake a relay address into the build, pass `-Pmaun.relayUrl=https://...` or
 set `MAUN_RELAY_URL`.

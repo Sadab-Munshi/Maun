@@ -8,9 +8,46 @@ App name: **Maun** (Hindi/Sanskrit for "silence"). Package ID: `org.maun.messeng
 | Milestone | State |
 |---|---|
 | M0. Foundations and risk checks | **Done.** Setup check passed on a real phone against the deployed relay. |
-| M1. Identity and login | **Built, tested in CI and deployed. Waiting for the two-phone check.** |
-| M2. Text messaging | Next |
-| M3 to M6 | Not started |
+| M1. Identity and login | **Done.** Two phones registered and added each other by QR. |
+| M2. Text messaging | **Built, tested in CI and deployed (app 0.2.0, relay protocol 2). Waiting for the two-phone check.** |
+| M3. Background delivery | Next |
+| M4 to M6 | Not started |
+
+### M2 results
+
+Checked automatically, on every push:
+
+- Relay: 76 tests pass in Cloudflare's local runtime. The 22 new ones cover the milestone's finish line (a message for someone offline is kept, delivered when they connect, and the queue table is empty once they acknowledge it) and also: redelivery after a connection that never acknowledged, a backlog delivered in order 50 at a time, the relay naming the real sender whatever the frame claims, nothing stored for an unregistered address, the per-sender and whole-mailbox caps, the send rate limit, expiry after 30 days, and each one-time key going to one asker only.
+- App and relay together: 12 tests run two or three complete copies of the app's messaging code (encryption, storage logic, outbox, connection) against a local relay. Sent, Delivered and Read arrive in that order and only when true. A delivery whose save fails is not acknowledged and comes again exactly once. The same delivery twice is saved once. A stranger's message becomes a request and they learn nothing. A blocked sender is dropped unread. The longest allowed message fits through the relay as a conversation's first message.
+- Encryption: libsignal's key sizes match what the relay accepts, sessions survive being saved and reloaded, a damaged message is refused and leaves the session usable, and a key that does not match the sender's ID is refused.
+- Lint reports 0 errors. The debug APK is 66 MB.
+
+Checked by hand:
+
+- One of those tests, run from a development machine against the **deployed** relay: two new accounts, a message sent to one that was offline, then Sent, Delivered and Read. It left two unused test accounts on the relay.
+
+Not checked yet, because it needs phones:
+
+- The new screens have **never been run on a phone**: chat list, conversation, message request, blocked list.
+- **Upgrading an existing installation.** The database goes from version 2 to 3 by a migration Room generates from the two committed schema files. It only adds tables, but it has not been run on a device.
+- The storage layer under the messaging code. Tests use an in-memory stand-in with the same transaction behaviour; the real one is Room on SQLCipher.
+
+### Changed while building M2
+
+- **Version 0.1.0 of the app stops working.** The relay now speaks protocol 2 and the app refuses a relay on a different version. Both phones need 0.2.0. It installs over 0.1.0 and keeps the ID and the contacts.
+- **Your ID is your encryption key.** A session is accepted only if the other side's identity key equals the ID you added, so there is no separate "safety number" to compare, and no "safety number changed" warning. Scanning someone's code is the verification.
+- **Post-quantum key agreement (PQXDH) from the first message**, as the pinned libsignal requires.
+- **Message length is hidden in steps.** Every message is padded to a multiple of 160 bytes before encryption. One message carries up to 4,096 bytes of text.
+- **Receipts go only to contacts.** Someone who is not in your contacts cannot tell whether their message arrived, was read, or was thrown away. Accepting a request adds them as a contact and only then tells them their messages arrived.
+- **You can only write to contacts**, and both sides must add each other for a normal conversation. If only one side has, the other sees a message request.
+- **Removing a contact deletes the conversation** from this phone. Blocking does too, and also drops whatever they send later.
+- **Relay limits:** a message is at most 8 KB encrypted; a mailbox holds 1,000 waiting messages, at most 300 from one sender; 120 sends and key requests a minute per account; uncollected messages are deleted after 30 days.
+- **The relay does not check pre-key signatures.** The receiving phone does, against the ID it already holds, so a relay that swapped keys would only cause a refused session.
+- **Still visible to the relay** (as section 2.5 says): who sends to whom, when, and roughly how much. Message text, receipts and which is which are not.
+- **Messages arrive only while the app is open**, and for 10 seconds after leaving it. Background delivery is M3.
+- **Known limit, for M6:** if the connection drops in the instant between creating a batch of one-time keys and uploading it, those 50 keys stay on the phone unused. Nothing breaks, but they are never cleaned up.
+- **Known limit:** the conversation screen shows the newest 500 messages. Older ones stay on the phone but there is no way to scroll to them yet.
+- The database is at version 3. `android/app/schemas/3.json` is produced by the build; CI fails if the committed copy differs.
 
 ### M1 results
 
@@ -26,11 +63,10 @@ Checked by hand:
 
 - The deployed relay (`/health` reports protocol 1) greets a new connection with a fresh nonce.
 
-Not checked yet, because it needs phones:
+Checked on two phones (reported with screenshots):
 
-- The new screens have **never been run on a phone**: welcome, home, My code, Add contact, the camera scanner.
-- Creating the device key with the relay's challenge inside Android Keystore. Tests use a software key in its place.
-- The milestone's own finish line: two phones register and add each other by QR.
+- Creating an ID, registering with a device key made inside Android Keystore, and logging in.
+- The milestone's finish line: two phones register and add each other by QR.
 
 ### Changed while building M1
 
