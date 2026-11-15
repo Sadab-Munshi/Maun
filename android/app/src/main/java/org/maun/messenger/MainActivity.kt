@@ -14,7 +14,10 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.remember
+import org.maun.messenger.ui.CallActions
 import org.maun.messenger.ui.CallScreen
+import org.maun.messenger.ui.CallVideo
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -55,13 +58,22 @@ class MainActivity : ComponentActivity() {
                     // A call comes before everything, the app lock included:
                     // it can be taken without unlocking, and shows nothing else.
                     SideEffect(::reveal)
+                    val calls = messenger.calls
                     CallScreen(
                         call = current,
                         name = contacts.firstOrNull { it.id == current.peer }?.name ?: "Unknown",
-                        onAccept = ::answer,
-                        onHangUp = messenger.calls::hangUp,
-                        onMute = messenger.calls::setMuted,
-                        onSpeaker = messenger.calls::setSpeaker,
+                        actions = remember {
+                            CallActions(
+                                onAccept = ::answer,
+                                onHangUp = calls::hangUp,
+                                onMute = calls::setMuted,
+                                onSpeaker = calls::setSpeaker,
+                                onCamera = calls::setCamera,
+                                onSwitchCamera = calls::switchCamera,
+                            )
+                        },
+                        // What video is drawn with is only made when a call has pictures.
+                        video = if (current.video) remember { CallVideo(calls.eglContext, calls.remotePictures, calls.ownPictures) } else null,
                     )
                 } else if (AppLock.locked) {
                     LockScreen(onShown = ::reveal, onUnlock = { AppLock.unlock(this) })
@@ -72,14 +84,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Takes the call that is ringing, once the microphone may be used. */
+    /**
+     * Takes the call that is ringing, once the microphone may be used. A video
+     * call asks for the camera too, and goes ahead with sound only without it.
+     */
     private fun answer() {
-        val allowed = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        if (allowed) messenger.calls.accept() else askForMic.launch(Manifest.permission.RECORD_AUDIO)
+        val video = messenger.calls.state.value?.video == true
+        val needed = listOfNotNull(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA.takeIf { video })
+            .filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+        if (needed.isEmpty()) messenger.calls.accept() else askForCall.launch(needed.toTypedArray())
     }
 
-    private val askForMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) {
+    private val askForCall = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        val mic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (mic) {
             messenger.calls.accept()
         } else {
             Toast.makeText(this, "Maun needs the microphone for a call.", Toast.LENGTH_LONG).show()

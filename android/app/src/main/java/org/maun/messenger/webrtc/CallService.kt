@@ -31,7 +31,12 @@ class CallService : Service() {
         val notification = Notifications(this).inCall(hangUp(this))
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                startForeground(Notifications.ID_CALL, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                // A video call also keeps the camera when Maun is not in front, if the camera may be used at all.
+                val camera = intent?.getBooleanExtra(EXTRA_VIDEO, false) == true &&
+                    ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                    if (camera) ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA else 0
+                startForeground(Notifications.ID_CALL, notification, types)
             } else {
                 startForeground(Notifications.ID_CALL, notification)
             }
@@ -46,14 +51,17 @@ class CallService : Service() {
 
     companion object {
         private const val ACTION_HANG_UP = "org.maun.messenger.HANG_UP"
+        private const val EXTRA_VIDEO = "video"
 
         fun hangUp(context: Context): Intent = Intent(context, CallService::class.java).setAction(ACTION_HANG_UP)
 
-        fun start(context: Context) {
+        fun start(context: Context, video: Boolean = false) {
             // Android only lets a service use the microphone when the app may.
             val allowed = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
             if (!allowed) return
-            runCatching { ContextCompat.startForegroundService(context, Intent(context, CallService::class.java)) }
+            runCatching {
+                ContextCompat.startForegroundService(context, Intent(context, CallService::class.java).putExtra(EXTRA_VIDEO, video))
+            }
         }
 
         fun stop(context: Context) {

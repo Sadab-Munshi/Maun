@@ -279,7 +279,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 peerId = chatPeer,
                                 contactName = contacts.firstOrNull { it.id == chatPeer }?.name,
                                 peerUsername = peerUsername,
-                                onCall = { viewModel.startCall(chatPeer) },
+                                onCall = { video -> viewModel.startCall(chatPeer, video) },
                                 loading = !conversation.loaded,
                                 messages = conversation.messages,
                                 hasOlder = conversation.hasOlder,

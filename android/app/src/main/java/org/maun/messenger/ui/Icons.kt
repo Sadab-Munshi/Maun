@@ -125,6 +125,30 @@ object MaunIcons {
         )
     }
 
+    /** Start a video call; the camera is on. */
+    val Videocam: ImageVector by lazy {
+        icon(
+            "Videocam",
+            "M17,10.5V7c0,-0.55 -0.45,-1 -1,-1H4c-0.55,0 -1,0.45 -1,1v10c0,0.55 0.45,1 1,1h12c0.55,0 1,-0.45 1,-1v-3.5l4,4v-11l-4,4z",
+        )
+    }
+
+    /** The camera is off. */
+    val VideocamOff: ImageVector by lazy {
+        icon(
+            "VideocamOff",
+            "M21,6.5l-4,4V7c0,-0.55 -0.45,-1 -1,-1H9.82L21,17.18V6.5zM3.27,2L2,3.27 4.73,6H4c-0.55,0 -1,0.45 -1,1v10c0,0.55 0.45,1 1,1h12c0.21,0 0.39,-0.08 0.54,-0.18L19.73,21 21,19.73 3.27,2z",
+        )
+    }
+
+    /** Change to the other camera. */
+    val SwitchCamera: ImageVector by lazy {
+        icon(
+            "SwitchCamera",
+            "M20,4h-3.17L15,2H9L7.17,4H4c-1.1,0 -2,0.9 -2,2v12c0,1.1 0.9,2 2,2h16c1.1,0 2,-0.9 2,-2V6c0,-1.1 -0.9,-2 -2,-2zM15,15.5V13H9v2.5L5.5,12 9,8.5V11h6V8.5l3.5,3.5 -3.5,3.5z",
+        )
+    }
+
     /** Back to the previous screen. */
     val Back: ImageVector by lazy {
         icon(

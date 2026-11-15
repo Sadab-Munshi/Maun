@@ -196,10 +196,10 @@ class Messenger(context: Context) {
                 scope.launch { engine?.addNotice(peer, text, missed) }
             }
 
-            override fun ringing(peer: String?, on: Boolean) {
+            override fun ringing(peer: String?, on: Boolean, video: Boolean) {
                 // In front, the call has the whole screen already.
                 if (on && peer != null && !inForeground) {
-                    notifications.showIncomingCall(_contacts.value.firstOrNull { it.id == peer }?.name ?: "Maun")
+                    notifications.showIncomingCall(_contacts.value.firstOrNull { it.id == peer }?.name ?: "Maun", video)
                 } else if (!on) {
                     notifications.clearIncomingCall()
                 }
@@ -212,12 +212,12 @@ class Messenger(context: Context) {
         scope.launch { calls.state.collect { synchronized(this@Messenger) { connectOrDrop(linger = true) } } }
     }
 
-    /** Calls [peer]. Returns why it cannot be done right now, or null when it is ringing. */
-    fun startCall(peer: String): String? = when {
+    /** Calls [peer], with pictures when [video]. Returns why it cannot be done right now, or null when it is ringing. */
+    fun startCall(peer: String, video: Boolean = false): String? = when {
         calls.busy -> "There is a call going on already."
         _relay.value != RelayState.Online -> "Not connected to the relay. Try again in a moment."
         else -> {
-            calls.start(peer)
+            calls.start(peer, video)
             null
         }
     }

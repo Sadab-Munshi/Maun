@@ -29,6 +29,8 @@ sealed interface Payload {
         val sdp: String? = null,
         val candidate: Candidate? = null,
         val reason: String? = null,
+        /** On an offer: this is a video call. */
+        val video: Boolean = false,
     ) : Payload
 
     /** One way to reach a phone during a call, as WebRTC describes it. */
@@ -57,8 +59,39 @@ sealed interface Payload {
         const val CALL_BUSY = "busy"
         private val CALL_TYPES = setOf(CALL_OFFER, CALL_ANSWER, CALL_ICE, CALL_HANGUP, CALL_BUSY)
 
-        /** A voice call's description is about 2,000 characters. The relay takes 8,192 bytes a message. */
-        const val MAX_SDP_CHARS = 5000
+        /**
+         * A voice call's description is about 2,000 characters, a video call's
+         * 6,000 to 8,000. The relay takes 8,192 bytes a message, so a long one
+         * travels packed (deflate), which makes it about a quarter the size.
+         */
+        const val MAX_SDP_CHARS = 20_000
+        private const val SDP_PLAIN_CHARS = 3000
+
+        private fun pack(text: String): String {
+            val deflater = java.util.zip.Deflater(java.util.zip.Deflater.BEST_COMPRESSION)
+            val out = java.io.ByteArrayOutputStream()
+            java.util.zip.DeflaterOutputStream(out, deflater).use { it.write(text.toByteArray(Charsets.UTF_8)) }
+            deflater.end()
+            return java.util.Base64.getEncoder().encodeToString(out.toByteArray())
+        }
+
+        /** Unpacks a description. Null when it is not one, or would be longer than any description is. */
+        private fun unpack(packed: String): String? = try {
+            val inflater = java.util.zip.Inflater()
+            inflater.setInput(java.util.Base64.getDecoder().decode(packed))
+            val buffer = ByteArray(MAX_SDP_CHARS + 1)
+            var length = 0
+            while (!inflater.finished() && length < buffer.size) {
+                val read = inflater.inflate(buffer, length, buffer.size - length)
+                if (read == 0 && (inflater.needsInput() || inflater.needsDictionary())) break
+                length += read
+            }
+            val complete = inflater.finished()
+            inflater.end()
+            if (complete && length in 1..MAX_SDP_CHARS) String(buffer, 0, length, Charsets.UTF_8) else null
+        } catch (_: Exception) {
+            null
+        }
         private const val MAX_CANDIDATE_CHARS = 600
 
         private val ID = Regex("^[A-Za-z0-9_-]{1,64}$")
@@ -77,7 +110,9 @@ sealed interface Payload {
                 }
                 is Call -> {
                     json.put("k", "call").put("call", payload.callId).put("type", payload.type)
-                    payload.sdp?.let { json.put("sdp", it) }
+                    // A video call's description is long and repetitive; packed, it fits in one message.
+                    payload.sdp?.let { if (it.length > SDP_PLAIN_CHARS) json.put("sdpz", pack(it)) else json.put("sdp", it) }
+                    if (payload.video) json.put("video", true)
                     payload.candidate?.let { json.put("mid", it.mid).put("idx", it.index).put("cand", it.sdp) }
                     payload.reason?.let { json.put("why", it) }
                 }
@@ -112,12 +147,13 @@ sealed interface Payload {
                     val type = json.optString("type")
                     if (!isMessageId(callId) || type !in CALL_TYPES) return Unknown
                     val sdp = json.optString("sdp").takeIf { it.isNotEmpty() && it.length <= MAX_SDP_CHARS }
+                        ?: json.optString("sdpz").takeIf { it.isNotEmpty() }?.let(::unpack)
                     val candidate = json.optString("cand").takeIf { it.isNotEmpty() && it.length <= MAX_CANDIDATE_CHARS }
                         ?.let { Candidate(json.optString("mid").take(32), json.optInt("idx", 0).coerceIn(0, 64), it) }
                     // An offer or an answer without its description, or a candidate without one, says nothing.
                     if ((type == CALL_OFFER || type == CALL_ANSWER) && sdp == null) return Unknown
                     if (type == CALL_ICE && candidate == null) return Unknown
-                    Call(callId, type, sdp, candidate, json.optString("why").take(40).ifEmpty { null })
+                    Call(callId, type, sdp, candidate, json.optString("why").take(40).ifEmpty { null }, video = json.optBoolean("video"))
                 }
                 "receipt" -> Receipt(ids(json.optJSONArray("delivered")), ids(json.optJSONArray("read")))
                 else -> Unknown

@@ -98,7 +98,8 @@ class Notifications(context: Context) {
      * with Answer and Decline. [name] is shown on an unlocked phone only.
      */
     @SuppressLint("MissingPermission")
-    fun showIncomingCall(name: String) {
+    fun showIncomingCall(name: String, video: Boolean = false) {
+        val what = if (video) "Incoming video call" else "Incoming voice call"
         if (!allowed) return
         val open = PendingIntent.getActivity(
             context,
@@ -123,12 +124,12 @@ class Notifications(context: Context) {
         val onLockScreen = NotificationCompat.Builder(context, CHANNEL_CALLS)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Maun")
-            .setContentText("Incoming voice call")
+            .setContentText(what)
             .build()
         val notification = NotificationCompat.Builder(context, CHANNEL_CALLS)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(name)
-            .setContentText("Incoming voice call")
+            .setContentText(what)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)

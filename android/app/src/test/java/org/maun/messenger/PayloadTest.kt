@@ -30,6 +30,46 @@ class PayloadTest {
     }
 
     @Test
+    fun `a video call's long description travels packed and comes out the same`() {
+        val id = "3f2c9a1e-0000-4000-8000-00000000000d"
+        // Shaped like a real one: many near-identical lines about codecs.
+        val sdp = buildString {
+            append("v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1\r\n")
+            for (payload in 96..127) {
+                append("a=rtpmap:$payload H264/90000\r\na=rtcp-fb:$payload goog-remb\r\na=rtcp-fb:$payload transport-cc\r\n")
+                append("a=rtcp-fb:$payload ccm fir\r\na=rtcp-fb:$payload nack\r\na=rtcp-fb:$payload nack pli\r\n")
+                append("a=fmtp:$payload level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e0${payload.toString(16)}\r\n")
+            }
+        }
+        assertTrue(sdp.length in 7000..Payload.MAX_SDP_CHARS)
+        val offer = Payload.Call(id, Payload.CALL_OFFER, sdp = sdp, video = true)
+        val sent = Payload.encode(offer)
+        assertEquals(offer, Payload.decode(sent))
+        // Small enough for one message to the relay, with room for the encryption around it.
+        assertTrue("it was ${sent.size} bytes", sent.size < 3000)
+        // A voice call's short description stays as it was, so older versions still read it.
+        val voice = Payload.Call(id, Payload.CALL_OFFER, sdp = "v=0\r\n".repeat(100))
+        assertTrue(String(Payload.encode(voice)).contains("\"sdp\""))
+        assertEquals(voice, Payload.decode(Payload.encode(voice)))
+    }
+
+    @Test
+    fun `a packed description that is broken or enormous is not taken`() {
+        val id = "3f2c9a1e-0000-4000-8000-00000000000d"
+        fun sent(packed: String): Payload {
+            val json = org.json.JSONObject().put("v", 1).put("k", "call").put("call", id).put("type", "offer").put("sdpz", packed)
+            return Payload.decode(Payload.pad(json.toString().toByteArray()))
+        }
+        assertEquals(Payload.Unknown, sent("not base64 !!"))
+        assertEquals(Payload.Unknown, sent("AAAA"))
+        // A few hundred bytes that unpack into far more than any description.
+        val bomb = java.io.ByteArrayOutputStream().also { out ->
+            java.util.zip.DeflaterOutputStream(out).use { it.write(ByteArray(2_000_000)) }
+        }.toByteArray()
+        assertEquals(Payload.Unknown, sent(java.util.Base64.getEncoder().encodeToString(bomb)))
+    }
+
+    @Test
     fun `call steps that say nothing, or too much, are not taken`() {
         val id = "3f2c9a1e-0000-4000-8000-00000000000c"
         fun sent(change: org.json.JSONObject.() -> Unit): Payload {
@@ -43,9 +83,7 @@ class PayloadTest {
         assertEquals(Payload.Unknown, sent { put("type", "explode") })
         assertEquals(Payload.Unknown, sent { put("call", "not an id!") })
         assertEquals(Payload.Unknown, sent { put("type", "ice").remove("sdp") })
-        // The largest description still fits in one message to the relay.
-        val largest = Payload.encode(Payload.Call(id, Payload.CALL_OFFER, sdp = "x".repeat(Payload.MAX_SDP_CHARS)))
-        assertTrue(largest.size < 6000)
+        assertTrue(sent { put("video", true) }.let { it is Payload.Call && it.video })
     }
 
     @Test

@@ -7,7 +7,7 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 
-## Status: app 0.9.0 (files, voice messages, voice calls, and an optional member-only mode with usernames)
+## Status: app 0.10.0 (files, voice messages, voice and video calls, and an optional member-only mode with usernames)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
 messages while the app is closed. The app can be locked behind the phone's
@@ -16,9 +16,8 @@ sure of each other. Files up to 25 MB can be sent; the relay keeps the
 encrypted file for one day. A relay can be made member-only: people log in
 once with a code sent to their email, pick a username, wait for the
 administrator's approval on a web page, and can be banned. Voice messages
-can be recorded and played in the conversation. Voice calls go through the
-relay's call servers, so neither phone learns the other's address. Video calls
-are not built yet.
+can be recorded and played in the conversation. Voice and video calls go
+through the relay's call servers, so neither phone learns the other's address.
 
 | Piece | Where |
 |---|---|
@@ -131,8 +130,9 @@ On each of two phones:
 6. Tap the microphone (it is there while the message field is empty) to
    record a voice message. While it records you can pause it, throw it away
    with the bin, or send it. Tap a voice message to play or pause it.
-7. Tap the telephone at the top of a conversation to call. The other phone
-   rings, also when Maun is closed there. See "Calls" below.
+7. Tap the telephone at the top of a conversation for a voice call, or the
+   camera next to it for a video call. The other phone rings, also when Maun
+   is closed there. See "Calls" below.
 8. Tap the paperclip to send a file of up to 25 MB. Pictures show in the
    conversation; tap any other file to save it. The relay deletes its
    encrypted copy after one day, so a file not fetched by then is gone.
@@ -176,13 +176,19 @@ asks the call service once and answers `"working":true` when the key is
 right; the admin page shows the same in a line under its heading.
 
 Cloudflare gives 1,000 GB of TURN traffic a month free and charges beyond
-it, with no cap of its own. A voice call uses about 0.3 MB a minute. The
+it, with no cap of its own. A voice call uses about 0.3 MB a minute, a video
+call up to about 7 MB a minute (the app sends 640 by 480 at no more than
+800 kbit/s, on purpose: everything goes through a relay). The
 relay limits each account to 60 sets of credentials a day (a call needs one
 on each side) and each set works for four hours.
 
-What a call does not do yet: video, Bluetooth headsets chosen by hand, and
-ringing on a phone whose push service is slow to wake it (the call then
-shows as missed).
+In a video call the camera can be turned off or changed between front and
+back, and the call goes on with sound if the camera may not be used. Both
+phones need app 0.10.0 or newer for video; an older one does not ring.
+
+What a call does not do yet: choosing a Bluetooth headset by hand, turning a
+voice call into a video call, and ringing on a phone whose push service is
+slow to wake it (the call then shows as missed).
 
 ## A member-only relay
 

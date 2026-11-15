@@ -14,6 +14,7 @@ import org.maun.messenger.crypto.ContactCode
 import org.maun.messenger.ui.LoginScreen
 import org.maun.messenger.ui.LoginUi
 import org.maun.messenger.ui.MyCodeScreen
+import org.maun.messenger.ui.CallActions
 import org.maun.messenger.ui.CallScreen
 import org.maun.messenger.ui.PendingScreen
 import org.maun.messenger.ui.RecordingBar
@@ -147,7 +148,7 @@ class ScreensTest {
         SettingsScreen(
             memberEmail = memberEmail,
             username = username,
-            version = "0.9.1",
+            version = "0.10.0",
             relayName = "maun.example.workers.dev",
             relay = RelayState.Online,
             delivery = DeliveryUi(pushApp = "Google's push service", google = true),
@@ -355,12 +356,12 @@ class ScreensTest {
         }
     }
 
-    private fun call(incoming: Boolean, phase: CallUi.Phase, connectedAt: Long = 0, muted: Boolean = false, speaker: Boolean = false, ended: String? = null) =
-        CallUi(peer = asha.id, incoming = incoming, phase = phase, connectedAt = connectedAt, muted = muted, speaker = speaker, ended = ended)
+    private fun call(incoming: Boolean, phase: CallUi.Phase, connectedAt: Long = 0, muted: Boolean = false, speaker: Boolean = false, ended: String? = null, video: Boolean = false) =
+        CallUi(peer = asha.id, incoming = incoming, phase = phase, connectedAt = connectedAt, muted = muted, speaker = speaker, ended = ended, video = video)
 
     @Composable
     private fun Call(call: CallUi) {
-        CallScreen(call = call, name = asha.name, onAccept = {}, onHangUp = {}, onMute = {}, onSpeaker = {}, now = { 1_000_000 })
+        CallScreen(call = call, name = asha.name, actions = CallActions(), now = { 1_000_000 })
     }
 
     @Test
@@ -371,6 +372,10 @@ class ScreensTest {
     fun callActive() = shoot("call-active-dark") {
         Call(call(incoming = false, phase = CallUi.Phase.Active, connectedAt = 1_000_000 - 154_000, muted = true))
     }
+
+    // The pictures of a video call cannot be drawn here; what can is the screen that asks to take one.
+    @Test
+    fun callIncomingVideo() = shoot("call-incoming-video") { Call(call(incoming = true, phase = CallUi.Phase.Ringing, video = true)) }
 
     @Test
     fun callOutgoing() = shoot("call-outgoing") { Call(call(incoming = false, phase = CallUi.Phase.Ringing, speaker = true)) }

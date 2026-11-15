@@ -137,8 +137,8 @@ fun ChatScreen(
     loading: Boolean = false,
     /** What someone who is not a contact calls themselves on this relay, if it has usernames. */
     peerUsername: String? = null,
-    /** Starts a voice call with this contact. Null where calls cannot be made. */
-    onCall: (() -> Unit)? = null,
+    /** Starts a call with this contact, a video call when given true. Null where calls cannot be made. */
+    onCall: ((Boolean) -> Unit)? = null,
     onLoadOlder: () -> Unit,
     onDelete: (Long) -> Unit,
     onBack: () -> Unit,
@@ -327,7 +327,7 @@ fun ChatScreen(
 private const val LOAD_AHEAD = 12
 
 @Composable
-private fun ChatHeader(peerId: String, name: String?, onBack: () -> Unit, onOpenDetails: (() -> Unit)?, onCall: (() -> Unit)? = null) {
+private fun ChatHeader(peerId: String, name: String?, onBack: () -> Unit, onOpenDetails: (() -> Unit)?, onCall: ((Boolean) -> Unit)? = null) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -361,18 +361,24 @@ private fun ChatHeader(peerId: String, name: String?, onBack: () -> Unit, onOpen
             }
         }
         if (onCall != null) {
-            // The microphone is asked for the first time a call is made.
+            // The microphone, and for a video call the camera, are asked for the
+            // first time they are needed. A call needs the microphone; without
+            // the camera a video call still goes ahead, with sound only.
             val context = LocalContext.current
-            val askForMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-                if (granted) onCall() else Toast.makeText(context, "Maun needs the microphone for a call.", Toast.LENGTH_LONG).show()
+            var wantsVideo by remember { mutableStateOf(false) }
+            val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+                val mic = granted[Manifest.permission.RECORD_AUDIO] == true ||
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                if (mic) onCall(wantsVideo) else Toast.makeText(context, "Maun needs the microphone for a call.", Toast.LENGTH_LONG).show()
             }
-            IconButton(
-                onClick = {
-                    val allowed = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-                        PackageManager.PERMISSION_GRANTED
-                    if (allowed) onCall() else askForMic.launch(Manifest.permission.RECORD_AUDIO)
-                },
-            ) { Icon(MaunIcons.Call, contentDescription = "Voice call") }
+            fun call(video: Boolean) {
+                val needed = listOfNotNull(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA.takeIf { video })
+                    .filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
+                wantsVideo = video
+                if (needed.isEmpty()) onCall(video) else ask.launch(needed.toTypedArray())
+            }
+            IconButton(onClick = { call(video = true) }) { Icon(MaunIcons.Videocam, contentDescription = "Video call") }
+            IconButton(onClick = { call(video = false) }) { Icon(MaunIcons.Call, contentDescription = "Voice call") }
         }
         if (onOpenDetails != null) {
             IconButton(onClick = onOpenDetails) { Icon(MaunIcons.Info, contentDescription = "Contact details") }
