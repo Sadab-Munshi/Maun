@@ -1,6 +1,6 @@
 import { handleAuth } from "./auth";
 import { memberConfig, sweepMembers } from "./members";
-import { turnConfig } from "./turn";
+import { askTurn, turnConfig } from "./turn";
 import { type FileAnswer, type Mailbox, tooManyRequests } from "./mailbox";
 import { FILE_TTL_MS, MAX_FILE_BYTES, PROTOCOL_VERSION, isFileKey, isMailboxId } from "./protocol";
 
@@ -44,6 +44,25 @@ export default {
 
       const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
       return stub.fetch(request);
+    }
+
+    // Temporary, for finding out why the call service refuses: asks it once and
+    // says what came back. Nothing secret is in the answer.
+    if (request.method === "GET" && url.pathname === "/v1/calls/check") {
+      const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+      if (!(await env.SIGNUP_LIMIT.limit({ key: `calls:${ip}` })).success) return tooManyRequests();
+      const config = turnConfig(env);
+      if (!config) return Response.json({ configured: false });
+      const answer = await askTurn(config);
+      return Response.json({
+        configured: true,
+        status: answer.status,
+        usable: answer.servers.length,
+        swapped: answer.swapped,
+        shape: answer.shape,
+        keyIdLength: config.keyId.length,
+        tokenLength: config.token.length,
+      });
     }
 
     // The email login and the administrator's page of a member-only relay.

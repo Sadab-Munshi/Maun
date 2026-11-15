@@ -1,7 +1,7 @@
 import { SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PUSH_REPEAT_MS, PUSH_URGENT_REPEAT_MS, toBase64 } from "../src/protocol";
-import { TURN_DAILY_CAP, TURN_TTL_SECONDS, turnConfig } from "../src/turn";
+import { TURN_DAILY_CAP, TURN_TTL_SECONDS, forgetTurnOrder, turnConfig } from "../src/turn";
 import { hangUp, login, makePushKeys, randomBytes, registered, requestId, type Inbox, type User } from "./helpers";
 
 // This file runs with TURN_KEY_ID and TURN_API_TOKEN set (vitest.config.ts).
@@ -25,6 +25,7 @@ const CLOUDFLARE_ANSWER = {
 };
 
 beforeEach(() => {
+  forgetTurnOrder();
   asked = [];
   wakes = [];
   service = () => Response.json(CLOUDFLARE_ANSWER, { status: 201 });
@@ -94,6 +95,26 @@ describe("servers for a call", () => {
     expect(await ask(inbox, { t: "turn" })).toMatchObject({ t: "failed", code: "no_calls" });
     service = () => Response.json({ iceServers: [{ urls: ["stun:stun.cloudflare.com:3478"] }] }, { status: 201 });
     expect(await ask(inbox, { t: "turn" })).toMatchObject({ t: "failed", code: "no_calls" });
+    await hangUp(inbox);
+  });
+
+  it("are still found when the key and the token were put into each other's place", async () => {
+    // The service knows the pair only the other way round.
+    service = () => new Response("no", { status: 401 });
+    const right = "https://rtc.live.cloudflare.com/v1/turn/keys/test-turn-token/credentials/generate-ice-servers";
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const request = new Request(input as RequestInfo, init);
+      asked.push({ url: request.url, authorization: request.headers.get("Authorization"), body: "" });
+      const swappedPair = request.url === right && request.headers.get("Authorization") === "Bearer test-turn-key";
+      return swappedPair ? Response.json(CLOUDFLARE_ANSWER, { status: 201 }) : new Response("no", { status: 401 });
+    });
+    const inbox = await online(await registered());
+    expect((await ask(inbox, { t: "turn" })).t).toBe("ice");
+    expect(asked).toHaveLength(2);
+    // The second time it goes straight to what worked.
+    expect((await ask(inbox, { t: "turn" })).t).toBe("ice");
+    expect(asked).toHaveLength(3);
+    expect(asked[2]!.url).toBe(right);
     await hangUp(inbox);
   });
 
