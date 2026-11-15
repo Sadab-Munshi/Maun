@@ -7,7 +7,7 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 
-## Status: app 0.6.0 (files, and an optional member-only mode with usernames)
+## Status: app 0.7.0 (files, and an optional member-only mode with usernames)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
 messages while the app is closed. The app can be locked behind the phone's
@@ -177,19 +177,19 @@ on its login screen and in Settings.
    **API key**.
 2. In Resend, add and verify a **domain** you own (Domains > Add domain, then
    add the DNS records it shows). Resend only delivers to other people from a
-   verified domain. Without one it sends from `onboarding@resend.dev` and
-   only to the address of the Resend account itself: enough for the
-   administrator to try their own login, not for anyone else.
+   verified domain.
    No domain? Use [Brevo](https://www.brevo.com) instead: it lets you verify a
    single sender address. Set `BREVO_API_KEY` in place of `RESEND_API_KEY`.
 3. Cloudflare dashboard > **Workers & Pages > maun > Settings > Variables and
-   Secrets > Add**, three entries, then **Deploy**:
+   Secrets > Add**, then **Deploy**:
 
    | Name | Type | Value |
    |---|---|---|
    | `ADMIN_EMAIL` | Text | your own email address |
+   | `ADMIN_PASSWORD` | Secret | a password of 10 characters or more, for the admin page |
    | `RESEND_API_KEY` | Secret | the key from step 1 |
    | `MAIL_FROM` | Text | `Maun <login@your-domain.com>`, on the domain from step 2 |
+   | `ADMIN_HOST` | Text | optional, see "The admin page" |
 
 `https://<relay>/health` now says `"access":true`. Phones that already have
 an ID on the relay are asked to log in the next time they connect; nothing
@@ -197,27 +197,74 @@ they have is lost.
 
 ### The admin page
 
-Open `https://<relay>/admin` in any browser and log in with `ADMIN_EMAIL`
-and the code sent there. It shows who is waiting, the members and the banned,
-with each one's username, email, phone and last login, and lets you:
+Open `https://<relay>/admin` in any browser. Logging in takes three things:
+the administrator's email address, the password (`ADMIN_PASSWORD`), and the
+6-digit code that is then sent to that address. Without a password set, the
+page lets nobody in. Five wrong passwords close it for 15 minutes.
 
-- **Approve** or **Refuse** someone who is waiting (you get an email when
-  somebody asks);
-- **Add** an email address in advance, so its owner is let straight in;
-- **Ban** a member, or an address that has never joined, and **Lift** a ban;
+**On a host name of its own.** To serve the page at, say,
+`admin.example.com` instead:
+
+1. Workers & Pages > maun > Settings > **Domains & Routes > Add > Custom
+   domain**, and enter that name. The domain has to be on Cloudflare.
+2. Add the variable `ADMIN_HOST` = `admin.example.com` and deploy.
+
+The page is then at `https://admin.example.com/` and exists nowhere else:
+`/admin` on the relay's own address answers 404.
+
+**What it shows.** A table you can search, with four tabs (Waiting, Members,
+Banned people, Banned phones). For each person: username and email, state,
+phone (make, model, Android version) and app version, the phone's ID, last
+login, number of logins, how often they set Maun up again, how many phones
+they have used, when they asked and when they were approved, and their Maun
+ID. You get an email when somebody asks to join.
+
+**What it does.**
+
+- **Approve** or **Refuse** someone who is waiting.
+- **Add** an email address in advance, so its owner is let straight in.
+- **Ban** a person: their email address is shut out. Also works for an
+  address that has never joined. **Lift ban** undoes it.
+- **Ban phone**: that phone is shut out whichever email address is used on
+  it, also after the app's data is deleted or the app is reinstalled.
+  **Lift phone ban** undoes it.
 - **Remove** a member: they would have to log in and be approved again.
 
-A banned phone disconnects within a minute, deletes its login and every
-message and file it holds, and shows "You have been banned". Its contacts and
-ID stay, so lifting the ban and tapping **Check again** brings the account
-back, empty.
+A banned phone or person disconnects within a minute, deletes its login and
+every message and file it holds, and shows "You have been banned". Its
+contacts and ID stay, so lifting the ban and tapping **Check again** brings
+the account back, empty.
+
+A phone's ID is a SHA-256 of Android's ID for Maun on that phone and its
+make and model. It is the same after the app's data is deleted. It is what
+an unmodified app reports: someone who rebuilds the app can make it report
+another, so a phone ban stops ordinary use, not a determined programmer.
+What cannot be faked is the login key in the phone's secure hardware, and
+the email code.
 
 The relay sends at most 90 emails a day (Resend's free plan allows 100), at
-most 5 codes a day to one address, and one a minute.
+most 4 codes a day to one address, and one a minute.
 
-The phone fingerprint is a record, not a lock: it changes when Android is
-updated, and software can fake it. What actually ties an account to one phone
-is the login key in the phone's secure hardware.
+### When a member sets Maun up again
+
+Deleting the app's data, reinstalling, or moving to another phone destroys
+the keys that were the member's ID. Logging in again with the same email
+address gives the same username on a **new ID**, without waiting for
+approval again. Messages and contacts that were on the phone are gone:
+they were stored nowhere else.
+
+Other members do not have to do anything:
+
+- The relay answers "gone" for the old ID. A phone that writes to it asks
+  which ID the username has now, moves the contact and the conversation to
+  it, and sends again whatever the relay had taken and never handed over.
+- If the member who started over writes first, the other phone recognises
+  the username and joins the two.
+- The conversation gets a line saying so, and the contact counts as
+  unchecked until safety numbers are compared again: the relay is being
+  trusted for which ID the username belongs to.
+- A member who writes to someone who has not added them is added under their
+  username instead of showing up as an unknown ID.
 
 ## Continuous integration
 

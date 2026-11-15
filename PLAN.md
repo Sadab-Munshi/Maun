@@ -14,6 +14,7 @@ App name: **Maun** (Hindi/Sanskrit for "silence"). Package ID: `org.maun.messeng
 | App 0.4.0: look and small features | **Built and tested in CI.** New look (chat list, bubbles, ticks, day lines, light and dark); delete and copy a message; older messages load on scrolling back; rename a contact; safety number; app lock; screenshot blocking; a Settings screen. No change to the relay or the database. App lock, safety number and screenshot blocking were planned for M6 and are done early. Checked on rendered pictures of the screens (the Screens workflow), not yet on a phone. |
 | M4. Files | **Files built, tested in CI and deployed (app 0.5.0).** Paperclip, encryption in 64 KB pieces with a key per file, upload and download with progress, pictures shown in the conversation, save to the phone. Relay: 25 MB limit enforced before reading, daily allowance, refusal after 24 hours, hourly sweep. Checked against the deployed relay: a 26 MB upload is refused (413), 25 MB is accepted, a stored file comes back byte for byte. **Voice notes are not built.** Not yet tried on a phone. |
 | Member-only mode (asked for by the owner; not in the original spec) | **Built, tested in CI and deployed, switched off (app 0.6.0).** The relay sends its own email codes through Resend (or Brevo), members pick a unique username, a new member waits for the administrator, who approves, bans and removes people on a web page at `/admin`. Phone fingerprint recorded. The app's whole login path was run once against a local member-only relay (register, wait, approve, find by username, ban, remove) and the admin page was driven in a real browser. Not yet tried with a real mail key or on a phone: it needs the owner's Resend settings. See "Changed in app 0.6.0". |
+| App 0.7.0 and relay: starting over, phone bans, admin page | **Built, tested in CI and deployed.** Contacts follow a member to their new ID after a reinstall; members who write are added by username; phones are reported with the login and can be banned; the admin page needs a password as well as the email code, can have its own host name, and shows a searchable table. Run once end to end against a local member-only relay (two phones, two reinstalls, a phone ban) and in a real browser. Database version 4. Restoring old messages after a reinstall is **not** built: see "Open: encrypted backup". |
 | App 0.6.0: no loading flicker | **Built, tested in CI.** Chats at the top of the list are read ahead and recent ones kept in memory; pictures get a small encrypted copy and keep their room in the list; "Connecting…" appears only after three seconds. Not measured on a phone. |
 | M5, M6 | Not started |
 
@@ -42,6 +43,20 @@ Not checked yet, because it needs phones:
 
 - **The Android side of being woken by a push service has never run on a phone:** asking Google Play services (or a push app) for an address, being woken through it, WorkManager starting the fetch with the app closed, starting again after a restart. It compiles, passes lint, and the logic underneath is tested, but phone makers' battery savers are exactly what breaks this kind of feature. The stand-in used above talks to Google the way Chrome does, not the way Play services on a phone does.
 - The delay between sending and the notification on a phone, and the battery cost of "Stay connected" over 24 hours.
+
+### Open: encrypted backup
+
+The owner asked whether chats and files could be synced to the cloud, end-to-end encrypted, so that a reinstall loses nothing. The original overview excludes cloud backups, and 0.7.0 does not add one: it makes a reinstall harmless for everyone else (contacts follow the new ID) and leaves the reinstalled phone empty.
+
+A backup that the relay cannot read needs a secret that only the user has and that survives deleting the app: a recovery password (or a long recovery code written down). The email login cannot be that secret, or the relay's owner could read every backup. With it, the phone would upload its identity key, contacts and messages encrypted under a key stretched from the password; after a reinstall, email code plus recovery password would bring back the same ID and the chats. Forgetting the password would mean starting over as now. Files are a separate question: the relay deletes them after a day, so backing them up means storing them for as long as the account lives. To be decided by the owner before it is built.
+
+### Changed in app 0.7.0
+
+- **The relay now refuses messages for an ID nobody will read**, answering `gone`, where it used to store them. On a member-only relay this costs one look at the member list per recipient every ten minutes.
+- **The relay is trusted to say where a username went.** A contact is moved to a new ID on the relay's word, marked unchecked, and the conversation says so. This is the same trust as adding by username.
+- **Members who write are added as contacts automatically** on a member-only relay, where the administrator has approved everyone. On an open relay strangers still arrive as requests.
+- **The phone report travels with the login**, so that a banned phone is refused at the door. It gains a lasting phone ID (unchanged by system updates and by deleting the app's data) and the app's version.
+- **The admin page has a password.** The owner asked for more than the email code. Both are needed now.
 
 ### Changed in app 0.6.0
 
