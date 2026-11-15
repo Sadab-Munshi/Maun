@@ -68,7 +68,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                         ?.let { id -> contacts.firstOrNull { it.id == id } }
                     when {
                         screen == MY_CODE -> MyCodeScreen(
-                            code = (current as AccountState.Present).code,
+                            code = current.code,
                             onBack = goHome,
                         )
 

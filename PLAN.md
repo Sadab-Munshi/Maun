@@ -7,31 +7,55 @@ App name: **Maun** (Hindi/Sanskrit for "silence"). Package ID: `org.maun.messeng
 
 | Milestone | State |
 |---|---|
-| M0. Foundations and risk checks | **Built. Waiting for the phone check and a deployed relay.** |
-| M1. Identity and login | Next |
-| M2 to M6 | Not started |
+| M0. Foundations and risk checks | **Done.** Setup check passed on a real phone against the deployed relay. |
+| M1. Identity and login | **Built, tested in CI and deployed. Waiting for the two-phone check.** |
+| M2. Text messaging | Next |
+| M3 to M6 | Not started |
+
+### M1 results
+
+Checked automatically, on every push:
+
+- Relay: 54 tests pass in Cloudflare's local runtime. They cover the three cases the milestone names (a forged signature, a replayed challenge, a second registration for the same ID) and also: an address claimed with someone else's identity key, two registrations racing, a registration signature reused as a login, one attempt per connection, a stranger being unable to disconnect the owner, and login surviving the mailbox being evicted from memory.
+- App and relay together: GitHub Actions starts the relay locally and runs the app's real connection code against it. libsignal signs with the identity key and the relay's WebCrypto accepts it. A new phone registers, logs in again on the next connection without replacing its device key, and a second phone holding a copy of the identity key is refused.
+- The bytes that get signed are pinned by the same test vector on both sides, so the app and the relay cannot drift apart unnoticed.
+- QR codes: a code is painted into a camera-shaped image and read back, including row padding.
+- Lint reports 0 errors. The debug APK is 65 MB.
+
+Checked by hand:
+
+- The deployed relay (`/health` reports protocol 1) greets a new connection with a fresh nonce.
+
+Not checked yet, because it needs phones:
+
+- The new screens have **never been run on a phone**: welcome, home, My code, Add contact, the camera scanner.
+- Creating the device key with the relay's challenge inside Android Keystore. Tests use a software key in its place.
+- The milestone's own finish line: two phones register and add each other by QR.
+
+### Changed while building M1
+
+- **Pre-key upload and fetch moved to M2.** Nothing uses pre-keys until the first message is encrypted, and building them next to the code that consumes them avoids guessing at the format.
+- **Login needs only the device key.** The identity key signs once, at registration, to prove the address belongs to the phone. After that every connection is a fresh nonce signed inside the phone's secure hardware.
+- **A stranger cannot knock you offline.** In M0 any new connection replaced the old one. Now only a connection that has logged in does, and at most three sockets may wait at the login step of one mailbox.
+- **Nothing is stored for an address nobody registered.** An account is one row: the device public key, the challenge it was created against, and the day (not the time) it was created.
+- **Rate limits** (Cloudflare's rate-limiting binding, free, nothing stored by us): 120 connections a minute per IP address, 20 a minute per mailbox, 10 a minute per IP address to addresses that have no account. The per-address numbers are generous because Indian mobile networks put many people behind one address.
+- **Contacts must be on the same relay.** The QR code carries the relay's name, and the app refuses a code from another relay with an explanation.
+- **A contact added by camera is marked "Scanned"; one pasted as text is marked "Typed"**, because pasted text could have been swapped on the way.
+- **Limit: no re-registration.** If the relay's data is ever wiped, a phone that was registered is refused rather than silently replacing its device key. Starting again means clearing the app's data. A proper "delete my ID and start again" belongs with account deletion in M6.
+- The database is now at version 2 and its layout is recorded in `android/app/schemas/`. Version 1 (the setup-check build) is discarded on upgrade. Every later change needs a real migration, because the database now holds the identity key.
 
 ### M0 results
 
-Checked in the build workspace:
-
-- Relay: 22 automated tests pass in Cloudflare's local runtime, including a socket that keeps working after the mailbox is evicted from memory (hibernation).
-- Signature checks for both key types pass against vectors produced by libsignal and the JDK. Cost is about 0.7 ms of CPU for both together, measured in Node; the limit is 10 ms. The real figure appears in the Cloudflare dashboard after deploy.
+- Relay: tests pass in Cloudflare's local runtime, including a socket that keeps working after the mailbox is evicted from memory (hibernation).
+- Signature checks for both key types pass against vectors produced by libsignal and the JDK. Cost is about 0.7 ms of CPU for both together, measured in Node; the limit is 10 ms.
 - libsignal: 8 tests pass on the JVM. Row 6 below is settled: the only `PreKeyBundle` constructor requires a Kyber pre-key.
-- The Android app compiles, lint reports 0 errors, and a signed 58 MB debug APK is produced.
-- The app's relay client was run on the JVM against the locally running relay and completed the echo.
-
-Not checked yet, because they need hardware or accounts:
-
-- The app has **never been launched on a phone or emulator**. Keystore, SQLCipher and the screen itself are untested until someone runs the setup check.
-- The relay has not been deployed to Cloudflare.
-- The two GitHub workflows pass a syntax check but have never run.
+- On a real phone, against the deployed relay: device key held in the processor's secure area (TEE); encrypted storage written, reopened and read back; Signal session set up and a message decrypted each way; relay round trip in 260 ms.
 
 ### Found while building M0
 
 - libsignal's Maven package includes desktop builds of its native library, a second "testing" copy for Android, and unstripped debug symbols. Left alone, the APK was 496 MB. The build now excludes the extras and strips symbols with the NDK; CI fails if the APK exceeds 100 MB.
 - Current AndroidX libraries need `compileSdk 37`, and libsignal needs core library desugaring.
-- The build workspace has 2 GB of memory, not 1 GB as first reported. The Android build does run there, but only just: two builds were killed for lack of memory and passed on retry.
+- The build workspace is too small to compile the app reliably. From M1 on, the app is compiled and tested by GitHub Actions only.
 
 The stack in the spec is sound and I would keep it. This plan does three things:
 
@@ -131,15 +155,15 @@ Order: prove the risky pieces first, then text, then background delivery, then m
 
 - Android: key generation, Keystore device key, registration, challenge-response login, reconnect with back-off.
 - The device key is created with a server-issued challenge baked in, so the same key can be attested in M6 without making users register again.
-- Backend: registration, pre-key storage and fetch, challenge-response, basic per-IP and per-account rate limits.
-- UI: onboarding, "My ID" QR screen, scan-to-add contact.
+- Backend: registration, challenge-response, basic per-IP and per-account rate limits.
+- UI: onboarding, "My code" QR screen, scan-to-add contact.
 
 **Done when:** two phones register and add each other by QR. Tests show a forged signature, a replayed challenge and a second registration for the same ID are all rejected.
 
 ### M2. Text messaging (large)
 
-- Android: Signal session setup, encrypt and decrypt, local database, chat list and conversation screens, Sent/Delivered/Read.
-- Backend: store, forward, ACK delete, 30-day expiry, mailbox cap.
+- Android: pre-key generation and upload, Signal session setup, encrypt and decrypt, local database, chat list and conversation screens, Sent/Delivered/Read.
+- Backend: pre-key storage and fetch, store, forward, ACK delete, 30-day expiry, mailbox cap.
 - UI: message requests (accept or block an unknown sender).
 
 **Done when:** A sends to B while B is offline; B receives it on reconnect; a test confirms the mailbox table is empty after ACK. Killing the app mid-delivery loses nothing and duplicates nothing.
@@ -215,16 +239,14 @@ This is comfortable for a test group of up to a few hundred light users. Beyond 
 
 ## 6. How implementation will run
 
-- **Backend:** I write it and test it locally with Cloudflare's local runtime. Deploying needs your Cloudflare account.
-- **Android:** I write the code, compile it, and run unit tests and lint in the build workspace. GitHub Actions repeats this and publishes the APK.
+- **Backend:** I write it and test it with Cloudflare's local runtime. Every push to `main` is deployed by Cloudflare, which is connected to the GitHub repository.
+- **Android:** I write the code; GitHub Actions compiles it, runs the unit tests and lint, and publishes the APK.
 - **Real-device testing** (camera, microphone, push, calls) can only be done by you on two phones. Each milestone's "Done when" is the checklist.
 
 ### Needed from you
 
-1. Install the debug APK on an Android 10+ phone and run the setup check (closes M0).
-2. A Cloudflare account, and the relay deployed to it. No payment method is needed until M4 (R2) and M5 (TURN).
-3. A GitHub repository holding this code, so CI can build APKs.
-4. From M1 on: two phones, ideally one from Xiaomi, Oppo, Vivo or Samsung.
+1. For M1: install the new APK on **two** phones (Android 10 or newer), create an ID on each, and add each other by QR. Ideally one of the phones is from Xiaomi, Oppo, Vivo or Samsung.
+2. Before M4: a payment method on the Cloudflare account (R2 requires one even on the free tier). Before M5: the same for TURN.
 
 Step-by-step instructions are in `README.md`.
 
