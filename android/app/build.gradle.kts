@@ -4,9 +4,9 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-// Address of the deployed relay, e.g. https://maun-relay.example.workers.dev
+// Address of the deployed relay, e.g. https://maun.example.workers.dev
 // Set with -Pmaun.relayUrl=... or the MAUN_RELAY_URL environment variable.
-// When empty, the app asks for it on the setup-check screen.
+// When empty, the app asks for it on the welcome screen.
 val relayUrl: String = providers.gradleProperty("maun.relayUrl")
     .orElse(providers.environmentVariable("MAUN_RELAY_URL"))
     .getOrElse("")
@@ -22,8 +22,8 @@ android {
         applicationId = "org.maun.messenger"
         minSdk = 29 // Android 10: built-in Ogg/Opus recording, StrongBox API.
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.0.1"
+        versionCode = 2
+        versionName = "0.1.0"
 
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
 
@@ -86,6 +86,12 @@ android {
     }
 }
 
+ksp {
+    // Room writes each database version's layout here. The files are committed:
+    // they are what future migrations are written and checked against.
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
@@ -106,6 +112,12 @@ dependencies {
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
     implementation(libs.sqlcipher)
+
+    // QR codes: ZXing makes and reads them on the phone; CameraX supplies frames.
+    implementation(libs.zxing.core)
+    implementation(libs.camerax.camera2)
+    implementation(libs.camerax.lifecycle)
+    implementation(libs.camerax.view)
 
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 

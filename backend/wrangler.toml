@@ -1,5 +1,6 @@
 # Maun relay: Cloudflare Worker + Durable Object mailbox.
-name = "maun-relay"
+# The name must match the Worker's name in the Cloudflare dashboard.
+name = "maun"
 main = "src/index.ts"
 compatibility_date = "2026-11-01"
 workers_dev = true
@@ -16,3 +17,36 @@ class_name = "Mailbox"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Mailbox"]
+
+# Rate limits. Counts are approximate and kept per Cloudflare location; the
+# keys (an IP address or a mailbox ID) are never written to our own storage.
+# Mobile networks put many people behind one address, so the per-address
+# limits are generous.
+
+# Connections opened from one IP address.
+[[ratelimits]]
+name = "CONNECT_LIMIT"
+namespace_id = "4101"
+
+  [ratelimits.simple]
+  limit = 120
+  period = 60
+
+# Connections opened to one mailbox, whoever opens them.
+[[ratelimits]]
+name = "MAILBOX_LIMIT"
+namespace_id = "4102"
+
+  [ratelimits.simple]
+  limit = 20
+  period = 60
+
+# Connections from one IP address to mailboxes that have no account yet.
+# Each of these is a possible new account.
+[[ratelimits]]
+name = "SIGNUP_LIMIT"
+namespace_id = "4103"
+
+  [ratelimits.simple]
+  limit = 10
+  period = 60

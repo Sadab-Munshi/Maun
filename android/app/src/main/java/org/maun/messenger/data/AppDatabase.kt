@@ -1,6 +1,7 @@
 package org.maun.messenger.data
 
 import android.content.Context
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -10,9 +11,10 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import kotlinx.coroutines.flow.Flow
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
-/** Small key-value table for app state. Chats and keys get their own tables later. */
+/** Small key-value table for app state. */
 @Entity(tableName = "meta")
 data class MetaEntry(
     @PrimaryKey val key: String,
@@ -29,13 +31,78 @@ interface MetaDao {
 }
 
 /**
+ * This phone's own account. There is only ever one row.
+ *
+ * [identityKeyPair] holds the private identity key; it exists nowhere else.
+ */
+@Entity(tableName = "account")
+class AccountEntity(
+    @PrimaryKey val id: Int = SINGLE_ROW,
+    @ColumnInfo(name = "relay_url") val relayUrl: String,
+    @ColumnInfo(name = "identity_key_pair", typeAffinity = ColumnInfo.BLOB) val identityKeyPair: ByteArray,
+    /** True once the relay has accepted the registration. */
+    val registered: Boolean,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+) {
+    companion object {
+        const val SINGLE_ROW = 0
+    }
+}
+
+@Dao
+interface AccountDao {
+    @Query("SELECT * FROM account WHERE id = 0")
+    suspend fun get(): AccountEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun put(account: AccountEntity)
+
+    @Query("UPDATE account SET registered = 1 WHERE id = 0")
+    suspend fun markRegistered()
+}
+
+/** Someone the user added by scanning or pasting their code. */
+@Entity(tableName = "contacts")
+data class ContactEntity(
+    /** Their ID: the identity public key in lower-case hex. */
+    @PrimaryKey val id: String,
+    val name: String,
+    /** True when the ID was read from their screen with the camera. */
+    val verified: Boolean,
+    @ColumnInfo(name = "added_at") val addedAt: Long,
+)
+
+@Dao
+interface ContactDao {
+    @Query("SELECT * FROM contacts ORDER BY name COLLATE NOCASE, id")
+    fun observeAll(): Flow<List<ContactEntity>>
+
+    @Query("SELECT * FROM contacts WHERE id = :id")
+    suspend fun get(id: String): ContactEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun put(contact: ContactEntity)
+
+    @Query("DELETE FROM contacts WHERE id = :id")
+    suspend fun delete(id: String)
+}
+
+/**
  * The on-device database: Room on top of SQLCipher, so every page on disk is
  * AES-256 encrypted with the key from [DatabaseKey].
  */
-@Database(entities = [MetaEntry::class], version = 1, exportSchema = false)
+@Database(
+    entities = [MetaEntry::class, AccountEntity::class, ContactEntity::class],
+    version = 2,
+    exportSchema = true,
+)
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun meta(): MetaDao
+
+    abstract fun account(): AccountDao
+
+    abstract fun contacts(): ContactDao
 
     companion object {
         const val FILE_NAME = "maun.db"
@@ -52,6 +119,10 @@ abstract class AppDatabase : RoomDatabase() {
                 .openHelperFactory(SupportOpenHelperFactory(rawKeySpec(loaded.key)))
                 // Write-ahead logging lets background sync write while the UI reads.
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
+                // Version 1 was the setup-check build and held nothing worth
+                // keeping. From version 2 on the database holds the identity
+                // key, so every later change needs a real migration.
+                .fallbackToDestructiveMigrationFrom(dropAllTables = true, 1)
                 .build()
         }
 
