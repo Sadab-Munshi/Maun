@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 45
     env:
       # Repository variable (Settings > Secrets and variables > Actions > Variables).
-      # Optional: when empty, the app asks for the relay address on screen.
+      # Optional: when empty, the app is built for the relay named in app/build.gradle.kts.
       MAUN_RELAY_URL: ${{ vars.MAUN_RELAY_URL }}
     steps:
       - uses: actions/checkout@v7

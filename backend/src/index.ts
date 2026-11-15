@@ -1,5 +1,6 @@
 import { handleAuth } from "./auth";
 import { memberConfig, sweepMembers } from "./members";
+import { turnConfig } from "./turn";
 import { type FileAnswer, type Mailbox, tooManyRequests } from "./mailbox";
 import { FILE_TTL_MS, MAX_FILE_BYTES, PROTOCOL_VERSION, isFileKey, isMailboxId } from "./protocol";
 
@@ -20,6 +21,7 @@ export default {
         service: "maun-relay",
         proto: PROTOCOL_VERSION,
         access: memberConfig(env) !== null,
+        calls: turnConfig(env) !== null,
         files: true,
       });
     }

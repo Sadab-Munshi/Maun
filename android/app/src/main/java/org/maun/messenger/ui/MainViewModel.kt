@@ -182,6 +182,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopVoice() = player.stop()
 
+    /** Calls [peer]. If it cannot be done right now, says why. */
+    fun startCall(peer: String) {
+        player.stop()
+        messenger.startCall(peer)?.let { attachProblem.value = it }
+    }
+
     override fun onCleared() {
         player.stop()
         super.onCleared()

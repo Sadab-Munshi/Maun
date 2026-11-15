@@ -10,6 +10,7 @@ import {
   vapidAuthorization,
 } from "./crypto/webpush";
 import { admit, findMember, memberConfig, memberOf, notifyAdmin, recordDevice } from "./members";
+import { TURN_DAILY_CAP, TURN_TTL_SECONDS, iceServers, turnConfig } from "./turn";
 import {
   CLOSE_ACCESS_REQUIRED,
   CLOSE_AUTH_FAILED,
@@ -29,6 +30,7 @@ import {
   PUSH_DAILY_CAP,
   PUSH_PAYLOAD,
   PUSH_REPEAT_MS,
+  PUSH_URGENT_REPEAT_MS,
   PUSH_SETTLE_MS,
   PUSH_SETTLE_WAITS_MS,
   PUSH_TTL_SECONDS,
@@ -315,7 +317,7 @@ export class Mailbox extends DurableObject<Env> {
         try {
           // The recipient's mailbox writes the message before it answers, so
           // "stored" means it will survive whatever happens to either phone.
-          outcome = await this.peer(frame.to).store(state.m, frame.kind, frame.body, frame.to);
+          outcome = await this.peer(frame.to).store(state.m, frame.kind, frame.body, frame.to, frame.urgent);
         } catch {
           outcome = "unavailable";
         }
@@ -360,6 +362,27 @@ export class Mailbox extends DurableObject<Env> {
         // What happened to the old address's wake-ups says nothing about this one.
         sql.exec("DELETE FROM push_result");
         send(ws, { t: "saved", id: frame.id, otks: this.oneTimeKeyCount() });
+        return;
+      }
+
+      case "turn": {
+        const config = turnConfig(this.env);
+        const today = Math.floor(Date.now() / 86_400_000);
+        const used = sql.exec("SELECT day, count FROM turn_use WHERE id = 1").toArray()[0];
+        const count = used && used.day === today ? (used.count as number) : 0;
+        if (!config) {
+          send(ws, { t: "failed", id: frame.id, code: "no_calls" });
+          return;
+        }
+        // Every set of credentials can carry data that is paid for by the relay's owner.
+        if (count >= TURN_DAILY_CAP) {
+          send(ws, { t: "failed", id: frame.id, code: "rate_limited" });
+          return;
+        }
+        sql.exec("INSERT OR REPLACE INTO turn_use (id, day, count) VALUES (1, ?, ?)", today, count + 1);
+        const servers = await iceServers(config);
+        if (typeof servers === "number") send(ws, { t: "failed", id: frame.id, code: "no_calls" });
+        else send(ws, { t: "ice", id: frame.id, servers, ttl: TURN_TTL_SECONDS });
         return;
       }
 
@@ -523,7 +546,7 @@ export class Mailbox extends DurableObject<Env> {
   // Worker's own code. `from` is therefore always a logged-in sender.
 
   /** Writes a message for this mailbox's owner and passes it on if they are connected. */
-  async store(from: string, kind: number, body: Uint8Array, self: string): Promise<StoreOutcome> {
+  async store(from: string, kind: number, body: Uint8Array, self: string, urgent = false): Promise<StoreOutcome> {
     if (!this.account()) return "no_account";
     this.ensureTables();
     if (await this.givenUp(self)) return "gone";
@@ -548,7 +571,7 @@ export class Mailbox extends DurableObject<Env> {
       this.expiryArmed = true;
     }
     for (const ws of this.ctx.getWebSockets()) this.pump(ws);
-    if (!this.connected()) this.wake(now);
+    if (!this.connected()) this.wake(now, urgent);
     return "stored";
   }
 
@@ -624,13 +647,14 @@ export class Mailbox extends DurableObject<Env> {
    * Sends a wake-up to the phone's push address, if it left one and has not
    * just been sent one. Returns at once; the request runs in the background.
    */
-  private wake(now: number): void {
+  private wake(now: number, urgent = false): void {
     const sql = this.ctx.storage.sql;
     const row = sql.exec("SELECT url, key, auth, last, pending, day, sent FROM push WHERE id = 1").toArray()[0];
     if (!row) return;
     // One is on its way and the phone has not come yet. Sending more would
     // only tell the push service how many messages are waiting.
-    if (row.pending === 1 && now - (row.last as number) < PUSH_REPEAT_MS) return;
+    // A ringing call cannot wait for that; it only has to keep a few seconds' distance.
+    if (row.pending === 1 && now - (row.last as number) < (urgent ? PUSH_URGENT_REPEAT_MS : PUSH_REPEAT_MS)) return;
     const today = Math.floor(now / 86_400_000);
     const sentToday = row.day === today ? (row.sent as number) : 0;
     if (sentToday >= PUSH_DAILY_CAP) return;
@@ -778,6 +802,7 @@ export class Mailbox extends DurableObject<Env> {
         kind: row.kind as number,
         body: toBase64(bytes(row.body)),
         at: row.at as number,
+        age: Math.max(0, Date.now() - (row.at as number)),
       });
       if (!ok) break;
       cursor = row.seq as number;
@@ -838,6 +863,8 @@ export class Mailbox extends DurableObject<Env> {
          day INTEGER NOT NULL, bytes INTEGER NOT NULL, count INTEGER NOT NULL
        )`,
     );
+    // One row: how many sets of call credentials were handed out today.
+    sql.exec("CREATE TABLE IF NOT EXISTS turn_use (id INTEGER PRIMARY KEY CHECK (id = 1), day INTEGER NOT NULL, count INTEGER NOT NULL)");
     // One row while this mailbox's owner has moved to another ID.
     sql.exec("CREATE TABLE IF NOT EXISTS retired (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL)");
     sql.exec(

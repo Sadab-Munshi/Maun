@@ -16,6 +16,39 @@ class PayloadTest {
     }
 
     @Test
+    fun `the steps of a call survive the round trip`() {
+        val id = "3f2c9a1e-0000-4000-8000-00000000000c"
+        val steps = listOf(
+            Payload.Call(id, Payload.CALL_OFFER, sdp = "v=0\r\no=- 46117 2 IN IP4 127.0.0.1\r\n"),
+            Payload.Call(id, Payload.CALL_ANSWER, sdp = "v=0\r\n"),
+            Payload.Call(id, Payload.CALL_ICE, candidate = Payload.Candidate("0", 0, "candidate:1 1 udp 41885439 198.51.100.7 50000 typ relay")),
+            Payload.Call(id, Payload.CALL_HANGUP, reason = "declined"),
+            Payload.Call(id, Payload.CALL_HANGUP),
+            Payload.Call(id, Payload.CALL_BUSY),
+        )
+        for (step in steps) assertEquals(step, Payload.decode(Payload.encode(step)))
+    }
+
+    @Test
+    fun `call steps that say nothing, or too much, are not taken`() {
+        val id = "3f2c9a1e-0000-4000-8000-00000000000c"
+        fun sent(change: org.json.JSONObject.() -> Unit): Payload {
+            val json = org.json.JSONObject().put("v", 1).put("k", "call").put("call", id).put("type", "offer").put("sdp", "v=0")
+            json.change()
+            return Payload.decode(Payload.pad(json.toString().toByteArray()))
+        }
+        assertTrue(sent { } is Payload.Call)
+        assertEquals(Payload.Unknown, sent { remove("sdp") })
+        assertEquals(Payload.Unknown, sent { put("sdp", "x".repeat(Payload.MAX_SDP_CHARS + 1)) })
+        assertEquals(Payload.Unknown, sent { put("type", "explode") })
+        assertEquals(Payload.Unknown, sent { put("call", "not an id!") })
+        assertEquals(Payload.Unknown, sent { put("type", "ice").remove("sdp") })
+        // The largest description still fits in one message to the relay.
+        val largest = Payload.encode(Payload.Call(id, Payload.CALL_OFFER, sdp = "x".repeat(Payload.MAX_SDP_CHARS)))
+        assertTrue(largest.size < 6000)
+    }
+
+    @Test
     fun `receipts survive the round trip`() {
         val delivered = Payload.Receipt(delivered = listOf("a", "b"))
         val read = Payload.Receipt(read = listOf("c"))

@@ -14,6 +14,8 @@
 //   - `send` hands a message to another mailbox, answered by `stored`;
 //   - `put_push` tells the relay where to send a wake-up when a message arrives
 //     and the phone is not connected; `drop_push` withdraws it.
+//   - `turn` asks for the servers a call is carried through. The call itself
+//     is set up with ordinary encrypted messages, sent `urgent`.
 //   - `device` reports which phone this is (a hash and the model), which a
 //     member-only relay keeps next to the member's name.
 // Every request carries an `id` that comes back in its answer.
@@ -74,6 +76,8 @@ export const KIND_PREKEY_MESSAGE = 3;
  */
 export const PUSH_REPEAT_MS = 10 * 60 * 1000;
 export const PUSH_DAILY_CAP = 200;
+/** A message marked urgent (a call that is ringing) may wake the phone again this soon after the last wake-up. */
+export const PUSH_URGENT_REPEAT_MS = 10 * 1000;
 /** How long the push service should keep a wake-up for a phone it cannot reach, in seconds. */
 export const PUSH_TTL_SECONDS = 24 * 60 * 60;
 /** What a wake-up says once decrypted. It names nobody and carries nothing. */
@@ -162,7 +166,10 @@ export type ClientFrame =
   | { t: "put_keys"; id: string; regId: number; spk: SignedKey; kpk: SignedKey }
   | { t: "put_otks"; id: string; keys: OneTimeKey[] }
   | { t: "get_keys"; id: string; of: string }
-  | { t: "send"; id: string; to: string; kind: number; body: Uint8Array }
+  /** `urgent`: wake the other phone at once, even if it was woken a moment ago. For a call that is ringing. */
+  | { t: "send"; id: string; to: string; kind: number; body: Uint8Array; urgent: boolean }
+  /** Asks for the servers a call goes through. */
+  | { t: "turn"; id: string }
   | { t: "ack"; seq: number }
   /** `key` and `auth` are the Web Push keys the phone's push app handed out. */
   | { t: "put_push"; id: string; url: string; key: Uint8Array; auth: Uint8Array }
@@ -222,7 +229,10 @@ export type ServerFrame =
   | { t: "stored"; id: string }
   | { t: "found"; id: string; user: string; name: string }
   | { t: "failed"; id: string; code: FailureCode }
-  | { t: "msg"; seq: number; from: string; kind: number; body: string; at: number }
+  /** `age`: how long the message has been waiting, in milliseconds. A call that rang a minute ago is over. */
+  | { t: "msg"; seq: number; from: string; kind: number; body: string; at: number; age: number }
+  /** Servers for one call, good for `ttl` seconds. */
+  | { t: "ice"; id: string; servers: { urls: string[]; username?: string; credential?: string }[]; ttl: number }
   | { t: "error"; code: ErrorCode };
 
 /** Why a request could not be carried out. The connection stays open. */
@@ -235,6 +245,8 @@ export type FailureCode =
   | "unavailable"
   /** Nobody has that username, or the relay keeps no usernames. */
   | "no_such_user"
+  /** This relay has no calls set up, or the call service refused. */
+  | "no_calls"
   /** The ID written to is no longer anybody's: its owner set Maun up again, or left. */
   | "gone"
   /** The wake-up address or its keys are not ones the relay will use. */
@@ -349,8 +361,11 @@ export function parseClientFrame(raw: string | ArrayBuffer): ClientFrame | Error
       if (frame.kind !== KIND_MESSAGE && frame.kind !== KIND_PREKEY_MESSAGE) return "bad_frame";
       const body = fromBase64(frame.body, MAX_BODY_BYTES);
       if (!body) return "bad_frame";
-      return { t: "send", id: frame.id, to: frame.to, kind: frame.kind, body };
+      return { t: "send", id: frame.id, to: frame.to, kind: frame.kind, body, urgent: frame.urgent === true };
     }
+    case "turn":
+      if (!isRequestId(frame.id)) return "bad_frame";
+      return { t: "turn", id: frame.id };
     case "ack":
       if (typeof frame.seq !== "number" || !Number.isSafeInteger(frame.seq) || frame.seq <= 0) return "bad_frame";
       return { t: "ack", seq: frame.seq };

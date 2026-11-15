@@ -106,6 +106,19 @@ class ChatEngine(
 
     private val pushLock = Mutex()
 
+    /** One thing at a time is encrypted and handed to the relay, whether from the outbox or for a call. */
+    private val sending = Mutex()
+
+    /**
+     * Told about every step of a call that arrives from a contact: who it is
+     * from, the step, and how long it waited on the relay in milliseconds.
+     */
+    @Volatile
+    var onCall: ((from: String, call: Payload.Call, ageMillis: Long) -> Unit)? = null
+
+    /** The call step in the message being handled right now, if it is one. */
+    private var arrivedCall: Payload.Call? = null
+
     @Volatile
     private var relayHasPush = false
 
@@ -202,6 +215,7 @@ class ChatEngine(
         } catch (_: IllegalArgumentException) {
             null
         }
+        arrivedCall = null
         val replies = try {
             withContext(io) { receive(from, frame.optInt("kind"), body) }
         } catch (e: CancellationException) {
@@ -213,9 +227,81 @@ class ChatEngine(
         }
         link?.send(JSONObject().put("t", "ack").put("seq", seq))
         if (replies) kick()
+        arrivedCall?.let { call ->
+            arrivedCall = null
+            onCall?.invoke(from, call, frame.optLong("age", 0))
+        }
         // On a relay of members, somebody who writes without being a contact
         // is still somebody the relay can name.
         if (memberRelay && body != null && !withContext(io) { dao.isContact(from) }) meet(from)
+    }
+
+    // ---- Calls ----------------------------------------------------------------
+    //
+    // A call is set up with ordinary encrypted messages, so the relay learns no
+    // more than that two people wrote to each other. They are not kept in the
+    // outbox: a step of a call that cannot leave now is of no use later.
+
+    /**
+     * Sends one step of a call to [peer] right away. [urgent] asks the relay
+     * to wake their phone even if it was woken a moment ago. Returns false
+     * when it could not be handed to the relay.
+     */
+    suspend fun sendCall(peer: String, call: Payload.Call, urgent: Boolean): Boolean {
+        val link = link ?: return false
+        if (link.ready == null) return false
+        val item = OutboxEntity(peer = peer, messageId = null, payload = Payload.encode(call))
+        return sending.withLock { deliver(link, item, urgent) } == Outcome.Done
+    }
+
+    /** One of the servers a call is carried through. */
+    class CallServer(val urls: List<String>, val username: String, val credential: String)
+
+    /** Asks the relay for the servers of one call. Throws [RelayException] with the reason when there are none. */
+    suspend fun callServers(): List<CallServer> {
+        val answer = (link ?: throw RelayException("Not connected to the relay.")).request(JSONObject().put("t", "turn"))
+        if (answer.optString("t") != "ice") {
+            throw RelayException(
+                when (answer.optString("code")) {
+                    "no_calls" -> "Calls are not set up on this relay, or its call service refused."
+                    "rate_limited" -> "Too many calls today. Try again tomorrow."
+                    else -> "The relay could not set up a call just now."
+                },
+            )
+        }
+        val listed = answer.optJSONArray("servers") ?: throw RelayException("The relay could not set up a call just now.")
+        val servers = (0 until listed.length()).mapNotNull { i ->
+            val entry = listed.optJSONObject(i) ?: return@mapNotNull null
+            val urls = entry.optJSONArray("urls") ?: return@mapNotNull null
+            CallServer(
+                urls = (0 until urls.length()).map { urls.optString(it) }.filter { it.startsWith("turn:") || it.startsWith("turns:") },
+                username = entry.optString("username"),
+                credential = entry.optString("credential"),
+            ).takeIf { it.urls.isNotEmpty() && it.username.isNotEmpty() }
+        }
+        if (servers.isEmpty()) throw RelayException("The relay could not set up a call just now.")
+        return servers
+    }
+
+    /** Puts a line into the conversation with [peer]: how a call went. [missed] makes it count as unread. */
+    suspend fun addNotice(peer: String, text: String, missed: Boolean) {
+        withContext(io) {
+            tx.inTransaction {
+                if (!dao.isContact(peer)) return@inTransaction
+                dao.insertMessage(
+                    MessageEntity(
+                        peer = peer,
+                        id = "notice-${UUID.randomUUID()}",
+                        outgoing = false,
+                        kind = MessageKind.NOTICE,
+                        text = text,
+                        at = now(),
+                        unread = missed,
+                        receipt = ReceiptLevel.READ,
+                    ),
+                )
+            }
+        }
     }
 
     // ---- Members who set Maun up again ----------------------------------------
@@ -541,6 +627,11 @@ class ChatEngine(
                         payload.read.forEach { dao.raiseStatus(from, it, MessageStatus.READ) }
                         false
                     }
+                    is Payload.Call -> {
+                        // Only people one has added can make the phone ring.
+                        if (dao.isContact(from)) arrivedCall = payload
+                        false
+                    }
                     Payload.Unknown -> false
                 }
             }
@@ -631,7 +722,7 @@ class ChatEngine(
             val item = withContext(io) { dao.nextOutbox(after) } ?: break
             after = item.seq
             if (item.peer in held) continue
-            when (val outcome = deliver(link, item)) {
+            when (val outcome = sending.withLock { deliver(link, item) }) {
                 Outcome.Done -> Unit
                 // Their items now carry the new ID; this pass ends and another begins.
                 Outcome.Moved -> {
@@ -649,7 +740,7 @@ class ChatEngine(
         if (held.isNotEmpty()) retryLater()
     }
 
-    private suspend fun deliver(link: RelayLink, item: OutboxEntity): Outcome {
+    private suspend fun deliver(link: RelayLink, item: OutboxEntity, urgent: Boolean = false): Outcome {
         val peer = item.peer
         var sealed = if (item.cipher != null && item.cipherKind != null) Sealed(item.cipherKind, item.cipher) else null
         if (sealed == null) {
@@ -683,7 +774,8 @@ class ChatEngine(
                     .put("t", "send")
                     .put("to", peer)
                     .put("kind", sealed.kind)
-                    .put("body", Base64.getEncoder().encodeToString(sealed.body)),
+                    .put("body", Base64.getEncoder().encodeToString(sealed.body))
+                    .apply { if (urgent) put("urgent", true) },
             )
         } catch (_: RelayException) {
             return Outcome.Stop

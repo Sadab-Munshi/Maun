@@ -1,5 +1,6 @@
 package org.maun.messenger
 
+import org.maun.messenger.network.RelayException
 import org.maun.messenger.network.FileException
 import org.maun.messenger.network.FileApi
 import org.maun.messenger.crypto.FileCipher
@@ -258,6 +259,48 @@ class ChatEngineTest {
         } finally {
             folder.deleteRecursively()
         }
+    }
+
+    @Test
+    fun `the steps of a call go straight to a contact and are never kept for later`() {
+        val bob = Phone().registeredAndOffline()
+        val alice = Phone().knows(bob)
+        bob.knows(alice)
+        val stranger = Phone()
+        val heard = CopyOnWriteArrayList<Triple<String, Payload.Call, Long>>()
+        bob.engine.onCall = { from, call, age -> heard += Triple(from, call, age) }
+        alice.online()
+        bob.online()
+        stranger.online()
+
+        val offer = Payload.Call("call-1", Payload.CALL_OFFER, sdp = "v=0\r\n" + "a=candidate\r\n".repeat(150))
+        assertTrue(runBlocking { alice.engine.sendCall(bob.id, offer, urgent = true) })
+        val way = Payload.Call("call-1", Payload.CALL_ICE, candidate = Payload.Candidate("0", 0, "candidate:1 1 udp 1 198.51.100.7 50000 typ relay"))
+        assertTrue(runBlocking { alice.engine.sendCall(bob.id, way, urgent = false) })
+        eventually("both arrive, in order") { heard.map { it.second } == listOf(offer, way) }
+        assertEquals(alice.id, heard[0].first)
+        assertTrue("it arrived fresh", heard[0].third < 10_000)
+        assertEquals(0, alice.db.outboxSize())
+        // Nothing of a call is a message: the conversation stays empty.
+        assertTrue(bob.chat(alice).isEmpty())
+
+        // Someone Bob has not added cannot make his phone ring.
+        runBlocking { stranger.engine.sendCall(bob.id, Payload.Call("call-2", Payload.CALL_OFFER, sdp = "v=0"), urgent = true) }
+        pause()
+        assertEquals(2, heard.size)
+
+        // With no connection a step is not sent, and not saved up either.
+        alice.offline()
+        assertFalse(runBlocking { alice.engine.sendCall(bob.id, Payload.Call("call-1", Payload.CALL_HANGUP), urgent = false) })
+        assertEquals(0, alice.db.outboxSize())
+    }
+
+    @Test
+    fun `a relay without call servers says so in words`() {
+        val alice = Phone()
+        alice.online()
+        val problem = assertThrows(RelayException::class.java) { runBlocking { alice.engine.callServers() } }
+        assertTrue(problem.message!!.contains("not set up"))
     }
 
     @Test

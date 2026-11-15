@@ -7,7 +7,7 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 
-## Status: app 0.8.0 (files, voice messages, and an optional member-only mode with usernames)
+## Status: app 0.9.0 (files, voice messages, voice calls, and an optional member-only mode with usernames)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
 messages while the app is closed. The app can be locked behind the phone's
@@ -16,7 +16,9 @@ sure of each other. Files up to 25 MB can be sent; the relay keeps the
 encrypted file for one day. A relay can be made member-only: people log in
 once with a code sent to their email, pick a username, wait for the
 administrator's approval on a web page, and can be banned. Voice messages
-can be recorded and played in the conversation. Calls are not built yet.
+can be recorded and played in the conversation. Voice calls go through the
+relay's call servers, so neither phone learns the other's address. Video calls
+are not built yet.
 
 | Piece | Where |
 |---|---|
@@ -37,6 +39,7 @@ can be recorded and played in the conversation. Calls are not built yet.
 | Signed HTTP requests and noticing a ban | `android/.../network/FileApi.kt` |
 | Phone fingerprint (member-only relays) | `android/.../security/DeviceFingerprint.kt` |
 | Voice messages: recording and playing | `android/.../voice/VoiceRecorder.kt`, `android/.../voice/VoicePlayer.kt` |
+| Voice calls: setting up, sound, ringing, staying alive | `android/.../webrtc/CallManager.kt`, `CallAudio.kt`, `CallService.kt`, `backend/src/turn.ts` |
 | Safety number for checking a contact | `android/.../crypto/SafetyNumber.kt` |
 | Rate limits and mailbox caps | `backend/src/index.ts`, `backend/src/protocol.ts`, `backend/wrangler.toml` |
 | CI: tests the relay, runs the app's messaging code against it, builds the APK | `.github/workflows/` |
@@ -125,13 +128,15 @@ On each of two phones:
    clock (not sent yet), one tick (the relay has it), two ticks (their phone
    has it) or two blue ticks (they opened the conversation).
 5. Hold a message to copy it or to delete it from this phone.
-6. Hold the microphone (it is there while the message field is empty) to
-   record a voice message; let go to send it, or slide left first to cancel.
-   Tap a voice message to play or pause it.
-7. Tap the paperclip to send a file of up to 25 MB. Pictures show in the
+6. Tap the microphone (it is there while the message field is empty) to
+   record a voice message. While it records you can pause it, throw it away
+   with the bin, or send it. Tap a voice message to play or pause it.
+7. Tap the telephone at the top of a conversation to call. The other phone
+   rings, also when Maun is closed there. See "Calls" below.
+8. Tap the paperclip to send a file of up to 25 MB. Pictures show in the
    conversation; tap any other file to save it. The relay deletes its
    encrypted copy after one day, so a file not fetched by then is gone.
-8. Tap the name at the top of a conversation to rename the contact or to
+9. Tap the name at the top of a conversation to rename the contact or to
    compare the **safety number** with them. Both phones show the same 60
    digits; if they match, nobody swapped the ID on the way.
 
@@ -149,6 +154,30 @@ re-runs the hardware, storage, encryption and relay checks at any time.
 
 An ID lives only on the phone that made it. Uninstalling the app, or clearing
 its data, destroys the ID for good.
+
+## Calls
+
+A call is set up with a few ordinary encrypted messages between the two
+phones, and then runs through Cloudflare's TURN service and nothing else. The
+phones are told to connect only through it, so neither learns the other's
+internet address. The sound is encrypted between the two phones by WebRTC;
+the TURN service passes on what it cannot read. The relay itself never
+carries a call: it only hands each phone short-lived credentials for the
+TURN service.
+
+To switch calls on, create a TURN key (Cloudflare dashboard > **Realtime** >
+**TURN Server** > **Create**) and add two Secrets to the Worker:
+`TURN_KEY_ID` (the "Turn Token ID") and `TURN_API_TOKEN` (the "API Token").
+`https://<relay>/health` then says `"calls":true`.
+
+Cloudflare gives 1,000 GB of TURN traffic a month free and charges beyond
+it, with no cap of its own. A voice call uses about 0.3 MB a minute. The
+relay limits each account to 60 sets of credentials a day (a call needs one
+on each side) and each set works for four hours.
+
+What a call does not do yet: video, Bluetooth headsets chosen by hand, and
+ringing on a phone whose push service is slow to wake it (the call then
+shows as missed).
 
 ## A member-only relay
 

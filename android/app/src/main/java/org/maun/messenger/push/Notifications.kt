@@ -9,6 +9,8 @@ import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import org.maun.messenger.MainActivity
+import org.maun.messenger.webrtc.CallService
+import org.maun.messenger.webrtc.CallManager
 import org.maun.messenger.R
 
 /**
@@ -30,6 +32,13 @@ class Notifications(context: Context) {
                 NotificationChannelCompat.Builder(CHANNEL_MESSAGES, NotificationManagerCompat.IMPORTANCE_HIGH)
                     .setName("Messages")
                     .setDescription("Tells you that a message has arrived. Never shows the message.")
+                    .build(),
+                // Silent: the app rings by itself, so that the ringing stops the moment the call is taken.
+                NotificationChannelCompat.Builder(CHANNEL_CALLS, NotificationManagerCompat.IMPORTANCE_HIGH)
+                    .setName("Calls")
+                    .setDescription("Shows a call that is coming in, and one that is going on.")
+                    .setSound(null, null)
+                    .setVibrationEnabled(false)
                     .build(),
                 NotificationChannelCompat.Builder(CHANNEL_BACKGROUND, NotificationManagerCompat.IMPORTANCE_LOW)
                     .setName("Background connection")
@@ -77,6 +86,83 @@ class Notifications(context: Context) {
         manager.cancel(ID_MESSAGES)
     }
 
+    /**
+     * A call is coming in while Maun is not on screen. Opens the call over
+     * the lock screen where Android allows it, and otherwise shows at the top
+     * with Answer and Decline. [name] is shown on an unlocked phone only.
+     */
+    @SuppressLint("MissingPermission")
+    fun showIncomingCall(name: String) {
+        if (!allowed) return
+        val open = PendingIntent.getActivity(
+            context,
+            1,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val answer = PendingIntent.getActivity(
+            context,
+            2,
+            Intent(context, MainActivity::class.java)
+                .setAction(MainActivity.ACTION_ANSWER)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val decline = PendingIntent.getService(
+            context,
+            3,
+            CallService.hangUp(context),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val onLockScreen = NotificationCompat.Builder(context, CHANNEL_CALLS)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Maun")
+            .setContentText("Incoming voice call")
+            .build()
+        val notification = NotificationCompat.Builder(context, CHANNEL_CALLS)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(name)
+            .setContentText("Incoming voice call")
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(onLockScreen)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setTimeoutAfter(CallManager.RING_MILLIS)
+            .setContentIntent(open)
+            .setFullScreenIntent(open, true)
+            .addAction(0, "Decline", decline)
+            .addAction(0, "Answer", answer)
+            .build()
+        try {
+            manager.notify(ID_RINGING, notification)
+        } catch (_: SecurityException) {
+            // Permission was withdrawn between the check and the call.
+        }
+    }
+
+    fun clearIncomingCall() {
+        manager.cancel(ID_RINGING)
+    }
+
+    /** The notification Android requires while a call goes on. Says that there is one, not with whom. */
+    fun inCall(hangUp: Intent): Notification =
+        NotificationCompat.Builder(context, CHANNEL_CALLS)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Maun call")
+            .setContentText("Tap to return to the call.")
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setContentIntent(openApp())
+            .addAction(
+                0,
+                "Hang up",
+                PendingIntent.getService(context, 4, hangUp, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT),
+            )
+            .build()
+
     /** The permanent notification Android requires while Maun stays connected. */
     fun connected(): Notification = quiet("Maun is connected", "Waiting for messages. Tap to open.")
 
@@ -106,6 +192,9 @@ class Notifications(context: Context) {
         const val ID_MESSAGES = 1
         const val ID_CONNECTED = 2
         const val ID_FETCH = 3
+        const val ID_CALL = 4
+        const val ID_RINGING = 5
+        private const val CHANNEL_CALLS = "calls"
 
         private const val CHANNEL_MESSAGES = "messages"
         private const val CHANNEL_BACKGROUND = "background"

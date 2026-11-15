@@ -5,6 +5,9 @@ import android.graphics.Bitmap
 import android.net.Uri
 import org.json.JSONObject
 import org.maun.messenger.network.AuthApi
+import org.maun.messenger.webrtc.CallManager
+import org.maun.messenger.webrtc.CallSignals
+import org.maun.messenger.webrtc.CallUi
 import org.maun.messenger.network.FileApi
 import org.maun.messenger.network.Usernames
 import org.maun.messenger.security.DeviceFingerprint
@@ -178,6 +181,46 @@ class Messenger(context: Context) {
     val pushProblem: StateFlow<String?> = _pushProblem.asStateFlow()
 
     private val notifications = Notifications(appContext)
+
+    /** Voice calls. One at a time; see [CallManager]. */
+    val calls = CallManager(
+        appContext,
+        object : CallSignals {
+            override suspend fun send(peer: String, call: Payload.Call, urgent: Boolean): Boolean =
+                engine?.sendCall(peer, call, urgent) == true
+
+            override suspend fun servers(): List<ChatEngine.CallServer> =
+                (engine ?: throw RelayException("Not connected to the relay.")).callServers()
+
+            override fun note(peer: String, text: String, missed: Boolean) {
+                scope.launch { engine?.addNotice(peer, text, missed) }
+            }
+
+            override fun ringing(peer: String?, on: Boolean) {
+                // In front, the call has the whole screen already.
+                if (on && peer != null && !inForeground) {
+                    notifications.showIncomingCall(_contacts.value.firstOrNull { it.id == peer }?.name ?: "Maun")
+                } else if (!on) {
+                    notifications.clearIncomingCall()
+                }
+            }
+        },
+    )
+
+    init {
+        // A call needs the connection for as long as it lasts, also behind the lock screen.
+        scope.launch { calls.state.collect { synchronized(this@Messenger) { connectOrDrop(linger = true) } } }
+    }
+
+    /** Calls [peer]. Returns why it cannot be done right now, or null when it is ringing. */
+    fun startCall(peer: String): String? = when {
+        calls.busy -> "There is a call going on already."
+        _relay.value != RelayState.Online -> "Not connected to the relay. Try again in a moment."
+        else -> {
+            calls.start(peer)
+            null
+        }
+    }
     private val unread = UnreadTracker()
 
     /** Whether the notification about unread messages is showing. */
@@ -351,6 +394,7 @@ class Messenger(context: Context) {
             phone = { phoneReport.toJson() },
         )
         chat.link = created
+        chat.onCall = calls::onSignal
         val transfers = FileTransfers(
             context = appContext,
             engine = chat,
@@ -420,7 +464,7 @@ class Messenger(context: Context) {
 
     // ---- When to be connected --------------------------------------------------
 
-    private fun wanted() = !_banned.value && (inForeground || fetches > 0 || stayingConnected)
+    private fun wanted() = !_banned.value && (inForeground || fetches > 0 || stayingConnected || calls.busy)
 
     // ---- Member-only relays ----------------------------------------------------
 
@@ -562,6 +606,7 @@ class Messenger(context: Context) {
             connection?.stop()
         }
         setAccessToken(null)
+        withContext(Dispatchers.Main) { calls.hangUp() }
         engine?.wipeMessages()
         files?.wipe()
         notifications.clearMessages()
@@ -677,6 +722,9 @@ class Messenger(context: Context) {
         try {
             return withTimeoutOrNull(timeoutMillis) {
                 engine?.awaitCaughtUp()
+                // What was waiting may have been a call. While it rings here, stay:
+                // letting go of the connection would be hanging up on it.
+                calls.state.first { it == null || !it.incoming || it.phase != CallUi.Phase.Ringing }
                 true
             } ?: false
         } finally {

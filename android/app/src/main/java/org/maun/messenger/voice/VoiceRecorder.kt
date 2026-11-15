@@ -22,9 +22,37 @@ class VoiceRecorder(context: Context) {
     private val appContext = context.applicationContext
     private var recorder: MediaRecorder? = null
     private var file: File? = null
+    /** When the stretch being recorded now began, and how much was recorded before it. */
     private var startedAt = 0L
+    private var before = 0L
 
     val active: Boolean get() = recorder != null
+
+    var paused = false
+        private set
+
+    /** How much has been recorded so far, not counting the pauses. */
+    val elapsedMillis: Long
+        get() = if (recorder == null) 0 else before + if (paused) 0 else SystemClock.elapsedRealtime() - startedAt
+
+    /** How loud it has been since this was last asked, from 0 to 1. For the moving bars. */
+    fun level(): Float = runCatching { (recorder?.maxAmplitude ?: 0) / 32767f }.getOrDefault(0f).coerceIn(0f, 1f)
+
+    /** Holds the recording where it is. */
+    fun pause() {
+        val running = recorder ?: return
+        if (paused || runCatching { running.pause() }.isFailure) return
+        before += SystemClock.elapsedRealtime() - startedAt
+        paused = true
+    }
+
+    /** Carries on after [pause]. */
+    fun resume() {
+        val running = recorder ?: return
+        if (!paused || runCatching { running.resume() }.isFailure) return
+        startedAt = SystemClock.elapsedRealtime()
+        paused = false
+    }
 
     /** Starts recording. Returns false when the microphone could not be opened. */
     fun start(): Boolean {
@@ -45,6 +73,8 @@ class VoiceRecorder(context: Context) {
             recorder = created
             file = target
             startedAt = SystemClock.elapsedRealtime()
+            before = 0
+            paused = false
             true
         } catch (_: Exception) {
             // The microphone is in use by a call, or the phone refused.
@@ -58,7 +88,7 @@ class VoiceRecorder(context: Context) {
     fun stop(): Recording? {
         val running = recorder ?: return null
         val target = file
-        val millis = SystemClock.elapsedRealtime() - startedAt
+        val millis = elapsedMillis
         recorder = null
         file = null
         // Stopping right after starting throws: nothing was recorded yet.

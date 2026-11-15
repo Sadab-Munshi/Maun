@@ -14,7 +14,14 @@ import org.maun.messenger.crypto.ContactCode
 import org.maun.messenger.ui.LoginScreen
 import org.maun.messenger.ui.LoginUi
 import org.maun.messenger.ui.MyCodeScreen
+import org.maun.messenger.ui.CallScreen
 import org.maun.messenger.ui.PendingScreen
+import org.maun.messenger.ui.RecordingBar
+import org.maun.messenger.webrtc.CallUi
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
 import org.maun.messenger.ui.SettingUpScreen
 import org.maun.messenger.voice.VoiceState
 import androidx.compose.runtime.Composable
@@ -138,7 +145,7 @@ class ScreensTest {
         SettingsScreen(
             memberEmail = memberEmail,
             username = username,
-            version = "0.8.0",
+            version = "0.9.0",
             relayName = "maun.example.workers.dev",
             relay = RelayState.Online,
             delivery = DeliveryUi(pushApp = "Google's push service", google = true),
@@ -332,6 +339,39 @@ class ScreensTest {
     @Test
     @Config(qualifiers = "+night")
     fun chatWithVoiceDark() = shoot("chat-voice-dark") { ChatWithVoice() }
+
+    @Test
+    fun recording() = shoot("recording") {
+        // The bar that takes the place of the message field while a voice message is recorded.
+        val levels = List(44) { i -> ((i * 37) % 11) / 10f * if (i % 7 == 0) 0.2f else 1f }
+        Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
+            RecordingBar(elapsedMillis = 7_000, levels = levels, paused = false, onDelete = {}, onPause = {}, onSend = {})
+            RecordingBar(elapsedMillis = 83_000, levels = levels, paused = true, onDelete = {}, onPause = {}, onSend = {})
+        }
+    }
+
+    private fun call(incoming: Boolean, phase: CallUi.Phase, connectedAt: Long = 0, muted: Boolean = false, speaker: Boolean = false, ended: String? = null) =
+        CallUi(peer = asha.id, incoming = incoming, phase = phase, connectedAt = connectedAt, muted = muted, speaker = speaker, ended = ended)
+
+    @Composable
+    private fun Call(call: CallUi) {
+        CallScreen(call = call, name = asha.name, onAccept = {}, onHangUp = {}, onMute = {}, onSpeaker = {}, now = { 1_000_000 })
+    }
+
+    @Test
+    fun callIncoming() = shoot("call-incoming") { Call(call(incoming = true, phase = CallUi.Phase.Ringing)) }
+
+    @Test
+    @Config(qualifiers = "+night")
+    fun callActive() = shoot("call-active-dark") {
+        Call(call(incoming = false, phase = CallUi.Phase.Active, connectedAt = 1_000_000 - 154_000, muted = true))
+    }
+
+    @Test
+    fun callOutgoing() = shoot("call-outgoing") { Call(call(incoming = false, phase = CallUi.Phase.Ringing, speaker = true)) }
+
+    @Test
+    fun callEnded() = shoot("call-ended") { Call(call(incoming = false, phase = CallUi.Phase.Ended, ended = "No answer")) }
 
     @Test
     fun settingUpFailed() = shoot("setting-up-failed") {

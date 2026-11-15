@@ -6,11 +6,14 @@ plugins {
 
 // Address of the relay the app uses. A fresh install makes its ID there
 // without asking. Building for another relay: -Pmaun.relayUrl=... or the
-// MAUN_RELAY_URL environment variable. Set to an empty string, the app asks
-// for the address on a welcome screen instead.
-val relayUrl: String = providers.gradleProperty("maun.relayUrl")
-    .orElse(providers.environmentVariable("MAUN_RELAY_URL"))
-    .getOrElse("https://maun.sadab.workers.dev")
+// MAUN_RELAY_URL environment variable. An empty value counts as not set (CI
+// passes an empty variable when the repository has none). The word "ask"
+// builds an app that asks for the address on a welcome screen instead.
+val relayUrl: String = (providers.gradleProperty("maun.relayUrl").orNull ?: providers.environmentVariable("MAUN_RELAY_URL").orNull)
+    ?.trim()
+    .orEmpty()
+    .ifEmpty { "https://maun.sadab.workers.dev" }
+    .let { if (it == "ask") "" else it }
 
 android {
     namespace = "org.maun.messenger"
@@ -23,14 +26,16 @@ android {
         applicationId = "org.maun.messenger"
         minSdk = 29 // Android 10: built-in Ogg/Opus recording, StrongBox API.
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.8.0"
+        versionCode = 11
+        versionName = "0.9.0"
 
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
 
         ndk {
             // Phones (arm) plus the standard emulator (x86_64).
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            // Phones only. Leaving out x86_64 (emulators) keeps the APK under 100 MB
+            // now that the calling library is in it.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
     }
 
@@ -149,6 +154,7 @@ dependencies {
     implementation(libs.work.runtime)
     implementation(libs.unifiedpush.connector)
     implementation(libs.unifiedpush.fcm)
+    implementation(libs.webrtc)
 
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 

@@ -1,6 +1,20 @@
 package org.maun.messenger
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import org.maun.messenger.ui.CallScreen
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -27,18 +41,65 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         AppLock.onCreate(this)
+        lifecycleScope.launch { messenger.calls.state.collect { showOverLockScreen(it != null) } }
+        if (savedInstanceState == null && intent?.action == ACTION_ANSWER) answer()
         setContent {
             MaunTheme {
                 // While locked, none of the app is drawn, and no conversation
                 // counts as read. Where the user was is kept for afterwards.
                 val screens = rememberSaveableStateHolder()
-                if (AppLock.locked) {
+                val call by messenger.calls.state.collectAsStateWithLifecycle()
+                val contacts by messenger.contacts.collectAsStateWithLifecycle()
+                val current = call
+                if (current != null) {
+                    // A call comes before everything, the app lock included:
+                    // it can be taken without unlocking, and shows nothing else.
+                    SideEffect(::reveal)
+                    CallScreen(
+                        call = current,
+                        name = contacts.firstOrNull { it.id == current.peer }?.name ?: "Unknown",
+                        onAccept = ::answer,
+                        onHangUp = messenger.calls::hangUp,
+                        onMute = messenger.calls::setMuted,
+                        onSpeaker = messenger.calls::setSpeaker,
+                    )
+                } else if (AppLock.locked) {
                     LockScreen(onShown = ::reveal, onUnlock = { AppLock.unlock(this) })
                 } else {
                     screens.SaveableStateProvider("app") { AppRoot() }
                 }
             }
         }
+    }
+
+    /** Takes the call that is ringing, once the microphone may be used. */
+    private fun answer() {
+        val allowed = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (allowed) messenger.calls.accept() else askForMic.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
+    private val askForMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            messenger.calls.accept()
+        } else {
+            Toast.makeText(this, "Maun needs the microphone for a call.", Toast.LENGTH_LONG).show()
+            messenger.calls.hangUp()
+        }
+    }
+
+    /** A call may show over the lock screen and wake the display; nothing else may. */
+    private fun showOverLockScreen(on: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(on)
+            setTurnScreenOn(on)
+        }
+        if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // "Answer" on the notification of a call that is ringing.
+        if (intent.action == ACTION_ANSWER) answer()
     }
 
     override fun onStart() {
@@ -75,7 +136,9 @@ class MainActivity : ComponentActivity() {
         content.visibility = View.VISIBLE
     }
 
-    private companion object {
-        const val REVEAL_AFTER_MILLIS = 500L
+    companion object {
+        /** Sent by the notification of a ringing call: open, and take it. */
+        const val ACTION_ANSWER = "org.maun.messenger.ANSWER"
+        private const val REVEAL_AFTER_MILLIS = 500L
     }
 }

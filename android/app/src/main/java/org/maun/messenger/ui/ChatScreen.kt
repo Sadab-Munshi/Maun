@@ -1,5 +1,14 @@
 package org.maun.messenger.ui
 
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.Canvas
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.draw.alpha
 import org.maun.messenger.voice.VoiceRecorder
 import kotlinx.coroutines.delay
@@ -128,6 +137,8 @@ fun ChatScreen(
     loading: Boolean = false,
     /** What someone who is not a contact calls themselves on this relay, if it has usernames. */
     peerUsername: String? = null,
+    /** Starts a voice call with this contact. Null where calls cannot be made. */
+    onCall: (() -> Unit)? = null,
     onLoadOlder: () -> Unit,
     onDelete: (Long) -> Unit,
     onBack: () -> Unit,
@@ -210,6 +221,7 @@ fun ChatScreen(
                     name = contactName ?: peerUsername?.let { "@$it" },
                     onBack = onBack,
                     onOpenDetails = if (isContact) onOpenDetails else null,
+                    onCall = if (isContact) onCall else null,
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
@@ -315,7 +327,7 @@ fun ChatScreen(
 private const val LOAD_AHEAD = 12
 
 @Composable
-private fun ChatHeader(peerId: String, name: String?, onBack: () -> Unit, onOpenDetails: (() -> Unit)?) {
+private fun ChatHeader(peerId: String, name: String?, onBack: () -> Unit, onOpenDetails: (() -> Unit)?, onCall: (() -> Unit)? = null) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -347,6 +359,20 @@ private fun ChatHeader(peerId: String, name: String?, onBack: () -> Unit, onOpen
                     maxLines = 1,
                 )
             }
+        }
+        if (onCall != null) {
+            // The microphone is asked for the first time a call is made.
+            val context = LocalContext.current
+            val askForMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                if (granted) onCall() else Toast.makeText(context, "Maun needs the microphone for a call.", Toast.LENGTH_LONG).show()
+            }
+            IconButton(
+                onClick = {
+                    val allowed = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                        PackageManager.PERMISSION_GRANTED
+                    if (allowed) onCall() else askForMic.launch(Manifest.permission.RECORD_AUDIO)
+                },
+            ) { Icon(MaunIcons.Call, contentDescription = "Voice call") }
         }
         if (onOpenDetails != null) {
             IconButton(onClick = onOpenDetails) { Icon(MaunIcons.Info, contentDescription = "Contact details") }
@@ -574,8 +600,8 @@ private fun Notice(text: String) {
 
 /**
  * Where a message is written. While the field is empty the button on the
- * right is a microphone: hold it to record a voice message, let go to send
- * it, or slide the finger to the left first to throw it away.
+ * right is a microphone: a tap starts recording a voice message, and the
+ * field makes way for [RecordingBar] until it is sent or thrown away.
  */
 @Composable
 private fun Composer(peerId: String, onSend: (String) -> Unit, onAttach: () -> Unit, onVoice: (File, Long) -> Unit) {
@@ -585,36 +611,45 @@ private fun Composer(peerId: String, onSend: (String) -> Unit, onAttach: () -> U
     val field = MaterialTheme.colorScheme.surfaceContainerHigh
 
     val context = LocalContext.current
-    val haptics = LocalHapticFeedback.current
     val recorder = remember { VoiceRecorder(context) }
     DisposableEffect(Unit) { onDispose { recorder.cancel() } }
     var recording by remember { mutableStateOf(false) }
-    var cancelling by remember { mutableStateOf(false) }
-    var seconds by remember { mutableIntStateOf(0) }
+    var paused by remember { mutableStateOf(false) }
+    var elapsed by remember { mutableLongStateOf(0L) }
+    val levels = remember { mutableStateListOf<Float>() }
     var hint by remember { mutableStateOf<String?>(null) }
-    var micAllowed by remember {
-        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
-    }
-    val askForMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        micAllowed = granted
-        hint = if (granted) "Now hold the button to record." else "Maun needs the microphone to record a voice message."
-    }
     val currentOnVoice by rememberUpdatedState(onVoice)
 
-    /** Ends the recording and sends it, unless it was only a tap. */
-    fun finish() {
-        if (!recorder.active) return
+    fun begin() {
+        if (recorder.start()) {
+            levels.clear()
+            elapsed = 0
+            paused = false
+            recording = true
+        } else {
+            hint = "The microphone could not be started. Is a call using it?"
+        }
+    }
+    fun send() {
         val done = recorder.stop()
         recording = false
-        if (done == null) hint = "Hold the button to record, let go to send." else currentOnVoice(done.file, done.millis)
+        if (done == null) hint = "That was too short to send." else currentOnVoice(done.file, done.millis)
     }
+    val askForMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) begin() else hint = "Maun needs the microphone to record a voice message."
+    }
+
+    // While recording: the clock and the moving bars.
     LaunchedEffect(recording) {
-        seconds = 0
         while (recording) {
-            delay(1000)
-            seconds++
+            delay(RECORDING_TICK_MILLIS)
+            elapsed = recorder.elapsedMillis
+            if (!recorder.paused) {
+                levels.add(recorder.level())
+                if (levels.size > RECORDING_BARS) levels.removeAt(0)
+            }
             // The longest a voice message can be: send what there is.
-            if (seconds * 1000L >= Attachment.MAX_VOICE_MILLIS) finish()
+            if (elapsed >= Attachment.MAX_VOICE_MILLIS) send()
         }
     }
     LaunchedEffect(hint) {
@@ -622,6 +657,29 @@ private fun Composer(peerId: String, onSend: (String) -> Unit, onAttach: () -> U
             delay(4000)
             hint = null
         }
+    }
+    // Back throws the recording away rather than leaving the conversation with it running.
+    BackHandler(enabled = recording) {
+        recorder.cancel()
+        recording = false
+    }
+
+    if (recording) {
+        RecordingBar(
+            elapsedMillis = elapsed,
+            levels = levels,
+            paused = paused,
+            onDelete = {
+                recorder.cancel()
+                recording = false
+            },
+            onPause = {
+                if (paused) recorder.resume() else recorder.pause()
+                paused = recorder.paused
+            },
+            onSend = ::send,
+        )
+        return
     }
 
     Column(modifier = Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 8.dp)) {
@@ -635,53 +693,29 @@ private fun Composer(peerId: String, onSend: (String) -> Unit, onAttach: () -> U
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Bottom) {
-            IconButton(onClick = onAttach, enabled = !recording, modifier = Modifier.padding(bottom = 4.dp).size(48.dp)) {
+            IconButton(onClick = onAttach, modifier = Modifier.padding(bottom = 4.dp).size(48.dp)) {
                 Icon(MaunIcons.Attach, contentDescription = "Send a file", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Box(modifier = Modifier.weight(1f)) {
-                // The field stays where it is while recording, only out of sight:
-                // taking it away would close the keyboard under the finger.
-                TextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    modifier = Modifier.fillMaxWidth().alpha(if (recording) 0f else 1f),
-                    placeholder = { Text("Message") },
-                    maxLines = 5,
-                    isError = tooLong,
-                    readOnly = recording,
-                    shape = RoundedCornerShape(26.dp),
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                    // A plain rounded field: no line underneath in any state.
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = field,
-                        unfocusedContainerColor = field,
-                        errorContainerColor = field,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        errorIndicatorColor = Color.Transparent,
-                        disabledIndicatorColor = Color.Transparent,
-                    ),
-                )
-                if (recording) {
-                    // Over the field: how long it has been, and how to get out of it.
-                    Surface(color = field, shape = RoundedCornerShape(26.dp), modifier = Modifier.matchParentSize()) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 18.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.error, modifier = Modifier.size(10.dp)) {}
-                            Text(formatDuration(seconds * 1000L), style = MaterialTheme.typography.bodyLarge)
-                            Text(
-                                text = if (cancelling) "Let go to cancel" else "Slide left to cancel",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (cancelling) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    }
-                }
-            }
+            TextField(
+                value = draft,
+                onValueChange = { draft = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Message") },
+                maxLines = 5,
+                isError = tooLong,
+                shape = RoundedCornerShape(26.dp),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                // A plain rounded field: no line underneath in any state.
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = field,
+                    unfocusedContainerColor = field,
+                    errorContainerColor = field,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    errorIndicatorColor = Color.Transparent,
+                    disabledIndicatorColor = Color.Transparent,
+                ),
+            )
             if (bytes > 0) {
                 FilledIconButton(
                     onClick = {
@@ -692,57 +726,91 @@ private fun Composer(peerId: String, onSend: (String) -> Unit, onAttach: () -> U
                     modifier = Modifier.padding(start = 4.dp, bottom = 4.dp).size(48.dp),
                 ) { Icon(MaunIcons.Send, contentDescription = "Send") }
             } else {
-                val cancelDistance = with(LocalDensity.current) { 72.dp.toPx() }
-                Box(
-                    modifier = Modifier
-                        .padding(start = 4.dp, bottom = 4.dp)
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(if (recording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
-                        .semantics { contentDescription = "Hold to record a voice message" }
-                        .pointerInput(micAllowed) {
-                            awaitEachGesture {
-                                val down = awaitFirstDown()
-                                down.consume()
-                                if (!micAllowed) {
-                                    askForMic.launch(Manifest.permission.RECORD_AUDIO)
-                                    return@awaitEachGesture
-                                }
-                                if (!recorder.start()) {
-                                    hint = "The microphone could not be started. Is a call using it?"
-                                    return@awaitEachGesture
-                                }
-                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                cancelling = false
-                                recording = true
-                                // Until the finger lifts, or the gesture is taken away.
-                                var held = true
-                                while (held) {
-                                    val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
-                                    if (change == null || !change.pressed) {
-                                        held = false
-                                    } else {
-                                        cancelling = change.position.x - down.position.x < -cancelDistance
-                                        change.consume()
-                                    }
-                                }
-                                if (cancelling) {
-                                    recorder.cancel()
-                                    recording = false
-                                } else {
-                                    finish()
-                                }
-                                cancelling = false
-                            }
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        MaunIcons.Mic,
-                        contentDescription = null,
-                        tint = if (recording) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary,
+                FilledIconButton(
+                    onClick = {
+                        val allowed = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                            PackageManager.PERMISSION_GRANTED
+                        if (allowed) begin() else askForMic.launch(Manifest.permission.RECORD_AUDIO)
+                    },
+                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp).size(48.dp),
+                ) { Icon(MaunIcons.Mic, contentDescription = "Record a voice message") }
+            }
+        }
+    }
+}
+
+private const val RECORDING_TICK_MILLIS = 100L
+private const val RECORDING_BARS = 44
+
+/**
+ * What stands in place of the message field while a voice message is being
+ * recorded: how long it is so far and how loud it has been, and under that
+ * the three things that can be done with it: throw it away, pause it, send it.
+ */
+@Composable
+fun RecordingBar(
+    elapsedMillis: Long,
+    levels: List<Float>,
+    paused: Boolean,
+    onDelete: () -> Unit,
+    onPause: () -> Unit,
+    onSend: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text(
+                text = formatDuration(elapsedMillis),
+                style = MaterialTheme.typography.headlineSmall,
+                color = colors.onSurface,
+                modifier = Modifier.semantics { contentDescription = "Recording, ${formatDuration(elapsedMillis)}" },
+            )
+            // One bar for each tenth of a second, the newest on the right.
+            val bar = if (paused) colors.outline else colors.primary
+            Canvas(modifier = Modifier.weight(1f).height(32.dp)) {
+                val width = 3.dp.toPx()
+                val step = width + 2.dp.toPx()
+                var x = size.width - width
+                for (i in levels.indices.reversed()) {
+                    if (x < 0) break
+                    // Quiet speech is far from the top of the scale; the root brings it into view.
+                    val height = (kotlin.math.sqrt(levels[i]) * size.height).coerceIn(width, size.height)
+                    drawRoundRect(
+                        color = bar,
+                        topLeft = Offset(x, (size.height - height) / 2),
+                        size = Size(width, height),
+                        cornerRadius = CornerRadius(width / 2),
                     )
+                    x -= step
                 }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            FilledIconButton(
+                onClick = onDelete,
+                colors = IconButtonDefaults.filledIconButtonColors(containerColor = colors.errorContainer, contentColor = colors.onErrorContainer),
+                modifier = Modifier.size(52.dp),
+            ) { Icon(MaunIcons.Delete, contentDescription = "Delete the recording") }
+            Surface(
+                onClick = onPause,
+                color = colors.surfaceContainerHigh,
+                shape = RoundedCornerShape(26.dp),
+                modifier = Modifier.weight(1f).height(52.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(if (paused) MaunIcons.Mic else MaunIcons.Pause, contentDescription = null, tint = colors.onSurface)
+                    Text(if (paused) "Resume" else "Pause", style = MaterialTheme.typography.titleMedium, color = colors.onSurface)
+                }
+            }
+            FilledIconButton(onClick = onSend, modifier = Modifier.size(52.dp)) {
+                Icon(MaunIcons.Send, contentDescription = "Send the voice message")
             }
         }
     }
