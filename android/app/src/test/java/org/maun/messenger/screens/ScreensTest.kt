@@ -21,6 +21,8 @@ import org.maun.messenger.webrtc.CallUi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import org.maun.messenger.ui.SettingUpScreen
 import org.maun.messenger.voice.VoiceState
@@ -344,9 +346,12 @@ class ScreensTest {
     fun recording() = shoot("recording") {
         // The bar that takes the place of the message field while a voice message is recorded.
         val levels = List(44) { i -> ((i * 37) % 11) / 10f * if (i % 7 == 0) 0.2f else 1f }
-        Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
-            RecordingBar(elapsedMillis = 7_000, levels = levels, paused = false, onDelete = {}, onPause = {}, onSend = {})
-            RecordingBar(elapsedMillis = 83_000, levels = levels, paused = true, onDelete = {}, onPause = {}, onSend = {})
+        // On the app's background, as it stands under a conversation.
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Column(verticalArrangement = Arrangement.Bottom) {
+                RecordingBar(elapsedMillis = 7_000, levels = levels, paused = false, onDelete = {}, onPause = {}, onSend = {})
+                RecordingBar(elapsedMillis = 83_000, levels = levels, paused = true, onDelete = {}, onPause = {}, onSend = {})
+            }
         }
     }
 
