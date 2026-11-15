@@ -10,7 +10,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -111,6 +113,9 @@ class RelayConnection(
 
     private var job: Job? = null
 
+    /** The connection [stop] ended last, which may still be closing. */
+    private var stopped: Job? = null
+
     @Volatile
     private var live: WebSocket? = null
 
@@ -124,14 +129,30 @@ class RelayConnection(
     @Synchronized
     fun start() {
         if (job?.isActive == true) return
-        job = scope.launch { run() }
+        val before = stopped
+        stopped = null
+        job = scope.launch {
+            // Let the connection that was stopped finish tidying up first, so
+            // that its last words cannot be mistaken for this one's.
+            before?.join()
+            run()
+        }
     }
 
+    /**
+     * Drops the connection and stops reconnecting. By the time this returns,
+     * [onOffline] has been called if the connection had logged in.
+     */
     @Synchronized
     fun stop() {
-        job?.cancel()
+        val running = job ?: return
         job = null
+        running.cancel()
+        stopped = running
         _state.value = RelayState.Offline
+        // The cancelled connection reports this too, but only once it gets to
+        // run again. Whoever asked for the stop must not see a stale "online".
+        if (ready != null) onOffline()
     }
 
     /**
@@ -211,17 +232,24 @@ class RelayConnection(
                             }
                             "ready" -> {
                                 onLoggedIn()
-                                online = true
-                                ready = Ready(
-                                    fresh = frame.optBoolean("fresh"),
-                                    hasKeys = frame.optBoolean("keys"),
-                                    oneTimeKeys = frame.optInt("otks"),
-                                    hasPush = frame.optBoolean("push"),
-                                    queued = frame.optInt("queued"),
-                                )
-                                live = socket
-                                _state.value = RelayState.Online
-                                onOnline()
+                                val context = currentCoroutineContext()
+                                // Under the same lock as stop(): either the stop came first and
+                                // nobody is told "online", or it comes after and its "offline"
+                                // is the last word.
+                                synchronized(this) {
+                                    context.ensureActive()
+                                    online = true
+                                    ready = Ready(
+                                        fresh = frame.optBoolean("fresh"),
+                                        hasKeys = frame.optBoolean("keys"),
+                                        oneTimeKeys = frame.optInt("otks"),
+                                        hasPush = frame.optBoolean("push"),
+                                        queued = frame.optInt("queued"),
+                                    )
+                                    live = socket
+                                    _state.value = RelayState.Online
+                                    onOnline()
+                                }
                             }
                             "msg" -> if (online) onFrame(frame)
                             "error" -> if (!online) refusal = frame.optString("code")
