@@ -11,7 +11,8 @@ App name: **Maun** (Hindi/Sanskrit for "silence"). Package ID: `org.maun.messeng
 | M1. Identity and login | **Done.** Two phones registered and added each other by QR. |
 | M2. Text messaging | **Done.** Two phones exchanged messages both ways, with Sent, Delivered and Read. |
 | M3. Background delivery | **Built, tested in CI and deployed (app 0.3.1, relay still protocol 2). "Stay connected" works on a phone. Waking through Google's push service is waiting for the two-phone check.** |
-| M4 to M6 | Not started |
+| App 0.4.0: look and small features | **Built and tested in CI.** New look (chat list, bubbles, ticks, day lines, light and dark); delete and copy a message; older messages load on scrolling back; rename a contact; safety number; app lock; screenshot blocking; a Settings screen. No change to the relay or the database. App lock, safety number and screenshot blocking were planned for M6 and are done early. Checked on rendered pictures of the screens (the Screens workflow), not yet on a phone. |
+| M4 to M6 | Not started. M4 is waiting for a decision on where files are kept (R2 needs a payment method on the Cloudflare account). |
 
 ### M3 results
 
@@ -275,7 +276,7 @@ Order: prove the risky pieces first, then text, then background delivery, then m
 ### M6. Hardening and release (medium)
 
 - Key Attestation at registration; full rate limits and quotas.
-- App lock; safety-number screen so two users can verify each other's keys; screenshot blocking option.
+- ~~App lock; safety-number screen so two users can verify each other's keys; screenshot blocking option.~~ Done in app 0.4.0.
 - Signed release workflow on version tags; privacy text; short threat-model document.
 
 **Done when:** a tagged build produces a signed APK on GitHub Releases, and a fresh install passes an end-to-end checklist covering every feature in the overview.

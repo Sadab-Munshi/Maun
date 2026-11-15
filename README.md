@@ -7,11 +7,12 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 
-## Status: Milestone 3 (background delivery)
+## Status: app 0.4.0, after milestone 3 (background delivery)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
-messages while the app is closed. Voice notes, files and calls are not built
-yet.
+messages while the app is closed. The app can be locked behind the phone's
+fingerprint or screen lock, and two people can compare a safety number to be
+sure of each other. Voice notes, files and calls are not built yet.
 
 | Piece | Where |
 |---|---|
@@ -25,6 +26,8 @@ yet.
 | Wake-ups for a phone that is not connected: encrypted, signed, content-free | `backend/src/crypto/webpush.ts`, `backend/src/mailbox.ts` |
 | Being woken by Google's push service or a push app, fetching, notifying | `android/.../push/` |
 | "Stay connected" for phones without a push app | `android/.../push/ConnectedService.kt` |
+| App lock, hiding Maun in recent apps, blocking screenshots | `android/.../AppLock.kt` |
+| Safety number for checking a contact | `android/.../crypto/SafetyNumber.kt` |
 | Rate limits and mailbox caps | `backend/src/index.ts`, `backend/src/protocol.ts`, `backend/wrangler.toml` |
 | CI: tests the relay, runs the app's messaging code against it, builds the APK | `.github/workflows/` |
 
@@ -104,13 +107,17 @@ Android 10 or newer. Android will ask you to allow installing from this source.
 On each of two phones:
 
 1. Open **Maun (debug)**, type the relay address, and tap **Create my ID**.
-   The home screen should show "Connected and signed in".
-2. On one phone tap **My code**; on the other tap **Add contact** and point
-   the camera at the code. Give the contact a name.
+   The home screen opens; it says so only when it is *not* connected.
+2. On one phone tap the code symbol at the top; on the other tap
+   **Add contact** and point the camera at the code. Give the contact a name.
 3. Repeat the other way round, so both phones have each other.
-4. Tap the contact and write. Under each of your messages the app shows
-   **Sent** (the relay has it), **Delivered** (their phone has it) and
-   **Read** (they opened the conversation).
+4. Tap the contact and write. Next to the time of each of your messages is a
+   clock (not sent yet), one tick (the relay has it), two ticks (their phone
+   has it) or two blue ticks (they opened the conversation).
+5. Hold a message to copy it or to delete it from this phone.
+6. Tap the name at the top of a conversation to rename the contact or to
+   compare the **safety number** with them. Both phones show the same 60
+   digits; if they match, nobody swapped the ID on the way.
 
 If only one of you has added the other, the message shows up on the other
 phone as a **message request**, which can be accepted or blocked.
@@ -118,8 +125,11 @@ phone as a **message request**, which can be accepted or blocked.
 Messages arrive while the app is open. If the other phone is off or the app is
 closed, the relay keeps the encrypted message until that phone opens Maun.
 
-**Setup check** at the bottom of the home screen re-runs the hardware,
-storage, encryption and relay checks at any time.
+The gear at the top opens **Settings**: how messages arrive while Maun is
+closed, **App lock** (the phone's fingerprint, face or screen lock every time
+Maun is opened; it is a door, the messages are encrypted on the phone either
+way), **Block screenshots**, blocked people, and the **Setup check**, which
+re-runs the hardware, storage, encryption and relay checks at any time.
 
 An ID lives only on the phone that made it. Uninstalling the app, or clearing
 its data, destroys the ID for good.
@@ -168,6 +178,12 @@ The connection and messaging tests need a relay: start
 `MAUN_TEST_RELAY_URL=http://127.0.0.1:8787`. Without it they are skipped. CI
 always runs them. (The script is the normal relay with the per-address
 connection limits lifted, because every test phone connects from one address.)
+
+To look at the screens without a phone, the **Screens** workflow draws the
+main ones with made-up people and keeps the pictures as the artifact
+`screens`. It runs when anything under `ui/` changes. The same locally:
+`./gradlew :app:testDebugUnitTest -Pmaun.screens=true`, pictures in
+`app/build/screens`. Nothing is compared, so it cannot fail on looks.
 
 When the database changes, the build writes a new file under
 `android/app/schemas/`. Commit it: upgrades are generated from those files.
