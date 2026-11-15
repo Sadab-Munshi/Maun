@@ -23,7 +23,7 @@ yet.
 | Sending, receiving, Sent / Delivered / Read, message requests, blocking | `android/.../ChatEngine.kt` |
 | Offline queue that deletes each message once it is collected | `backend/src/mailbox.ts` |
 | Wake-ups for a phone that is not connected: encrypted, signed, content-free | `backend/src/crypto/webpush.ts`, `backend/src/mailbox.ts` |
-| Being woken by a push app (UnifiedPush), fetching, notifying | `android/.../push/` |
+| Being woken by Google's push service or a push app, fetching, notifying | `android/.../push/` |
 | "Stay connected" for phones without a push app | `android/.../push/ConnectedService.kt` |
 | Rate limits and mailbox caps | `backend/src/index.ts`, `backend/src/protocol.ts`, `backend/wrangler.toml` |
 | CI: tests the relay, runs the app's messaging code against it, builds the APK | `.github/workflows/` |
@@ -31,8 +31,8 @@ yet.
 What the relay stores: per account, the public half of the login key and the
 public pre-keys others need to start a conversation; per waiting message, the
 encrypted bytes, the sender's ID and the arrival time, until the recipient's
-phone collects it or 30 days pass; and, if the phone left one, the address of
-its push app's server. It has no names, no phone numbers, no contact lists and
+phone collects it or 30 days pass; and, if the phone left one, the address at
+which its push service takes wake-ups. It has no names, no phone numbers, no contact lists and
 no message history.
 
 What it can see: which ID sends to which, and when. It cannot read messages or
@@ -40,18 +40,26 @@ tell a message from a read receipt.
 
 ### Messages while the app is closed
 
-Maun does not use Google's push service. Pick one:
+When a message arrives for a phone that is not connected, the relay sends a
+wake-up: encrypted, signed, and saying nothing but "wake". Maun then connects,
+fetches, and shows a notification without the message text. Who carries the
+wake-up to the phone:
 
-- **A push app (recommended).** Install [Sunup](https://f-droid.org/packages/org.unifiedpush.distributor.sunup/)
+- **Google's push service (the default).** The one most Android apps use.
+  Nothing to install, nothing of Maun running. Maun asks Google Play services
+  on the phone for a standard Web Push address; there is no Firebase project
+  and no Google code in the app. Google learns that the phone has Maun, that
+  it was woken, and when; not who wrote or what. "Do not use Google" on the
+  home screen turns it off.
+- **A push app instead of Google.** Install [Sunup](https://f-droid.org/packages/org.unifiedpush.distributor.sunup/)
   from F-Droid, open it once and allow it to run in the background, then open
-  Maun. The relay asks Mozilla's push service to wake the phone; Maun then
-  connects and fetches. Mozilla learns that the phone was woken and when,
-  nothing else.
+  Maun. Maun uses it in place of Google, and Mozilla's push service carries
+  the wake-up.
 - **Stay connected.** A switch on Maun's home screen. Maun keeps its
   connection open behind a permanent notification. Nobody else is involved; it
   uses more battery.
 
-Without either, Maun looks for messages about once an hour.
+Without any of these, Maun looks for messages about once an hour.
 
 ntfy's public server (ntfy.sh) does not work with a relay on Cloudflare: it
 turns away the addresses all Cloudflare Workers share. ntfy with your own
