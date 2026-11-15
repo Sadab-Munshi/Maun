@@ -1,0 +1,56 @@
+name: Screens
+
+# Draws the app's main screens with made-up people and keeps the pictures as
+# an artifact, so a change to the look can be checked without a phone.
+# Nothing is compared: this never fails because of how a screen looks.
+
+on:
+  push:
+    branches: [main]
+    paths: ["android/app/src/main/java/org/maun/messenger/ui/**", "android/app/src/test/java/org/maun/messenger/screens/**", ".github/workflows/screens.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screens-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: android
+
+jobs:
+  draw:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Draw the screens
+        run: ./gradlew :app:testDebugUnitTest -Pmaun.screens=true
+
+      - name: List them
+        run: ls -la app/build/screens
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: screens
+          path: android/app/build/screens
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: screens-reports
+          path: |
+            android/app/build/reports
+            android/app/build/test-results

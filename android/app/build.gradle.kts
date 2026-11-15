@@ -68,6 +68,12 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        // The screen pictures are drawn by Android's own code running on the
+        // build machine, which needs the app's resources and manifest.
+        unitTests.isIncludeAndroidResources = true
+    }
+
     packaging {
         jniLibs {
             // A second copy of libsignal's native library, meant for its own tests.
@@ -83,6 +89,21 @@ android {
                 "META-INF/{AL2.0,LGPL2.1}",
             )
         }
+    }
+}
+
+// Pictures of the main screens, for looking at a change without a phone:
+//     ./gradlew :app:testDebugUnitTest -Pmaun.screens=true
+// writes them to app/build/screens. Without the flag those tests are left out,
+// and with it nothing else runs.
+val drawScreens: Boolean = providers.gradleProperty("maun.screens").isPresent
+
+tasks.withType<Test>().configureEach {
+    if (drawScreens) {
+        systemProperty("roborazzi.test.record", "true")
+        filter { includeTestsMatching("org.maun.messenger.screens.*") }
+    } else {
+        exclude("org/maun/messenger/screens/**")
     }
 }
 
@@ -133,4 +154,9 @@ dependencies {
     testImplementation(libs.junit)
     // Android's own org.json is only a stub on the JVM; tests need a real one.
     testImplementation(libs.json)
+    // Drawing the screens (see drawScreens above).
+    testImplementation(libs.robolectric)
+    testImplementation(libs.roborazzi)
+    testImplementation(libs.roborazzi.compose)
+    testImplementation(libs.androidx.test.core)
 }
