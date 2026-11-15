@@ -5,24 +5,17 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -44,10 +37,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import org.maun.messenger.BuildConfig
 
 @Composable
-fun SelfCheckScreen(viewModel: SelfCheckViewModel = viewModel()) {
+fun SelfCheckScreen(onBack: (() -> Unit)? = null, viewModel: SelfCheckViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     SelfCheckContent(
         state = state,
+        onBack = onBack,
         onRelayUrlChange = viewModel::onRelayUrlChange,
         onRun = viewModel::runChecks,
     )
@@ -56,6 +50,7 @@ fun SelfCheckScreen(viewModel: SelfCheckViewModel = viewModel()) {
 @Composable
 private fun SelfCheckContent(
     state: SelfCheckUiState,
+    onBack: (() -> Unit)?,
     onRelayUrlChange: (String) -> Unit,
     onRun: () -> Unit,
 ) {
@@ -65,67 +60,41 @@ private fun SelfCheckContent(
         onRun()
     }
 
-    Scaffold(contentWindowInsets = WindowInsets.safeDrawing) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState()),
-            contentAlignment = Alignment.TopCenter,
+    ScreenFrame(title = "Setup check", onBack = onBack) {
+        BodyText("Checks that this phone and your server can do everything Maun is built on.")
+
+        OutlinedTextField(
+            value = state.relayUrl,
+            onValueChange = onRelayUrlChange,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !state.running && !state.relayFixed,
+            singleLine = true,
+            label = { Text("Relay address") },
+            placeholder = { Text("maun.your-name.workers.dev") },
+            keyboardOptions = KeyboardOptions(
+                capitalization = KeyboardCapitalization.None,
+                autoCorrectEnabled = false,
+                keyboardType = KeyboardType.Uri,
+                imeAction = ImeAction.Go,
+            ),
+            keyboardActions = KeyboardActions(onGo = { run() }),
+        )
+
+        Button(
+            onClick = run,
+            enabled = !state.running,
+            modifier = Modifier.fillMaxWidth(),
         ) {
-            Column(
-                modifier = Modifier
-                    .widthIn(max = 560.dp)
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Text(
-                    text = "Setup check",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = "This first build has no chats yet. It checks that this phone and your " +
-                        "server can do everything Maun is built on.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                OutlinedTextField(
-                    value = state.relayUrl,
-                    onValueChange = onRelayUrlChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !state.running,
-                    singleLine = true,
-                    label = { Text("Relay address") },
-                    placeholder = { Text("maun-relay.your-name.workers.dev") },
-                    keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.None,
-                        autoCorrectEnabled = false,
-                        keyboardType = KeyboardType.Uri,
-                        imeAction = ImeAction.Go,
-                    ),
-                    keyboardActions = KeyboardActions(onGo = { run() }),
-                )
-
-                Button(
-                    onClick = run,
-                    enabled = !state.running,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(if (state.running) "Checking…" else "Run checks")
-                }
-
-                state.checks.forEach { CheckRow(it) }
-
-                Text(
-                    text = "Maun ${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_TYPE})",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text(if (state.running) "Checking…" else "Run checks")
         }
+
+        state.checks.forEach { CheckRow(it) }
+
+        Text(
+            text = "Maun ${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_TYPE})",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -206,7 +175,7 @@ private fun SelfCheckPreview() {
     MaunTheme {
         SelfCheckContent(
             state = SelfCheckUiState(
-                relayUrl = "maun-relay.example.workers.dev",
+                relayUrl = "maun.example.workers.dev",
                 checks = listOf(
                     CheckState(CheckId.DEVICE_KEY, CheckStatus.PASSED, "Held in the processor's secure area (TEE)"),
                     CheckState(CheckId.DATABASE, CheckStatus.WARNING, "Example caution"),
@@ -214,6 +183,7 @@ private fun SelfCheckPreview() {
                     CheckState(CheckId.RELAY, CheckStatus.FAILED, "Could not reach the relay"),
                 ),
             ),
+            onBack = {},
             onRelayUrlChange = {},
             onRun = {},
         )

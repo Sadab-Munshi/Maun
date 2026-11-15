@@ -3,11 +3,18 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Only to read another person's QR code. Asked for when the scanner opens. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
     <!--
         Backups are off everywhere: messages and keys must never leave the
         phone, and Keystore-wrapped data could not be restored anyway.
     -->
     <application
+        android:name=".MaunApp"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="false"

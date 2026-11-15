@@ -1,50 +1,9 @@
 import { SELF, env, evictDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { CLOSE_REPLACED } from "../src/mailbox";
 import { MAX_FRAME_BYTES, PROTOCOL_VERSION } from "../src/protocol";
+import { connect, makeDevice, makeIdentity, register } from "./helpers";
 
 const MAILBOX_A = "a".repeat(64);
-const MAILBOX_B = "b".repeat(64);
-
-/** Queues everything a socket receives so tests can await frames in order. */
-class Inbox {
-  private queue: string[] = [];
-  private waiters: ((value: string) => void)[] = [];
-  closed: Promise<{ code: number; reason: string }>;
-
-  constructor(readonly ws: WebSocket) {
-    ws.addEventListener("message", (event) => {
-      const text = typeof event.data === "string" ? event.data : "<binary>";
-      const waiter = this.waiters.shift();
-      if (waiter) waiter(text);
-      else this.queue.push(text);
-    });
-    this.closed = new Promise((resolve) => {
-      ws.addEventListener("close", (event) => resolve({ code: event.code, reason: event.reason }));
-    });
-    ws.accept();
-  }
-
-  next(): Promise<string> {
-    const queued = this.queue.shift();
-    if (queued !== undefined) return Promise.resolve(queued);
-    return new Promise((resolve) => this.waiters.push(resolve));
-  }
-
-  async nextJson(): Promise<Record<string, unknown>> {
-    return JSON.parse(await this.next());
-  }
-}
-
-async function connect(mailboxId: string): Promise<Inbox> {
-  const response = await SELF.fetch(`https://relay.test/v1/ws/${mailboxId}`, {
-    headers: { Upgrade: "websocket" },
-  });
-  expect(response.status).toBe(101);
-  const inbox = new Inbox(response.webSocket!);
-  expect(await inbox.nextJson()).toEqual({ t: "hello", proto: PROTOCOL_VERSION });
-  return inbox;
-}
 
 describe("http routes", () => {
   it("answers the health check", async () => {
@@ -73,10 +32,10 @@ describe("http routes", () => {
   });
 });
 
-describe("mailbox socket", () => {
+describe("logged-in socket", () => {
   it("echoes a frame back", async () => {
-    const inbox = await connect(MAILBOX_A);
-    inbox.ws.send(JSON.stringify({ t: "echo", id: "1", body: "namaste" }));
+    const inbox = await register(await makeIdentity(), await makeDevice());
+    inbox.sendJson({ t: "echo", id: "1", body: "namaste" });
     const reply = await inbox.nextJson();
     expect(reply).toMatchObject({ t: "echo", id: "1", body: "namaste" });
     expect(typeof reply.at).toBe("number");
@@ -84,54 +43,99 @@ describe("mailbox socket", () => {
   });
 
   it("reports bad frames without closing the socket", async () => {
-    const inbox = await connect(MAILBOX_A);
+    const inbox = await register(await makeIdentity(), await makeDevice());
 
     inbox.ws.send("not json");
     expect(await inbox.nextJson()).toEqual({ t: "error", code: "bad_frame" });
 
-    inbox.ws.send(JSON.stringify({ t: "echo", id: 1, body: "wrong id type" }));
+    inbox.sendJson({ t: "echo", id: 1, body: "wrong id type" });
     expect(await inbox.nextJson()).toEqual({ t: "error", code: "bad_frame" });
 
     inbox.ws.send(new Uint8Array([1, 2, 3]));
     expect(await inbox.nextJson()).toEqual({ t: "error", code: "bad_frame" });
 
-    inbox.ws.send(JSON.stringify({ t: "launch" }));
+    inbox.sendJson({ t: "launch" });
     expect(await inbox.nextJson()).toEqual({ t: "error", code: "unknown_type" });
 
-    inbox.ws.send(JSON.stringify({ t: "echo", id: "big", body: "x".repeat(MAX_FRAME_BYTES) }));
+    inbox.sendJson({ t: "echo", id: "big", body: "x".repeat(MAX_FRAME_BYTES) });
     expect(await inbox.nextJson()).toEqual({ t: "error", code: "too_large" });
 
     // Multi-byte text is measured in bytes, not characters.
-    inbox.ws.send(JSON.stringify({ t: "echo", id: "big", body: "म".repeat(MAX_FRAME_BYTES / 2) }));
+    inbox.sendJson({ t: "echo", id: "big", body: "म".repeat(MAX_FRAME_BYTES / 2) });
     expect(await inbox.nextJson()).toEqual({ t: "error", code: "too_large" });
 
-    inbox.ws.send(JSON.stringify({ t: "echo", id: "2", body: "still open" }));
+    inbox.sendJson({ t: "login", sig: "AAAA" });
+    expect(await inbox.nextJson()).toEqual({ t: "error", code: "already_authenticated" });
+
+    inbox.sendJson({ t: "echo", id: "2", body: "still open" });
     expect(await inbox.nextJson()).toMatchObject({ t: "echo", id: "2" });
     inbox.ws.close(1000, "done");
   });
 
-  it("keeps mailboxes separate and replaces an older connection", async () => {
-    const first = await connect(MAILBOX_A);
-    const other = await connect(MAILBOX_B);
-    const second = await connect(MAILBOX_A);
+  it("keeps mailboxes separate", async () => {
+    const a = await register(await makeIdentity(), await makeDevice());
+    const b = await register(await makeIdentity(), await makeDevice());
 
-    expect((await first.closed).code).toBe(CLOSE_REPLACED);
-
-    other.ws.send(JSON.stringify({ t: "echo", id: "b", body: "b" }));
-    second.ws.send(JSON.stringify({ t: "echo", id: "a", body: "a" }));
-    expect(await other.nextJson()).toMatchObject({ id: "b" });
-    expect(await second.nextJson()).toMatchObject({ id: "a" });
-    other.ws.close(1000, "done");
-    second.ws.close(1000, "done");
+    b.sendJson({ t: "echo", id: "b", body: "b" });
+    a.sendJson({ t: "echo", id: "a", body: "a" });
+    expect(await b.nextJson()).toMatchObject({ id: "b" });
+    expect(await a.nextJson()).toMatchObject({ id: "a" });
+    a.ws.close(1000, "done");
+    b.ws.close(1000, "done");
   });
 
-  it("keeps the socket usable after the object is evicted from memory", async () => {
-    const inbox = await connect(MAILBOX_A);
-    const stub = env.MAILBOX.get(env.MAILBOX.idFromName(MAILBOX_A));
-    await evictDurableObject(stub);
+  it("stays logged in after the object is evicted from memory", async () => {
+    const identity = await makeIdentity();
+    const inbox = await register(identity, await makeDevice());
+    await evictDurableObject(env.MAILBOX.get(env.MAILBOX.idFromName(identity.mailboxId)));
 
-    inbox.ws.send(JSON.stringify({ t: "echo", id: "woke", body: "after hibernation" }));
+    inbox.sendJson({ t: "echo", id: "woke", body: "after hibernation" });
     expect(await inbox.nextJson()).toMatchObject({ t: "echo", id: "woke", body: "after hibernation" });
+    inbox.ws.close(1000, "done");
+  });
+});
+
+describe("rate limits", () => {
+  it("turns away a flood of connections from one address", async () => {
+    const ip = "203.0.113.7";
+    const statuses: number[] = [];
+    // Every one of these is to an address with no account: a possible sign-up.
+    for (let i = 0; i < 16; i++) {
+      const { mailboxId } = await makeIdentity();
+      const response = await SELF.fetch(`https://relay.test/v1/ws/${mailboxId}`, {
+        headers: { Upgrade: "websocket", "CF-Connecting-IP": ip },
+      });
+      statuses.push(response.status);
+      response.webSocket?.accept();
+      response.webSocket?.close(1000, "done");
+    }
+    expect(statuses[0]).toBe(101);
+    expect(statuses).toContain(429);
+  });
+
+  it("turns away a flood of connections to one mailbox", async () => {
+    const { mailboxId } = await makeIdentity();
+    const statuses: number[] = [];
+    for (let i = 0; i < 26; i++) {
+      // A different address each time: only the per-mailbox limit can trip.
+      const response = await SELF.fetch(`https://relay.test/v1/ws/${mailboxId}`, {
+        headers: { Upgrade: "websocket", "CF-Connecting-IP": `203.0.114.${i + 1}` },
+      });
+      statuses.push(response.status);
+      response.webSocket?.accept();
+      response.webSocket?.close(1000, "done");
+    }
+    expect(statuses[0]).toBe(101);
+    expect(statuses).toContain(429);
+    const refused = await SELF.fetch(`https://relay.test/v1/ws/${mailboxId}`, {
+      headers: { Upgrade: "websocket", "CF-Connecting-IP": "203.0.114.200" },
+    });
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("Retry-After")).toBe("60");
+  });
+
+  it("does not limit a different address or mailbox", async () => {
+    const { inbox } = await connect((await makeIdentity()).mailboxId);
     inbox.ws.close(1000, "done");
   });
 });

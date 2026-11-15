@@ -1,6 +1,7 @@
 package org.maun.messenger.network
 
 import kotlinx.coroutines.runBlocking
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
@@ -25,37 +26,38 @@ class RelayClientTest {
         assertNull(normal("https://"))
     }
 
-    /**
-     * Talks to a real relay. Skipped unless MAUN_TEST_RELAY_URL is set, e.g. to
-     * http://127.0.0.1:8787 while `npm run dev` is running in /backend.
-     */
     @Test
-    fun `echo round trip against a running relay`() = runBlocking {
-        val relayUrl = System.getenv("MAUN_TEST_RELAY_URL")
-        assumeTrue("MAUN_TEST_RELAY_URL not set", !relayUrl.isNullOrBlank())
-
-        val millis = RelayClient().echo(relayUrl!!, "c".repeat(64), body = "नमस्ते from the JVM")
-        assertTrue(millis >= 0)
-        Unit
+    fun `the socket address is built from the relay and the ID`() {
+        val id = "ab".repeat(32)
+        assertEquals(
+            "https://relay.example.dev/v1/ws/$id",
+            RelayClient.socketUrl("https://relay.example.dev/".toHttpUrl(), id).toString(),
+        )
     }
 
     @Test
-    fun `a bad mailbox id is reported as a relay error`() = runBlocking {
-        val relayUrl = System.getenv("MAUN_TEST_RELAY_URL")
-        assumeTrue("MAUN_TEST_RELAY_URL not set", !relayUrl.isNullOrBlank())
-
-        val error = assertThrows(RelayException::class.java) {
-            runBlocking { RelayClient().echo(relayUrl!!, "not-a-key", body = "x") }
-        }
-        assertTrue(error.message, error.message!!.contains("400"))
-        Unit
+    fun `a protocol mismatch says which side to update`() {
+        assertNull(RelayClient.protocolProblem(RelayClient.PROTOCOL_VERSION))
+        assertTrue(RelayClient.protocolProblem(RelayClient.PROTOCOL_VERSION - 1)!!.contains("Update the relay"))
+        assertTrue(RelayClient.protocolProblem(RelayClient.PROTOCOL_VERSION + 1)!!.contains("Update the app"))
     }
 
     @Test
     fun `an unreachable address is reported clearly`() {
         val error = assertThrows(RelayException::class.java) {
-            runBlocking { RelayClient().echo("http://127.0.0.1:9", "c".repeat(64), body = "x") }
+            runBlocking { RelayClient().checkHealth("http://127.0.0.1:9/".toHttpUrl()) }
         }
         assertTrue(error.message, error.message!!.startsWith("Could not reach the relay"))
+    }
+
+    /**
+     * Talks to a real relay. Skipped unless MAUN_TEST_RELAY_URL is set, e.g. to
+     * http://127.0.0.1:8787 while `npm run dev` is running in /backend.
+     */
+    @Test
+    fun `a running relay passes the health check`() = runBlocking {
+        val relayUrl = System.getenv("MAUN_TEST_RELAY_URL")
+        assumeTrue("MAUN_TEST_RELAY_URL not set", !relayUrl.isNullOrBlank())
+        RelayClient().checkHealth(relayUrl!!.toHttpUrl())
     }
 }

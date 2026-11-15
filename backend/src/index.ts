@@ -1,3 +1,4 @@
+import { tooManyRequests } from "./mailbox";
 import { PROTOCOL_VERSION, isMailboxId } from "./protocol";
 
 export { Mailbox } from "./mailbox";
@@ -21,6 +22,15 @@ export default {
       if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
         return new Response("expected websocket", { status: 426 });
       }
+
+      // Checked here so that a flood is turned away before it reaches (and is
+      // billed to) a mailbox. The address is used as a counter key only.
+      const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+      const fromAddress = await env.CONNECT_LIMIT.limit({ key: ip });
+      if (!fromAddress.success) return tooManyRequests();
+      const toMailbox = await env.MAILBOX_LIMIT.limit({ key: mailboxId });
+      if (!toMailbox.success) return tooManyRequests();
+
       const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
       return stub.fetch(request);
     }

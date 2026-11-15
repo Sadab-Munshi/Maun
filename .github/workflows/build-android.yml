@@ -7,9 +7,9 @@ name: Android
 on:
   push:
     branches: [main]
-    paths: ["android/**", ".github/workflows/build-android.yml"]
+    paths: ["android/**", "backend/src/**", "backend/wrangler.toml", ".github/workflows/build-android.yml"]
   pull_request:
-    paths: ["android/**", ".github/workflows/build-android.yml"]
+    paths: ["android/**", "backend/src/**", "backend/wrangler.toml", ".github/workflows/build-android.yml"]
   workflow_dispatch:
 
 permissions:
@@ -49,8 +49,45 @@ jobs:
           echo "Installing NDK $ndk"
           echo y | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$ndk" > /dev/null
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Start a local relay
+        # The app's connection tests register and log in against the real relay
+        # code, running in Cloudflare's local runtime. Nothing is deployed.
+        working-directory: backend
+        run: |
+          npm ci
+          nohup npx wrangler dev --ip 127.0.0.1 --port 8787 > "$RUNNER_TEMP/relay.log" 2>&1 &
+          for _ in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8787/health; then
+              echo
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::The local relay did not start"
+          cat "$RUNNER_TEMP/relay.log"
+          exit 1
+
       - name: Unit tests
+        env:
+          MAUN_TEST_RELAY_URL: http://127.0.0.1:8787
         run: ./gradlew :app:testDebugUnitTest
+
+      - name: Check that the connection tests really ran
+        # They skip themselves when no relay is configured. Here one is, so a
+        # skip would mean the app and the relay were never tested together.
+        run: |
+          report=app/build/test-results/testDebugUnitTest/TEST-org.maun.messenger.network.RelayConnectionTest.xml
+          grep -o '<testsuite [^>]*>' "$report"
+          if ! grep -q 'skipped="0"' "$report"; then
+            echo "::error::Connection tests were skipped"
+            exit 1
+          fi
 
       - name: Lint
         run: ./gradlew :app:lintDebug
