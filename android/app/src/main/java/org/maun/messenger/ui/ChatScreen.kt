@@ -109,6 +109,10 @@ fun ChatScreen(
     onSend: (String) -> Unit,
     onSeen: () -> Unit,
     files: FileActions = FileActions(),
+    /** The messages have not been read from storage yet; say nothing about them until they have. */
+    loading: Boolean = false,
+    /** What someone who is not a contact calls themselves on this relay, if it has usernames. */
+    peerUsername: String? = null,
     onLoadOlder: () -> Unit,
     onDelete: (Long) -> Unit,
     onBack: () -> Unit,
@@ -188,7 +192,7 @@ fun ChatScreen(
             Column(modifier = Modifier.widthIn(max = 720.dp).fillMaxSize()) {
                 ChatHeader(
                     peerId = peerId,
-                    name = contactName,
+                    name = contactName ?: peerUsername?.let { "@$it" },
                     onBack = onBack,
                     onOpenDetails = if (isContact) onOpenDetails else null,
                 )
@@ -218,7 +222,9 @@ fun ChatScreen(
                         }
                         // Above the oldest message that is loaded.
                         item(key = "top", contentType = "top") {
-                            if (hasOlder) {
+                            if (loading) {
+                                Unit
+                            } else if (hasOlder) {
                                 Pill("Loading earlier messages…")
                             } else {
                                 Pill(

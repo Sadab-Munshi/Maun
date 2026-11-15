@@ -42,6 +42,7 @@ fun SettingsScreen(
     privacy: PrivacyUi,
     blockedCount: Int,
     memberEmail: String? = null,
+    username: String? = null,
     onChoosePushApp: (String) -> Unit,
     onGooglePush: (Boolean) -> Unit,
     onStayConnected: (Boolean) -> Unit,
@@ -102,9 +103,10 @@ fun SettingsScreen(
             if (memberEmail != null) {
                 InfoRow(
                     icon = MaunIcons.Mail,
-                    title = "Logged in as $memberEmail",
-                    text = "This relay is for approved members. Its owner can see this address, the ID it " +
-                        "belongs to, and which phone you use (its make, model and a fingerprint of it). " +
+                    title = if (username != null) "@$username" else "Logged in",
+                    text = "Logged in as $memberEmail. This relay is for members. Its administrator can see " +
+                        "this address, your username and ID, and which phone you use (its make, model and a " +
+                        "fingerprint of it). " +
                         "Your messages stay unreadable to the relay and its owner.",
                 )
             }
@@ -119,6 +121,7 @@ fun SettingsScreen(
                     is RelayState.Rejected -> relay.reason
                     is RelayState.LoginNeeded -> "The relay asks you to log in."
                     RelayState.Banned -> "The relay no longer accepts this account."
+                    RelayState.Pending -> "Waiting for the relay's administrator."
                 },
             )
         }

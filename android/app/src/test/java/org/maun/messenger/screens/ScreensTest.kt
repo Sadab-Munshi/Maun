@@ -10,7 +10,11 @@ import java.util.Base64
 import org.maun.messenger.Attachment
 import org.maun.messenger.ui.BannedScreen
 import org.maun.messenger.ui.FileActions
+import org.maun.messenger.crypto.ContactCode
 import org.maun.messenger.ui.LoginScreen
+import org.maun.messenger.ui.LoginUi
+import org.maun.messenger.ui.MyCodeScreen
+import org.maun.messenger.ui.PendingScreen
 import androidx.compose.runtime.Composable
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Test
@@ -128,10 +132,11 @@ class ScreensTest {
     }
 
     @Composable
-    private fun Settings(memberEmail: String? = null) {
+    private fun Settings(memberEmail: String? = null, username: String? = null) {
         SettingsScreen(
             memberEmail = memberEmail,
-            version = "0.5.0",
+            username = username,
+            version = "0.6.0",
             relayName = "maun.example.workers.dev",
             relay = RelayState.Online,
             delivery = DeliveryUi(pushApp = "Google's push service", google = true),
@@ -269,27 +274,43 @@ class ScreensTest {
 
     // ---- A member-only relay ---------------------------------------------------
 
-    @Test
-    fun login() = shoot("login") {
-        LoginScreen(relayName = "maun.example.workers.dev", relayUrl = "https://maun.example.workers.dev/", problem = null, onToken = {})
+    private val relayName = "maun.example.workers.dev"
+
+    @Composable
+    private fun Login(ui: LoginUi, checking: Boolean = false) {
+        LoginScreen(relayName, ui, checking, onEmail = {}, onCode = {}, onUsername = {}, onStartOver = {})
     }
 
     @Test
+    fun login() = shoot("login") { Login(LoginUi()) }
+
+    @Test
+    fun loginCode() = shoot("login-code") { Login(LoginUi(LoginUi.Step.Code, "asha@example.com")) }
+
+    @Test
     @Config(qualifiers = "+night")
-    fun loginRefused() = shoot("login-refused-dark") {
-        LoginScreen(
-            relayName = "maun.example.workers.dev",
-            relayUrl = "https://maun.example.workers.dev/",
-            problem = "That login was not accepted. It may have expired; please log in again.",
-            onToken = {},
-        )
+    fun loginCodeWrong() = shoot("login-code-wrong-dark") {
+        Login(LoginUi(LoginUi.Step.Code, "asha@example.com", problem = "That code is not right."))
+    }
+
+    @Test
+    fun loginUsername() = shoot("login-username") {
+        Login(LoginUi(LoginUi.Step.Username, "asha@example.com", problem = "Somebody already has that username."))
+    }
+
+    @Test
+    fun pending() = shoot("pending") { PendingScreen(relayName, "asha", checking = false, onCheckAgain = {}) }
+
+    @Test
+    fun myCodeWithUsername() = shoot("my-code-member") {
+        MyCodeScreen(code = ContactCode(asha.id, relayName), onBack = {}, username = "asha")
     }
 
     @Test
     fun banned() = shoot("banned") { BannedScreen(relayName = "maun.example.workers.dev", onCheckAgain = {}) }
 
     @Test
-    fun settingsOfAMember() = shoot("settings-member") { Settings(memberEmail = "asha@example.com") }
+    fun settingsOfAMember() = shoot("settings-member") { Settings(memberEmail = "asha@example.com", username = "asha") }
 
     @Test
     fun settings() = shoot("settings") { Settings() }

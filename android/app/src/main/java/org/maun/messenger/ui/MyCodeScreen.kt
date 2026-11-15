@@ -26,13 +26,19 @@ import org.maun.messenger.crypto.ContactCode
 
 /** The user's own code, as a QR to be scanned and as text to be sent. */
 @Composable
-fun MyCodeScreen(code: ContactCode, onBack: () -> Unit) {
+fun MyCodeScreen(code: ContactCode, onBack: () -> Unit, username: String? = null) {
     val context = LocalContext.current
     val text = remember(code) { code.encode() }
     var copied by remember { mutableStateOf(false) }
 
     ScreenFrame(title = "My code", onBack = onBack) {
-        BodyText("Ask the other person to open Add contact in Maun and point their camera here.")
+        if (username != null) {
+            Text("Your username", style = MaterialTheme.typography.titleMedium)
+            Text("@$username", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
+            BodyText("Members of this relay can add you by typing it. Or let them scan this code:")
+        } else {
+            BodyText("Ask the other person to open Add contact in Maun and point their camera here.")
+        }
 
         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             QrImage(

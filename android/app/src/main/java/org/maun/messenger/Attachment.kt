@@ -23,14 +23,20 @@ data class Attachment(
     val size: Long,
     /** Where the file is, as far as this phone is concerned. Never sent. */
     val state: Int = REMOTE,
+    /** A picture's size in pixels, the way it is shown; 0 when not known. Lets the screen keep room for it. */
+    val width: Int = 0,
+    val height: Int = 0,
 ) {
     val isImage: Boolean get() = mime in IMAGE_TYPES
 
     fun secretBytes(): ByteArray = Base64.getDecoder().decode(secret)
 
     /** The record that is sent to the other person. */
-    fun toWire(json: JSONObject = JSONObject()): JSONObject =
+    fun toWire(json: JSONObject = JSONObject()): JSONObject {
         json.put("key", key).put("secret", secret).put("name", name).put("mime", mime).put("size", size)
+        if (width > 0 && height > 0) json.put("w", width).put("h", height)
+        return json
+    }
 
     /** The record kept in the message row. */
     fun toLocal(): String = toWire().put("state", state).toString()
@@ -56,6 +62,8 @@ data class Attachment(
         private val KEY = Regex("^[0-9a-f]{64}$")
         private const val MAX_NAME_CHARS = 120
 
+        private fun side(json: JSONObject, name: String): Int = json.optInt(name, 0).coerceIn(0, 50_000)
+
         /** A file name that is safe to show and to suggest when saving. */
         fun cleanName(name: String): String {
             val cleaned = name.substringAfterLast('/').substringAfterLast('\\')
@@ -78,7 +86,7 @@ data class Attachment(
             }
             if (!secretOk) return null
             val mime = json.optString("mime").lowercase().take(100).ifEmpty { "application/octet-stream" }
-            return Attachment(key, secret, cleanName(json.optString("name")), mime, size, REMOTE)
+            return Attachment(key, secret, cleanName(json.optString("name")), mime, size, REMOTE, side(json, "w"), side(json, "h"))
         }
 
         /** Reads the record kept in a message row. */
@@ -91,6 +99,8 @@ data class Attachment(
                 mime = json.optString("mime"),
                 size = json.optLong("size"),
                 state = json.optInt("state", REMOTE),
+                width = side(json, "w"),
+                height = side(json, "h"),
             )
         } catch (_: JSONException) {
             null

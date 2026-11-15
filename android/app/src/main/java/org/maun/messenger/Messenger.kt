@@ -4,7 +4,9 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import org.json.JSONObject
+import org.maun.messenger.network.AuthApi
 import org.maun.messenger.network.FileApi
+import org.maun.messenger.network.Usernames
 import org.maun.messenger.security.DeviceFingerprint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -107,6 +109,23 @@ class Messenger(context: Context) {
     /** On a member-only relay: the email address this ID is tied to. Null on an open relay. */
     val memberEmail: StateFlow<String?> = _memberEmail.asStateFlow()
 
+    private val _username = MutableStateFlow<String?>(null)
+
+    /** On a member-only relay: this account's username. */
+    val username: StateFlow<String?> = _username.asStateFlow()
+
+    private val _awaiting = MutableStateFlow(false)
+
+    /** The email login is done and the relay's administrator has not approved this account yet. */
+    val awaitingApproval: StateFlow<Boolean> = _awaiting.asStateFlow()
+
+    /** The relay's login routes, and the ticket of a login that still needs a username. */
+    @Volatile
+    private var auth: AuthApi? = null
+
+    @Volatile
+    private var unnamedTicket: String? = null
+
     private val _banned = MutableStateFlow(false)
 
     /** The relay's owner has shut this member out. Nothing connects while this is set. */
@@ -178,6 +197,10 @@ class Messenger(context: Context) {
                 val db = AppDatabase.open(appContext)
                 val row = db.account().get()
                 database = db
+                // Read once before anything is shown, so that the first screen
+                // is the real list and not an empty one that fills in later.
+                _contacts.value = db.contacts().observeAll().first()
+                _chats.value = db.chat().observeChats().first()
                 scope.launch { db.contacts().observeAll().collect { _contacts.value = it } }
                 scope.launch {
                     db.chat().observeChats().collect {
@@ -267,6 +290,9 @@ class Messenger(context: Context) {
         accessToken = savedToken
         _memberEmail.value = savedEmail
         _banned.value = wasBanned
+        _username.value = withContext(Dispatchers.IO) { db.meta().get(KEY_USERNAME)?.ifEmpty { null } }
+        _awaiting.value = withContext(Dispatchers.IO) { db.meta().get(KEY_AWAITING) == "1" }
+        auth = AuthApi(relayUrl)
         val chatScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
         val chat = ChatEngine(
             selfId = identity.id,
@@ -298,7 +324,7 @@ class Messenger(context: Context) {
             onOnline = {
                 chat.onOnline()
                 val ready = chat.link?.ready
-                scope.launch { onLoggedInAs(db, chat, ready?.email) }
+                scope.launch { onLoggedInAs(db, chat, ready?.email, ready?.name) }
                 val relayKey = PushAddress.keyForPushApp(ready?.relayKey)
                 // Talks to another app; not something to do from inside the connection.
                 if (relayKey != null) scope.launch { Background.onRelayKey(appContext, relayKey) }
@@ -306,6 +332,7 @@ class Messenger(context: Context) {
             onFrame = chat::onFrame,
             onOffline = chat::onOffline,
             accessToken = { accessToken },
+            awaitingApproval = { _awaiting.value },
         )
         chat.link = created
         val transfers = FileTransfers(
@@ -333,10 +360,21 @@ class Messenger(context: Context) {
             connectionWatcher = scope.launch {
                 created.state.collect { state ->
                     _relay.value = state
-                    when {
-                        state == RelayState.Banned -> onBanned()
-                        // The token was shown and not taken: it is of no further use.
-                        state is RelayState.LoginNeeded && state.problem != null -> setAccessToken(null)
+                    when (state) {
+                        RelayState.Banned -> onBanned()
+                        // The ticket has been handed over; from here on the relay knows this phone.
+                        RelayState.Pending -> {
+                            setAccessToken(null)
+                            setAwaiting(true)
+                        }
+                        RelayState.Online -> setAwaiting(false)
+                        is RelayState.LoginNeeded -> {
+                            // A ticket that was shown and not taken is of no further use,
+                            // and a request the administrator refused is over.
+                            if (state.problem != null) setAccessToken(null)
+                            setAwaiting(false)
+                        }
+                        else -> Unit
                     }
                 }
             }
@@ -375,18 +413,104 @@ class Messenger(context: Context) {
         withContext(Dispatchers.IO) { database?.meta()?.put(MetaEntry(KEY_ACCESS_TOKEN, token.orEmpty())) }
     }
 
-    /**
-     * The login page has handed over proof of an approved email address.
-     * Stores it and connects again, this time showing it to the relay.
-     */
-    fun onAccessToken(token: String) {
-        scope.launch {
-            setAccessToken(token)
-            synchronized(this@Messenger) {
-                connection?.stop()
-                if (wanted()) connection?.start()
+    private suspend fun setAwaiting(on: Boolean) {
+        if (_awaiting.value == on) return
+        _awaiting.value = on
+        withContext(Dispatchers.IO) { database?.meta()?.put(MetaEntry(KEY_AWAITING, if (on) "1" else "")) }
+    }
+
+    /** What the login screen does next. */
+    sealed interface LoginStep {
+        /** The relay is being shown the ticket; the connection state says how that went. */
+        data object Done : LoginStep
+
+        /** A new member: a username has to be picked first. */
+        data object NeedsUsername : LoginStep
+
+        data class Problem(val message: String) : LoginStep
+    }
+
+    /** Asks the relay to send a login code to [email]. Returns why it could not, or null. */
+    suspend fun requestLoginCode(email: String): String? =
+        (auth ?: return NOT_READY).start(email.trim())
+
+    /** Hands in the code from the email. */
+    suspend fun submitLoginCode(email: String, code: String): LoginStep {
+        val api = auth ?: return LoginStep.Problem(NOT_READY)
+        return when (val answer = api.verify(email.trim(), code.filter { it.isDigit() })) {
+            is AuthApi.Verified.Problem -> LoginStep.Problem(answer.message)
+            is AuthApi.Verified.Ok ->
+                if (answer.username == null) {
+                    unnamedTicket = answer.ticket
+                    LoginStep.NeedsUsername
+                } else {
+                    presentTicket(answer.ticket)
+                    LoginStep.Done
+                }
+        }
+    }
+
+    /** A new member's choice of username. */
+    suspend fun chooseUsername(typed: String): LoginStep {
+        val api = auth ?: return LoginStep.Problem(NOT_READY)
+        val ticket = unnamedTicket ?: return LoginStep.Problem("That login has run out. Please start again.")
+        val name = Usernames.clean(typed)
+        if (!Usernames.isValid(name)) return LoginStep.Problem("A username has ${Usernames.RULE}")
+        api.name(ticket, name)?.let { return LoginStep.Problem(it) }
+        unnamedTicket = null
+        _username.value = name
+        presentTicket(ticket)
+        return LoginStep.Done
+    }
+
+    /** What looking a username up came to. */
+    sealed interface UserSearch {
+        data class Found(val id: String, val name: String) : UserSearch
+        data class Problem(val message: String) : UserSearch
+    }
+
+    /** Asks the relay which ID has the username [typed]. Only member-only relays have usernames. */
+    suspend fun findUser(typed: String): UserSearch {
+        val name = Usernames.clean(typed)
+        if (!Usernames.isValid(name)) return UserSearch.Problem("A username has ${Usernames.RULE}")
+        val own = (_account.value as? AccountState.Present)?.code?.id
+        val answer = try {
+            (engine?.link ?: return UserSearch.Problem(NOT_READY)).request(JSONObject().put("t", "find").put("name", name))
+        } catch (e: RelayException) {
+            return UserSearch.Problem("Not connected to the relay. Try again in a moment.")
+        }
+        val id = answer.optString("user")
+        return when {
+            answer.optString("t") != "found" || !ContactCode.isId(id) -> UserSearch.Problem("Nobody here has the username @$name.")
+            id == own -> UserSearch.Problem("That is your own username.")
+            else -> {
+                val existing = withContext(Dispatchers.IO) { database?.contacts()?.get(id) }
+                if (existing != null) UserSearch.Problem("@$name is already in your contacts as ${existing.name}.")
+                else UserSearch.Found(id, answer.optString("name").ifEmpty { name })
             }
         }
+    }
+
+    /** The username of the member with this ID, or null when the relay knows none. */
+    suspend fun usernameOf(id: String): String? = try {
+        val answer = engine?.link?.request(JSONObject().put("t", "find").put("user", id))
+        answer?.takeIf { it.optString("t") == "found" }?.optString("name")?.ifEmpty { null }
+    } catch (_: RelayException) {
+        null
+    }
+
+    /**
+     * The email login has produced a ticket. Stores it and connects again,
+     * this time showing it to the relay. Returns once the relay is being
+     * asked, so that the screen does not fall back to the login for a moment.
+     */
+    private suspend fun presentTicket(ticket: String) {
+        setAccessToken(ticket)
+        synchronized(this) {
+            connection?.stop()
+            if (wanted()) connection?.start()
+        }
+        withTimeoutOrNull(TICKET_SHOWN_WAIT_MILLIS) { _relay.first { it !is RelayState.LoginNeeded } }
     }
 
     /**
@@ -394,10 +518,14 @@ class Messenger(context: Context) {
      * token has done its job and is deleted, and the relay is told which
      * phone this is: once a day, and whenever the fingerprint has changed.
      */
-    private suspend fun onLoggedInAs(db: AppDatabase, chat: ChatEngine, email: String?) {
+    private suspend fun onLoggedInAs(db: AppDatabase, chat: ChatEngine, email: String?, name: String?) {
         if (_memberEmail.value != email) {
             _memberEmail.value = email
             withContext(Dispatchers.IO) { db.meta().put(MetaEntry(KEY_MEMBER_EMAIL, email.orEmpty())) }
+        }
+        if (_username.value != name) {
+            _username.value = name
+            withContext(Dispatchers.IO) { db.meta().put(MetaEntry(KEY_USERNAME, name.orEmpty())) }
         }
         if (email == null) return
         if (accessToken != null) setAccessToken(null)
@@ -468,6 +596,9 @@ class Messenger(context: Context) {
 
     suspend fun image(seq: Long, file: Attachment, maxPixels: Int): Bitmap? = files?.image(seq, file, maxPixels)
 
+    /** The same picture without waiting, if it has been shown since the app started. */
+    fun cachedImage(seq: Long, maxPixels: Int): Bitmap? = files?.cachedImage(seq, maxPixels)
+
     suspend fun saveFile(seq: Long, file: Attachment, target: Uri): Boolean = files?.saveTo(seq, file, target) == true
 
     fun clearFileProblem() {
@@ -484,7 +615,7 @@ class Messenger(context: Context) {
         pendingStop = null
         when {
             // A relay waiting for the email login is not asked again until
-            // there is a token to show it: see onAccessToken.
+            // there is a token to show it: see presentTicket.
             wanted() -> if (_relay.value !is RelayState.LoginNeeded) connection?.start()
             linger -> pendingStop = scope.launch {
                 delay(BACKGROUND_LINGER_MILLIS)
@@ -526,7 +657,7 @@ class Messenger(context: Context) {
      */
     suspend fun fetch(timeoutMillis: Long = FETCH_TIMEOUT_MILLIS): Boolean {
         val current = account.first { it !is AccountState.Loading }
-        if (current !is AccountState.Present || !current.registered || _banned.value) return true
+        if (current !is AccountState.Present || !current.registered || _banned.value || _awaiting.value) return true
         synchronized(this) {
             fetches++
             connectOrDrop()
@@ -708,6 +839,10 @@ class Messenger(context: Context) {
         private const val KEY_MEMBER_EMAIL = "member_email"
         private const val KEY_BANNED = "banned"
         private const val KEY_DEVICE_REPORTED = "device_reported"
+        private const val KEY_USERNAME = "username"
+        private const val KEY_AWAITING = "awaiting_approval"
+        private const val TICKET_SHOWN_WAIT_MILLIS = 3_000L
+        private const val NOT_READY = "Maun is not ready yet. Try again in a moment."
         private const val DAY_MILLIS = 24 * 60 * 60 * 1000L
         private const val ONLINE_WAIT_MILLIS = 20_000L
         private const val BACKGROUND_LINGER_MILLIS = 10_000L

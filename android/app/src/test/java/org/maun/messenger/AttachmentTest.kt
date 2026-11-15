@@ -38,6 +38,19 @@ class AttachmentTest {
     }
 
     @Test
+    fun `a picture's size travels with it, so the other phone can keep room for it`() {
+        val photo = file.copy(width = 4000, height = 3000)
+        assertEquals(photo, Attachment.fromWire(photo.toWire()))
+        assertEquals(photo.copy(state = Attachment.READY), Attachment.fromLocal(photo.copy(state = Attachment.READY).toLocal()))
+        // Nonsense sizes are not believed.
+        val odd = Attachment.fromWire(file.toWire().put("w", -5).put("h", 9_999_999))!!
+        assertEquals(0, odd.width)
+        assertEquals(50_000, odd.height)
+        // A file without a size says nothing about one.
+        assertFalse(file.toWire().has("w"))
+    }
+
+    @Test
     fun `records that cannot be a file are refused`() {
         fun wire(change: JSONObject.() -> Unit) = Attachment.fromWire(file.toWire().apply(change))
         assertTrue(wire { } != null)

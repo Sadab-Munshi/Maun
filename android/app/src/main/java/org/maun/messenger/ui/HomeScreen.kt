@@ -28,6 +28,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -137,6 +143,18 @@ fun HomeScreen(
 @Composable
 private fun ConnectionLine(relay: RelayState, onReconnect: () -> Unit) {
     val colors = LocalStatusColors.current
+    // Connecting takes a moment every time the app is opened. That is not
+    // worth a line; only say something when it is taking long.
+    val settling = relay == RelayState.Connecting || relay == RelayState.Offline || relay is RelayState.Retrying
+    var slow by remember { mutableStateOf(false) }
+    LaunchedEffect(settling) {
+        slow = false
+        if (settling) {
+            delay(CONNECTING_PATIENCE_MILLIS)
+            slow = true
+        }
+    }
+    if (settling && !slow) return
     val (color, text) = when (relay) {
         RelayState.Online -> return
         RelayState.Connecting -> MaterialTheme.colorScheme.outline to "Connecting…"
@@ -145,6 +163,7 @@ private fun ConnectionLine(relay: RelayState, onReconnect: () -> Unit) {
         is RelayState.Rejected -> colors.failed to relay.reason
         is RelayState.LoginNeeded -> colors.warning to "This relay asks you to log in."
         RelayState.Banned -> colors.failed to "This relay no longer accepts this account."
+        RelayState.Pending -> colors.warning to "Waiting for the relay's administrator."
     }
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -165,6 +184,9 @@ private fun ConnectionLine(relay: RelayState, onReconnect: () -> Unit) {
         }
     }
 }
+
+/** How long the app may be connecting before the home screen mentions it. */
+private const val CONNECTING_PATIENCE_MILLIS = 3_000L
 
 @Composable
 private fun ListHeading(text: String) {

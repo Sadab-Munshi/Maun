@@ -11,6 +11,7 @@ import android.util.LruCache
 import java.io.File
 import java.io.IOException
 import java.io.OutputStream
+import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -71,6 +72,35 @@ class FileTransfers(
 
     private fun stored(seq: Long) = File(dir, "$seq.enc")
 
+    /** A small copy of a picture, kept so that opening a conversation does not decrypt whole photos. */
+    private fun thumb(seq: Long) = File(dir, "$seq.thumb")
+
+    /** The small copy has a key of its own, made from the file's: one key never seals two files. */
+    private fun thumbKey(secret: ByteArray): ByteArray =
+        MessageDigest.getInstance("SHA-256").run {
+            update("maun:thumb:v1".toByteArray(Charsets.UTF_8))
+            digest(secret)
+        }
+
+    /** The picture of message [seq] at about [maxPixels], if it has been shown since the app started. */
+    fun cachedImage(seq: Long, maxPixels: Int): Bitmap? = images.get("$seq@$maxPixels")
+
+    /** The size a picture will be shown at, or null when [uri] is not a picture Android can read. */
+    private fun pictureSize(uri: Uri): Pair<Int, Int>? = try {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        val turned = resolver.openInputStream(uri)?.use(::rotationOf) ?: 0
+        when {
+            bounds.outWidth <= 0 || bounds.outHeight <= 0 -> null
+            turned == 90 || turned == 270 -> bounds.outHeight to bounds.outWidth
+            else -> bounds.outWidth to bounds.outHeight
+        }
+    } catch (_: IOException) {
+        null
+    } catch (_: RuntimeException) {
+        null
+    }
+
     /**
      * Encrypts the file at [uri] and starts sending it to [peer]. Returns why
      * it could not be, or null when it is on its way.
@@ -117,7 +147,10 @@ class FileTransfers(
             mime = mime,
             size = plainBytes,
             state = Attachment.UPLOADING,
-        )
+        ).let { record ->
+            val size = if (record.isImage) pictureSize(uri) else null
+            if (size == null) record else record.copy(width = size.first, height = size.second)
+        }
         val message = try {
             engine.addFile(peer, file)
         } catch (_: IllegalStateException) {
@@ -219,9 +252,26 @@ class FileTransfers(
     suspend fun image(seq: Long, file: Attachment, maxPixels: Int): Bitmap? = withContext(Dispatchers.IO) {
         val cacheKey = "$seq@$maxPixels"
         images.get(cacheKey)?.let { return@withContext it }
+        val secret = file.secretBytes()
+        val small = maxPixels <= THUMB_PIXELS
+        if (small) {
+            // The small copy made the first time this picture was shown.
+            val kept = thumb(seq)
+            if (kept.exists()) {
+                val bitmap = try {
+                    open(kept, thumbKey(secret)).use { BitmapFactory.decodeStream(it) }
+                } catch (_: IOException) {
+                    null
+                }
+                if (bitmap != null) {
+                    images.put(cacheKey, bitmap)
+                    return@withContext bitmap
+                }
+                kept.delete()
+            }
+        }
         val source = stored(seq)
         if (!source.exists()) return@withContext null
-        val secret = file.secretBytes()
         try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             open(source, secret).use { BitmapFactory.decodeStream(it, null, bounds) }
@@ -233,6 +283,7 @@ class FileTransfers(
                 ?: return@withContext null
             val upright = turnUpright(decoded, open(source, secret).use(::rotationOf))
             images.put(cacheKey, upright)
+            if (small) keepThumb(seq, upright, secret)
             upright
         } catch (_: IOException) {
             null
@@ -253,6 +304,19 @@ class FileTransfers(
             false
         } catch (_: SecurityException) {
             false
+        }
+    }
+
+    /** Stores a small encrypted copy of [bitmap] for the next time the conversation is opened. */
+    private fun keepThumb(seq: Long, bitmap: Bitmap, secret: ByteArray) {
+        val temp = File(dir, "thumb-${UUID.randomUUID()}.tmp")
+        try {
+            val jpeg = java.io.ByteArrayOutputStream()
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, THUMB_QUALITY, jpeg)) return
+            temp.outputStream().buffered().use { FileCipher.encrypt(jpeg.toByteArray().inputStream(), it, thumbKey(secret)) }
+            if (!temp.renameTo(thumb(seq))) temp.delete()
+        } catch (_: IOException) {
+            temp.delete()
         }
     }
 
@@ -305,7 +369,10 @@ class FileTransfers(
     private companion object {
         const val TOO_LARGE = "That file is larger than 25 MB, the most Maun can send."
         const val UNREADABLE = "That file could not be read."
-        const val IMAGE_CACHE_BYTES = 24 * 1024 * 1024
+        const val IMAGE_CACHE_BYTES = 32 * 1024 * 1024
+        /** Pictures asked for at this size or smaller are kept as a small copy. */
+        const val THUMB_PIXELS = 720
+        const val THUMB_QUALITY = 85
         const val LEFTOVER_AGE_MILLIS = 60 * 60 * 1000L
     }
 }

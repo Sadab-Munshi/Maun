@@ -47,23 +47,29 @@ import org.maun.messenger.Messenger
  * Adds a contact in two steps: get their code (camera or pasted text), then
  * give them a name. [checkCode] decides whether a piece of text is a code that
  * can be added; [onSave] receives the ID, the name, and whether it was scanned.
+ * On a relay with usernames, [findUser] looks one up; null where there are none.
  */
 @Composable
 fun AddContactScreen(
     checkCode: suspend (text: String, typed: Boolean) -> CodeCheck,
+    findUser: (suspend (String) -> Messenger.UserSearch)? = null,
     onSave: (id: String, name: String, verified: Boolean) -> Unit,
     onBack: () -> Unit,
 ) {
     // The ID that was found, and how. Null while still looking.
     var foundId by rememberSaveable { mutableStateOf<String?>(null) }
     var foundByCamera by rememberSaveable { mutableStateOf(false) }
+    // The username the ID was found under, if that is how it was found.
+    var foundName by rememberSaveable { mutableStateOf<String?>(null) }
 
     val id = foundId
     if (id == null) {
         FindCodeStep(
             checkCode = checkCode,
-            onFound = { found, byCamera ->
+            findUser = findUser,
+            onFound = { found, byCamera, name ->
                 foundByCamera = byCamera
+                foundName = name
                 foundId = found
             },
             onBack = onBack,
@@ -72,6 +78,7 @@ fun AddContactScreen(
         NameStep(
             id = id,
             scanned = foundByCamera,
+            username = foundName,
             onSave = { name -> onSave(id, name, foundByCamera) },
             onBack = { foundId = null },
         )
@@ -81,7 +88,8 @@ fun AddContactScreen(
 @Composable
 private fun FindCodeStep(
     checkCode: suspend (text: String, typed: Boolean) -> CodeCheck,
-    onFound: (id: String, byCamera: Boolean) -> Unit,
+    findUser: (suspend (String) -> Messenger.UserSearch)?,
+    onFound: (id: String, byCamera: Boolean, username: String?) -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -114,7 +122,7 @@ private fun FindCodeStep(
             try {
                 val result = checkCode(text, wasTyped)
                 problem = describe(result, wasTyped)
-                if (result is CodeCheck.Ok) onFound(result.code.id, !wasTyped)
+                if (result is CodeCheck.Ok) onFound(result.code.id, !wasTyped, null)
             } finally {
                 checking = false
             }
@@ -122,6 +130,52 @@ private fun FindCodeStep(
     }
 
     ScreenFrame(title = "Add contact", onBack = onBack) {
+        if (findUser != null) {
+            var wanted by rememberSaveable { mutableStateOf("") }
+            var nameProblem by rememberSaveable { mutableStateOf<String?>(null) }
+            val search = {
+                focus.clearFocus()
+                if (wanted.isNotBlank() && !checking) {
+                    checking = true
+                    scope.launch {
+                        try {
+                            when (val result = findUser(wanted)) {
+                                is Messenger.UserSearch.Found -> onFound(result.id, false, result.name)
+                                is Messenger.UserSearch.Problem -> nameProblem = result.message
+                            }
+                        } finally {
+                            checking = false
+                        }
+                    }
+                }
+            }
+            Text("By username", style = MaterialTheme.typography.titleMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = wanted,
+                    onValueChange = {
+                        wanted = it.take(24)
+                        nameProblem = null
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Username") },
+                    prefix = { Text("@") },
+                    singleLine = true,
+                    isError = nameProblem != null,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.None,
+                        autoCorrectEnabled = false,
+                        imeAction = ImeAction.Search,
+                    ),
+                    keyboardActions = KeyboardActions(onSearch = { search() }),
+                )
+                Button(onClick = { search() }, enabled = wanted.isNotBlank() && !checking) { Text("Find") }
+            }
+            nameProblem?.let {
+                Text(text = it, style = MaterialTheme.typography.bodyMedium, color = LocalStatusColors.current.failed)
+            }
+            Text("Or scan their code", style = MaterialTheme.typography.titleMedium)
+        }
         BodyText("Ask the other person to open My code in Maun, then point this phone at their screen.")
 
         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -230,8 +284,8 @@ private fun CameraMessage(text: String, action: String? = null, onAction: () -> 
 }
 
 @Composable
-private fun NameStep(id: String, scanned: Boolean, onSave: (String) -> Unit, onBack: () -> Unit) {
-    var name by rememberSaveable { mutableStateOf("") }
+private fun NameStep(id: String, scanned: Boolean, username: String?, onSave: (String) -> Unit, onBack: () -> Unit) {
+    var name by rememberSaveable { mutableStateOf(username.orEmpty()) }
     val focus = LocalFocusManager.current
     val save = {
         focus.clearFocus()
@@ -242,6 +296,9 @@ private fun NameStep(id: String, scanned: Boolean, onSave: (String) -> Unit, onB
         Text(
             text = if (scanned) {
                 "Code read from their screen."
+            } else if (username != null) {
+                "Found @$username on this relay. The relay told this phone which ID that is; when you " +
+                    "meet, compare safety numbers to be sure it told the truth."
             } else {
                 "Code pasted. Compare the ID below with the one on their My code screen " +
                     "to be sure it is really theirs."

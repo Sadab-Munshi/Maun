@@ -60,6 +60,8 @@ class FileActions(
     val onSave: (Long, Attachment, Uri) -> Unit = { _, _, _ -> },
     /** The picture of a message, about so many pixels on its longer side. */
     val loadImage: suspend (Long, Attachment, Int) -> Bitmap? = { _, _, _ -> null },
+    /** The same without waiting, when it has been shown since the app started. */
+    val cachedImage: (Long, Int) -> Bitmap? = { _, _ -> null },
 )
 
 /** Pictures up to this size are fetched as soon as their message is on screen. */
@@ -121,20 +123,59 @@ fun FileContent(
         if (step == FileStep.Fetch && file.isImage && file.size <= AUTO_FETCH_BYTES) files.onStart(message.seq)
     }
 
-    val picture by produceState<Bitmap?>(null, message.seq, step) {
-        value = if (file.isImage && step == FileStep.Open) files.loadImage(message.seq, file, PREVIEW_PIXELS) else null
+    // A picture that is on this phone is shown as a picture: one that arrived,
+    // and one of one's own that is still on its way out.
+    val unsent = message.outgoing && file.key.isEmpty()
+    val here = file.isImage && (step == FileStep.Open || (unsent && step != FileStep.Gone))
+    // One that is being fetched gets its room straight away, so the list does not jump when it lands.
+    val arriving = file.isImage && !message.outgoing &&
+        (step == FileStep.Working || (step == FileStep.Fetch && file.size <= AUTO_FETCH_BYTES))
+    val picture by produceState(files.cachedImage(message.seq, PREVIEW_PIXELS), message.seq, here) {
+        if (here && value == null) value = files.loadImage(message.seq, file, PREVIEW_PIXELS)
     }
-    val shown = picture
-    if (shown != null) {
-        Image(
-            bitmap = shown.asImageBitmap(),
-            contentDescription = "Photo",
-            contentScale = ContentScale.Crop,
+    if (here || arriving) {
+        val shown = picture
+        val ratio = when {
+            shown != null -> shown.width.toFloat() / shown.height
+            file.width > 0 && file.height > 0 -> file.width.toFloat() / file.height
+            else -> 4f / 3f
+        }.coerceIn(0.6f, 1.8f)
+        Box(
             modifier = Modifier
                 .width(240.dp)
-                .aspectRatio((shown.width.toFloat() / shown.height).coerceIn(0.6f, 1.8f))
-                .clip(RoundedCornerShape(12.dp)),
-        )
+                .aspectRatio(ratio)
+                .clip(RoundedCornerShape(12.dp))
+                .background(text.copy(alpha = 0.08f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (shown != null) {
+                Image(
+                    bitmap = shown.asImageBitmap(),
+                    contentDescription = "Photo",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            when (step) {
+                FileStep.Working -> Box(
+                    modifier = Modifier.size(48.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(
+                        progress = { fraction ?: 0f },
+                        modifier = Modifier.size(30.dp),
+                        strokeWidth = 3.dp,
+                        color = Color.White,
+                        trackColor = Color.White.copy(alpha = 0.3f),
+                    )
+                }
+                FileStep.Retry -> Box(
+                    modifier = Modifier.size(48.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(MaunIcons.Retry, contentDescription = "Not sent. Tap to try again", tint = Color.White) }
+                else -> Unit
+            }
+        }
         return
     }
 

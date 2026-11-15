@@ -18,6 +18,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
+import org.maun.messenger.Messenger
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -31,8 +34,16 @@ import org.maun.messenger.push.Background
 import org.maun.messenger.push.Notifications
 import org.maun.messenger.push.PushApps
 
-/** A conversation as its screen shows it: the newest messages first, and whether older ones are waiting to be loaded. */
-data class Conversation(val messages: List<MessageEntity> = emptyList(), val hasOlder: Boolean = false)
+/**
+ * A conversation as its screen shows it: the newest messages first, and
+ * whether older ones are waiting to be loaded. [loaded] is false only for the
+ * moment before the messages have been read from storage.
+ */
+data class Conversation(
+    val messages: List<MessageEntity> = emptyList(),
+    val hasOlder: Boolean = false,
+    val loaded: Boolean = true,
+)
 
 /** What the welcome screen needs beyond the account and relay state. */
 data class OnboardingUiState(
@@ -73,8 +84,62 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         messenger.clearFileProblem()
     }
 
-    /** Proof of an approved email address has come back from the login page. */
-    fun onAccessToken(token: String) = messenger.onAccessToken(token)
+    /** On a member-only relay: this account's username. */
+    val username = messenger.username
+
+    /** The email login is done and the administrator has not approved this account yet. */
+    val awaitingApproval = messenger.awaitingApproval
+
+    private val _login = MutableStateFlow(LoginUi())
+
+    /** Where the email login has got to. */
+    val login: StateFlow<LoginUi> = _login.asStateFlow()
+
+    private fun loginStep(email: String, action: suspend () -> Messenger.LoginStep, onDone: LoginUi) {
+        if (_login.value.working) return
+        _login.update { it.copy(working = true, problem = null) }
+        viewModelScope.launch {
+            _login.value = when (val step = action()) {
+                Messenger.LoginStep.Done -> onDone
+                Messenger.LoginStep.NeedsUsername -> LoginUi(LoginUi.Step.Username, email)
+                is Messenger.LoginStep.Problem -> _login.value.copy(working = false, problem = step.message)
+            }
+        }
+    }
+
+    /** Asks for a code to be sent to [email], the first time or again. */
+    fun loginSendCode(email: String) {
+        if (_login.value.working) return
+        _login.update { it.copy(working = true, problem = null) }
+        viewModelScope.launch {
+            val problem = messenger.requestLoginCode(email)
+            _login.value = when {
+                problem == null -> LoginUi(LoginUi.Step.Code, email)
+                // Asked again too soon: the code already sent still works.
+                _login.value.step == LoginUi.Step.Code -> _login.value.copy(working = false, problem = problem)
+                else -> LoginUi(LoginUi.Step.Email, email, problem = problem)
+            }
+        }
+    }
+
+    fun loginSubmitCode(code: String) {
+        val email = _login.value.email
+        // Once the relay has the ticket, the connection decides what is shown next.
+        loginStep(email, { messenger.submitLoginCode(email, code) }, onDone = LoginUi(email = email))
+    }
+
+    fun loginChooseUsername(name: String) {
+        val email = _login.value.email
+        loginStep(email, { messenger.chooseUsername(name) }, onDone = LoginUi(email = email))
+    }
+
+    fun loginStartOver() {
+        _login.value = LoginUi(email = _login.value.email)
+    }
+
+    suspend fun findUser(name: String): Messenger.UserSearch = messenger.findUser(name)
+
+    suspend fun usernameOf(id: String): String? = messenger.usernameOf(id)
 
     fun checkBanAgain() = messenger.checkBanAgain()
 
@@ -91,6 +156,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     suspend fun image(seq: Long, file: Attachment, maxPixels: Int): Bitmap? = messenger.image(seq, file, maxPixels)
+
+    fun cachedImage(seq: Long, maxPixels: Int): Bitmap? = messenger.cachedImage(seq, maxPixels)
+
+    // The conversations looked at lately, and the ones at the top of the list,
+    // are kept in memory so that opening one shows its messages at once.
+    private val recent = object : LinkedHashMap<String, Conversation>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Conversation>) = size > CHATS_IN_MEMORY
+    }
+    private val preloadedAt = HashMap<String, Long>()
+
+    /** The conversation with [peer] as it was last seen, or null when it is not in memory. */
+    fun cachedConversation(peer: String): Conversation? = synchronized(recent) { recent[peer] }
+
+    init {
+        viewModelScope.launch {
+            messenger.chats.collect { chats ->
+                for (chat in chats.take(CHATS_PRELOADED)) {
+                    val fresh = synchronized(recent) { preloadedAt[chat.peer] == chat.seq && chat.peer in recent }
+                    if (fresh) continue
+                    val page = messenger.messages(chat.peer, Messenger.MESSAGE_PAGE).firstOrNull() ?: continue
+                    synchronized(recent) {
+                        recent[chat.peer] = Conversation(page, hasOlder = page.size >= Messenger.MESSAGE_PAGE)
+                        preloadedAt[chat.peer] = chat.seq
+                    }
+                }
+            }
+        }
+    }
 
     private val _delivery = MutableStateFlow(DeliveryUi())
 
@@ -215,7 +308,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun conversation(peer: String, limit: Flow<Int>): Flow<Conversation> =
         limit.flatMapLatest { count ->
             messenger.messages(peer, count).map { Conversation(messages = it, hasOlder = it.size >= count) }
-        }
+        }.onEach { shown -> synchronized(recent) { recent[peer] = shown } }
 
     fun deleteMessage(seq: Long) {
         viewModelScope.launch { messenger.deleteMessage(seq) }
@@ -247,6 +340,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
+        /** Conversations kept in memory, and how many from the top of the list are read ahead. */
+        private const val CHATS_IN_MEMORY = 12
+        private const val CHATS_PRELOADED = 6
         const val SETTINGS = "settings"
         const val KEY_RELAY_URL = "relay_url"
     }
