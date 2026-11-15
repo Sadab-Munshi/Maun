@@ -194,7 +194,7 @@ private fun HomePreview() {
                 ),
             ),
             blockedCount = 1,
-            delivery = DeliveryUi(pushApp = "ntfy"),
+            delivery = DeliveryUi(pushApp = "Sunup"),
             pushProblem = null,
             onChoosePushApp = {},
             onStayConnected = {},

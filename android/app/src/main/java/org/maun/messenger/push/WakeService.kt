@@ -8,7 +8,7 @@ import org.unifiedpush.android.connector.data.PushEndpoint
 import org.unifiedpush.android.connector.data.PushMessage
 
 /**
- * Hears from the push app on this phone (UnifiedPush; ntfy is one such app).
+ * Hears from the push app on this phone (UnifiedPush; Sunup and ntfy are such apps).
  *
  * The push app hands Maun an address at which wake-ups for this phone can be
  * left, and keys to encrypt them with. Maun gives both to the relay. When the
@@ -43,7 +43,7 @@ class WakeService : PushService() {
             when (reason) {
                 FailedReason.NETWORK -> "Your push app could not reach its server. It will try again by itself."
                 FailedReason.ACTION_REQUIRED -> "Your push app needs your attention before it can wake Maun. Open it once."
-                FailedReason.VAPID_REQUIRED -> "Your push app's server asks for something Maun does not support yet."
+                FailedReason.VAPID_REQUIRED -> "Your push app can be used once Maun has connected to the relay. Open Maun with a connection."
                 else -> "Your push app reported an error."
             },
         )

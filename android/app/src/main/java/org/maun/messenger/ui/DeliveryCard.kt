@@ -116,7 +116,7 @@ fun DeliveryCard(
                 else -> {
                     Note(
                         "Messages arrive when you open Maun, and Maun looks for them about once an hour. " +
-                            "To get them right away, install a UnifiedPush app such as ntfy and open Maun again. " +
+                            "To get them right away, install a UnifiedPush app such as Sunup and open Maun again. " +
                             "Or let Maun stay connected, which uses more battery.",
                     )
                     OutlinedButton(onClick = { onStayConnected(true) }) { Text("Stay connected") }
@@ -172,7 +172,7 @@ private fun Context.open(intent: Intent) {
 private fun DeliveryPreview() {
     MaunTheme {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(16.dp)) {
-            DeliveryCard(DeliveryUi(pushApp = "ntfy"), null, {}, {}, {})
+            DeliveryCard(DeliveryUi(pushApp = "Sunup"), null, {}, {}, {})
             DeliveryCard(DeliveryUi(notificationsAllowed = false), null, {}, {}, {})
             DeliveryCard(DeliveryUi(stayConnected = true, unrestricted = false), null, {}, {}, {})
         }

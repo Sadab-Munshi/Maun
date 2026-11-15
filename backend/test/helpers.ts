@@ -173,7 +173,16 @@ export async function register(identity: Identity, device: Device): Promise<Inbo
   const { inbox, nonce, registered } = await connect(identity.mailboxId);
   expect(registered).toBe(false);
   inbox.sendJson(await registerFrame(identity, device, nonce));
-  expect(await inbox.nextJson()).toEqual({ t: "ready", fresh: true, keys: false, otks: 0, push: false, pushStatus: null, queued: 0 });
+  expect(await inbox.nextJson()).toEqual({
+    t: "ready",
+    fresh: true,
+    keys: false,
+    otks: 0,
+    push: false,
+    pushStatus: null,
+    vapid: expect.any(String),
+    queued: 0,
+  });
   return inbox;
 }
 

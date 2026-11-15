@@ -1,9 +1,17 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PUSH_DAILY_CAP, PUSH_PAYLOAD, PUSH_REPEAT_MS, PUSH_TTL_SECONDS, toBase64 } from "../src/protocol";
+import {
+  PUSH_CONTACT,
+  PUSH_DAILY_CAP,
+  PUSH_PAYLOAD,
+  PUSH_REPEAT_MS,
+  PUSH_TTL_SECONDS,
+  toBase64,
+} from "../src/protocol";
 import {
   connect,
   expectRefused,
+  fromBase64Url,
   hangUp,
   login,
   loginFrame,
@@ -176,6 +184,54 @@ describe("waking a phone", () => {
     expect(sent).not.toContain(bob.id);
     expect(wake.body.length).toBeLessThan(150);
     await hangUp(a);
+  });
+
+  it("signs each wake-up with the key it told the phone about, and with nothing that names anyone", async () => {
+    const alice = await registered();
+    const bob = await withPush();
+    const carol = await withPush();
+    const a = await online(alice);
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(1)).toBe(1);
+    await sendMessage(a, carol.id, randomBytes(8));
+    expect(await wakeCount(2)).toBe(2);
+    await hangUp(a);
+
+    const forBob = wakes.find((w) => w.url === bob.url)!;
+    const match = /^vapid t=([\w-]+)\.([\w-]+)\.([\w-]+), k=([\w-]+)$/.exec(forBob.headers.get("authorization") ?? "");
+    expect(match).not.toBeNull();
+    const [, header, claims, signature, key] = match!;
+
+    // The key is the one Bob's phone is given at login, to pass to its push app.
+    const ready = await readyOf(bob);
+    expect(toBase64(fromBase64Url(key!))).toBe(ready.vapid);
+    expect(fromBase64Url(key!).length).toBe(65);
+
+    // The token is signed by that key (RFC 8292: ES256 over "header.claims").
+    const publicKey = await crypto.subtle.importKey("raw", fromBase64Url(key!), { name: "ECDSA", namedCurve: "P-256" }, false, [
+      "verify",
+    ]);
+    const signed = new TextEncoder().encode(`${header}.${claims}`);
+    expect(
+      await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, publicKey, fromBase64Url(signature!), signed),
+    ).toBe(true);
+    expect(JSON.parse(new TextDecoder().decode(fromBase64Url(header!)))).toEqual({ typ: "JWT", alg: "ES256" });
+
+    // It is addressed to the push service, good for less than a day, and says how to reach the relay's operator.
+    const said = JSON.parse(new TextDecoder().decode(fromBase64Url(claims!))) as Record<string, unknown>;
+    expect(Object.keys(said).sort()).toEqual(["aud", "exp", "sub"]);
+    expect(said.aud).toBe("https://push.example.org");
+    const lifetime = (said.exp as number) - Date.now() / 1000;
+    expect(lifetime).toBeGreaterThan(60);
+    expect(lifetime).toBeLessThanOrEqual(24 * 60 * 60);
+    expect(said.sub).toBe(PUSH_CONTACT);
+
+    // Every mailbox has its own key: the push service cannot tell from it that Bob and Carol share a relay.
+    const forCarol = wakes.find((w) => w.url === carol.url)!;
+    expect(forCarol.headers.get("authorization")).not.toContain(key!);
+    expect((await readyOf(carol)).vapid).not.toBe(ready.vapid);
+    // And it stays the same from one login to the next.
+    expect((await readyOf(bob)).vapid).toBe(ready.vapid);
   });
 
   it("does not repeat itself while the phone has yet to come", async () => {

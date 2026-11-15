@@ -38,6 +38,7 @@ import org.maun.messenger.network.RelayClient
 import org.maun.messenger.network.RelayConnection
 import org.maun.messenger.network.RelayException
 import org.maun.messenger.network.RelayState
+import org.maun.messenger.push.Background
 import org.maun.messenger.push.FetchWorker
 import org.maun.messenger.push.Notifications
 import org.maun.messenger.push.UnreadTracker
@@ -247,7 +248,12 @@ class Messenger(context: Context) {
             scope = scope,
             isRegistered = { (_account.value as? AccountState.Present)?.registered == true },
             onLoggedIn = ::markRegistered,
-            onOnline = chat::onOnline,
+            onOnline = {
+                chat.onOnline()
+                val relayKey = PushAddress.keyForPushApp(chat.link?.ready?.relayKey)
+                // Talks to another app; not something to do from inside the connection.
+                if (relayKey != null) scope.launch { Background.onRelayKey(appContext, relayKey) }
+            },
             onFrame = chat::onFrame,
             onOffline = chat::onOffline,
         )

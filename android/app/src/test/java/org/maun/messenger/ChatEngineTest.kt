@@ -535,14 +535,21 @@ class ChatEngineTest {
         )!!
         val bob = Phone()
         bob.pushWanted = address("up1")
-        assertFalse(bob.online().hasPush)
+        val first = bob.online()
+        assertFalse(first.hasPush)
+        assertNull(first.pushStatus)
+        // The key the relay will sign this phone's wake-ups with, for the push app.
+        val relayKey = PushAddress.keyForPushApp(first.relayKey)
+        assertEquals(87, relayKey!!.length)
         bob.caughtUp()
         assertEquals(1, bob.saved.count { it == "put_push" })
         assertEquals(address("up1"), bob.pushUploaded)
         bob.offline()
 
-        // The relay remembers; the phone does not send it again.
-        assertTrue(bob.online().hasPush)
+        // The relay remembers; the phone does not send it again. The signing key stays the same.
+        val second = bob.online()
+        assertTrue(second.hasPush)
+        assertEquals(relayKey, PushAddress.keyForPushApp(second.relayKey))
         bob.caughtUp()
         assertEquals(1, bob.saved.count { it == "put_push" })
 

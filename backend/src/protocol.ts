@@ -65,6 +65,11 @@ export const PUSH_DAILY_CAP = 200;
 export const PUSH_TTL_SECONDS = 24 * 60 * 60;
 /** What a wake-up says once decrypted. It names nobody and carries nothing. */
 export const PUSH_PAYLOAD = "wake";
+/**
+ * Where a push service's operator can reach whoever runs this relay. Sent with
+ * every wake-up, as Web Push asks. Change it if you run your own relay.
+ */
+export const PUSH_CONTACT = "https://github.com/Sadab-Munshi/Maun";
 /** Recorded as the outcome of a wake-up that has been started and has not finished. */
 export const PUSH_UNFINISHED = -1;
 
@@ -120,6 +125,8 @@ export type ServerFrame =
    * `pushStatus`: what the push service answered to the last wake-up sent to
    * that address: an HTTP status, 0 when it could not be reached,
    * PUSH_UNFINISHED when the attempt never finished, null when none was sent.
+   * `vapid`: the public key this mailbox signs its wake-ups with. The phone
+   * passes it to its push app, for push services that ask who will be calling.
    */
   | {
       t: "ready";
@@ -128,6 +135,7 @@ export type ServerFrame =
       otks: number;
       push: boolean;
       pushStatus: number | null;
+      vapid: string;
       queued: number;
     }
   | { t: "echo"; id: string; body: string; at: number }

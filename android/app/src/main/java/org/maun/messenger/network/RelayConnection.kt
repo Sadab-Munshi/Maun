@@ -63,6 +63,12 @@ data class Ready(
      * never finished. Null when none has been sent to the current address.
      */
     val pushStatus: Int? = null,
+    /**
+     * The public key this account's mailbox signs its wake-ups with, in
+     * standard base64. The phone's push app is told it, for push services that
+     * only take wake-ups from a sender named in advance.
+     */
+    val relayKey: String? = null,
     /** How many messages were waiting at the moment of login. They follow right away. */
     val queued: Int = 0,
 )
@@ -251,6 +257,7 @@ class RelayConnection(
                                         oneTimeKeys = frame.optInt("otks"),
                                         hasPush = frame.optBoolean("push"),
                                         pushStatus = if (frame.isNull("pushStatus")) null else frame.optInt("pushStatus"),
+                                        relayKey = frame.optString("vapid").ifEmpty { null },
                                         queued = frame.optInt("queued"),
                                     )
                                     live = socket

@@ -51,6 +51,22 @@ data class PushAddress(val url: String, val key: String, val auth: String) {
             return PushAddress(url, encoder.encodeToString(keyBytes), encoder.encodeToString(authBytes))
         }
 
+        /**
+         * Turns the relay's signing key, as the relay sends it, into the form
+         * push apps expect (VAPID: 87 characters of URL-safe base64). Returns
+         * null for anything that is not such a key.
+         */
+        fun keyForPushApp(relayKey: String?): String? {
+            if (relayKey.isNullOrEmpty()) return null
+            val bytes = try {
+                Base64.getDecoder().decode(relayKey)
+            } catch (_: IllegalArgumentException) {
+                return null
+            }
+            if (bytes.size != KEY_BYTES || bytes[0] != 4.toByte()) return null
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+        }
+
         private fun decodeUrlSafe(text: String): ByteArray? = try {
             Base64.getUrlDecoder().decode(text.trimEnd('='))
         } catch (_: IllegalArgumentException) {

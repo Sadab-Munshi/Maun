@@ -111,3 +111,60 @@ export function isPushUrl(text: string): boolean {
   if (/^[0-9.]+$/.test(host)) return false;
   return !PRIVATE_SUFFIXES.some((suffix) => host.endsWith(suffix));
 }
+
+// ---- Saying who is calling (VAPID, RFC 8292) --------------------------------
+//
+// Some push services take a wake-up only from the server the phone named when
+// it asked for its address. The phone names a public key; the server signs a
+// short-lived token with the private half and sends it along.
+
+const ES256 = { name: "ECDSA", namedCurve: "P-256" } as const;
+/** How long a token is good for. The RFC allows up to a day. */
+const VAPID_LIFETIME_SECONDS = 12 * 60 * 60;
+
+export type VapidKeys = {
+  /** The public key as the phone passes it on: an uncompressed P-256 point, 65 bytes. */
+  publicKey: Uint8Array;
+  /** The private key, in the JSON form WebCrypto exports. */
+  privateJwk: string;
+};
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export async function createVapidKeys(): Promise<VapidKeys> {
+  const pair = (await crypto.subtle.generateKey(ES256, true, ["sign", "verify"])) as CryptoKeyPair;
+  const publicKey = new Uint8Array((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer);
+  const privateJwk = JSON.stringify(await crypto.subtle.exportKey("jwk", pair.privateKey));
+  return { publicKey, privateJwk };
+}
+
+/**
+ * Builds the `Authorization` header for a wake-up sent to `url`. `contact` is
+ * where the push service's operator can reach whoever runs this relay.
+ */
+export async function vapidAuthorization(
+  url: string,
+  keys: VapidKeys,
+  contact: string,
+  nowMillis: number,
+): Promise<string> {
+  const header = base64Url(encoder.encode(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+  const claims = base64Url(
+    encoder.encode(
+      JSON.stringify({
+        aud: new URL(url).origin,
+        exp: Math.floor(nowMillis / 1000) + VAPID_LIFETIME_SECONDS,
+        sub: contact,
+      }),
+    ),
+  );
+  const key = await crypto.subtle.importKey("jwk", JSON.parse(keys.privateJwk) as JsonWebKey, ES256, false, ["sign"]);
+  const signature = new Uint8Array(
+    await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, encoder.encode(`${header}.${claims}`)),
+  );
+  return `vapid t=${header}.${claims}.${base64Url(signature)}, k=${base64Url(keys.publicKey)}`;
+}

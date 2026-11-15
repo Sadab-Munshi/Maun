@@ -45,6 +45,20 @@ class PushAddressTest {
     }
 
     @Test
+    fun handsTheRelaysKeyToThePushAppInItsOwnSpelling() {
+        val standard = Base64.getEncoder().encodeToString(Base64.getUrlDecoder().decode(key))
+        val forPushApp = PushAddress.keyForPushApp(standard)
+        assertEquals(key, forPushApp)
+        assertEquals(87, forPushApp!!.length)
+        assertNull(PushAddress.keyForPushApp(null))
+        assertNull(PushAddress.keyForPushApp(""))
+        assertNull(PushAddress.keyForPushApp("not base64 !"))
+        assertNull(PushAddress.keyForPushApp(standard.dropLast(4)))
+        // A key in compressed form is not what push apps take.
+        assertNull(PushAddress.keyForPushApp("Ag" + standard.drop(2)))
+    }
+
+    @Test
     fun survivesStorage() {
         val address = PushAddress.fromWebPush(url, key, auth)!!
         assertEquals(address, PushAddress.parse(address.serialize()))

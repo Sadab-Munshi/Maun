@@ -1,6 +1,14 @@
 import { DurableObject } from "cloudflare:workers";
 import { verifyDeviceSignature, verifyIdentitySignature } from "./crypto/signatures";
-import { PUSH_AUTH_BYTES, encryptWebPush, importPushKey, isPushUrl } from "./crypto/webpush";
+import {
+  PUSH_AUTH_BYTES,
+  type VapidKeys,
+  createVapidKeys,
+  encryptWebPush,
+  importPushKey,
+  isPushUrl,
+  vapidAuthorization,
+} from "./crypto/webpush";
 import {
   CLOSE_AUTH_FAILED,
   CLOSE_AUTH_TIMEOUT,
@@ -9,6 +17,7 @@ import {
   MAX_ONE_TIME_KEYS,
   NONCE_BYTES,
   PROTOCOL_VERSION,
+  PUSH_CONTACT,
   PUSH_DAILY_CAP,
   PUSH_PAYLOAD,
   PUSH_REPEAT_MS,
@@ -159,6 +168,7 @@ export class Mailbox extends DurableObject<Env> {
       }
       this.ensureTables();
       const sql = this.ctx.storage.sql;
+      const vapid = await this.vapidKeys();
       // The phone is here: whatever wake-up was on its way has done its job.
       sql.exec("UPDATE push SET pending = 0 WHERE id = 1 AND pending = 1");
       setState(ws, { s: "ready", m: state.m, c: 0, o: 0, t: Date.now() });
@@ -169,6 +179,7 @@ export class Mailbox extends DurableObject<Env> {
         otks: this.oneTimeKeyCount(),
         push: sql.exec("SELECT 1 FROM push WHERE id = 1").toArray().length > 0,
         pushStatus: (sql.exec("SELECT status FROM push_result WHERE id = 1").toArray()[0]?.status as number) ?? null,
+        vapid: toBase64(vapid.publicKey),
         queued: this.size().total,
       });
       // Everything that arrived while the phone was away.
@@ -189,20 +200,10 @@ export class Mailbox extends DurableObject<Env> {
     this.ensureTables();
     const sql = this.ctx.storage.sql;
     switch (frame.t) {
-      case "echo": {
+      case "echo":
         // Round-trip check used by the app's connection test.
-        // TEMPORARY: "push-debug" reads back why the last wake-up failed.
-        let body = frame.body;
-        if (body === "push-debug") {
-          try {
-            body = String(sql.exec("SELECT detail FROM push_debug WHERE id = 1").toArray()[0]?.detail ?? "none");
-          } catch (e) {
-            body = "no table: " + String(e).slice(0, 100);
-          }
-        }
-        send(ws, { t: "echo", id: frame.id, body, at: Date.now() });
+        send(ws, { t: "echo", id: frame.id, body: frame.body, at: Date.now() });
         return;
-      }
 
       case "put_keys":
         // The signatures are not checked here. Whoever fetches the keys checks
@@ -412,6 +413,9 @@ export class Mailbox extends DurableObject<Env> {
       const response = await fetch(url, {
         method: "POST",
         headers: {
+          // Signed with this mailbox's own key: the push service can tell the
+          // wake-up comes from where the phone said it would, and nothing more.
+          Authorization: await vapidAuthorization(url, await this.vapidKeys(), PUSH_CONTACT, Date.now()),
           "Content-Encoding": "aes128gcm",
           "Content-Type": "application/octet-stream",
           TTL: String(PUSH_TTL_SECONDS),
@@ -424,11 +428,8 @@ export class Mailbox extends DurableObject<Env> {
       });
       status = response.status;
       await response.body?.cancel();
-    } catch (e) {
+    } catch {
       // The push service could not be reached.
-      // TEMPORARY, while finding out why this fails on Cloudflare and not locally.
-      sql.exec("CREATE TABLE IF NOT EXISTS push_debug (id INTEGER PRIMARY KEY CHECK (id = 1), detail TEXT NOT NULL)");
-      sql.exec("INSERT OR REPLACE INTO push_debug (id, detail) VALUES (1, ?)", String(e).slice(0, 300));
     }
     // Kept for the phone to see at its next login. Without it, a push service
     // that turns the relay away would look exactly like one that works.
@@ -442,6 +443,25 @@ export class Mailbox extends DurableObject<Env> {
       // It did not get through, so the next message may try again at once.
       sql.exec("UPDATE push SET pending = 0 WHERE id = 1 AND url = ?", url);
     }
+  }
+
+  /**
+   * The key pair this mailbox signs its wake-ups with, made the first time it
+   * is needed. One per mailbox, so that a push service cannot tell from the
+   * key which relay, or which other phones, a phone belongs with.
+   */
+  private async vapidKeys(): Promise<VapidKeys> {
+    const sql = this.ctx.storage.sql;
+    const read = () => {
+      const row = sql.exec("SELECT pub, jwk FROM vapid WHERE id = 1").toArray()[0];
+      return row ? { publicKey: bytes(row.pub), privateJwk: row.jwk as string } : null;
+    };
+    const existing = read();
+    if (existing) return existing;
+    const created = await createVapidKeys();
+    // Two callers may both have got here; the first to write wins.
+    sql.exec("INSERT OR IGNORE INTO vapid (id, pub, jwk) VALUES (1, ?, ?)", blob(created.publicKey), created.privateJwk);
+    return read() ?? created;
   }
 
   /**
@@ -544,6 +564,8 @@ export class Mailbox extends DurableObject<Env> {
          day INTEGER NOT NULL, sent INTEGER NOT NULL
        )`,
     );
+    // One row: the key pair wake-ups are signed with.
+    sql.exec("CREATE TABLE IF NOT EXISTS vapid (id INTEGER PRIMARY KEY CHECK (id = 1), pub BLOB NOT NULL, jwk TEXT NOT NULL)");
     // One row: what the push service answered to the last wake-up. An HTTP
     // status, 0 when it could not be reached, PUSH_UNFINISHED while in flight.
     sql.exec("CREATE TABLE IF NOT EXISTS push_result (id INTEGER PRIMARY KEY CHECK (id = 1), status INTEGER NOT NULL)");

@@ -46,7 +46,7 @@ object PushApps {
                 chosen = UnifiedPush.getDistributors(context).singleOrNull()
                 if (chosen != null) UnifiedPush.saveDistributor(context, chosen)
             }
-            if (chosen != null) UnifiedPush.register(context)
+            if (chosen != null) register(context)
             chosen != null
         } catch (_: Exception) {
             false
@@ -56,11 +56,32 @@ object PushApps {
     fun choose(context: Context, packageName: String): Boolean =
         try {
             UnifiedPush.saveDistributor(context, packageName)
-            UnifiedPush.register(context)
+            register(context)
             true
         } catch (_: Exception) {
             false
         }
+
+    /**
+     * The relay's signing key has changed, which happens when this phone gets
+     * a new ID. An address given out for the old key is of no use any more.
+     */
+    fun startOver(context: Context) {
+        try {
+            if (UnifiedPush.getSavedDistributor(context) == null) return
+            UnifiedPush.unregister(context, INSTANCE)
+            register(context)
+        } catch (_: Exception) {
+        }
+    }
+
+    // The relay's key goes along once it is known. Some push services hand
+    // out an address only to an app that names who will be calling.
+    private fun register(context: Context) {
+        UnifiedPush.register(context, INSTANCE, null, Background.relayKey(context))
+    }
+
+    private const val INSTANCE = "default"
 
     private fun labelOf(context: Context, packageName: String): String =
         try {
@@ -75,6 +96,22 @@ object PushApps {
 object Background {
     private const val SETTINGS = "settings"
     private const val KEY_STAY_CONNECTED = "stay_connected"
+    private const val KEY_RELAY_KEY = "relay_push_key"
+
+    /** The key the relay signs wake-ups with, as push apps take it. Null until the first login tells it. */
+    fun relayKey(context: Context): String? =
+        context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE).getString(KEY_RELAY_KEY, null)
+
+    /**
+     * The relay said which key it signs this phone's wake-ups with. The push
+     * app is told, again from scratch if it knew a different one.
+     */
+    fun onRelayKey(context: Context, key: String) {
+        val known = relayKey(context)
+        if (known == key) return
+        context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE).edit { putString(KEY_RELAY_KEY, key) }
+        if (known == null) PushApps.refresh(context) else PushApps.startOver(context)
+    }
 
     fun stayConnected(context: Context): Boolean =
         context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE).getBoolean(KEY_STAY_CONNECTED, false)
