@@ -58,8 +58,11 @@ jobs:
           mkdir -p "$out/libs" "$out/generated"
           cp app/build/compile-classpath/* "$out/libs/"
           sdk=$(sed -n 's/.*compileSdk = \([0-9]*\).*/\1/p' app/build.gradle.kts)
-          cp "$ANDROID_HOME/platforms/android-$sdk/android.jar" "$out/android.jar"
+          ls "$ANDROID_HOME/platforms"
+          platform=$(ls -d "$ANDROID_HOME/platforms/android-$sdk"* | sort | tail -n 1)
+          cp "$platform/android.jar" "$out/android.jar"
           find app/build/intermediates -name R.jar -exec cp {} "$out/R.jar" \;
+          test -f "$out/R.jar"
           cp -r app/build/generated/. "$out/generated/"
           ls "$out" "$out/libs" | head -200
           du -sh "$out"
