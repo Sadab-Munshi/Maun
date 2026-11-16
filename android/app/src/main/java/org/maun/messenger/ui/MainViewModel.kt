@@ -4,6 +4,7 @@ import android.app.Application
 import android.os.PowerManager
 import java.io.File
 import org.maun.messenger.voice.VoicePlayer
+import org.maun.messenger.webrtc.TelecomBridge
 import org.maun.messenger.voice.VoiceState
 import android.graphics.Bitmap
 import android.net.Uri
@@ -310,6 +311,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             blockScreenshots = AppLock.blocksScreenshots(context),
             lockBlocksScreenshots = AppLock.lockBlocksScreenshots,
             notifyText = Notifications(context).showsText,
+            lockScreenCallsBlocked = !Notifications(context).mayShowCallsOverLockScreen(),
+            telecomCalls = TelecomBridge.enabled(context),
             batterySaving = !(context.getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(context.packageName),
         )
     }
@@ -325,6 +328,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val openChat = messenger.openChat
 
     fun chatOpened() = messenger.requestChat(null)
+
+    fun setTelecomCalls(on: Boolean) {
+        TelecomBridge.setEnabled(getApplication(), on)
+        refreshPrivacy()
+    }
 
     fun setNotifyText(on: Boolean) {
         Notifications(getApplication()).showsText = on

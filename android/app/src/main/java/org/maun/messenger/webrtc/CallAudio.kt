@@ -138,7 +138,7 @@ class CallAudio(context: Context) {
      * a headset if there is one, otherwise the earpiece, or the loudspeaker
      * when [preferSpeaker] (a video call) or the device has no earpiece.
      */
-    fun begin(preferSpeaker: Boolean) {
+    fun begin(preferSpeaker: Boolean, routing: Boolean = true) {
         if (modeBefore == null) modeBefore = audio.mode
         runCatching { audio.mode = AudioManager.MODE_IN_COMMUNICATION }
         if (focus == null) {
@@ -153,12 +153,17 @@ class CallAudio(context: Context) {
             runCatching { audio.requestAudioFocus(request) }
             focus = request
         }
+        // Where Android's call system has taken the call, it decides where the sound goes.
+        if (!routing) return
         if (!watching) {
             runCatching { audio.registerAudioDeviceCallback(devices, null) }
             watching = true
         }
         setRoute(best(routes(), preferSpeaker))
     }
+
+    /** Android has sent the sound to [now]. Only the screen-off-at-the-ear follows from that here. */
+    fun noteRoute(now: AudioRoute) = setRoute(now, apply = false)
 
     /** The route to use when nobody has chosen: a headset before the phone's own. */
     fun best(available: List<AudioRoute>, preferSpeaker: Boolean): AudioRoute = when {
@@ -169,8 +174,8 @@ class CallAudio(context: Context) {
     }
 
     /** Sends the voice to [wanted]. At the earpiece the screen also goes dark when the phone is held to the ear. */
-    fun setRoute(wanted: AudioRoute) {
-        runCatching {
+    fun setRoute(wanted: AudioRoute, apply: Boolean = true) {
+        if (apply) runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val device = audio.availableCommunicationDevices.firstOrNull { routeOf(it.type) == wanted }
                 if (device != null) audio.setCommunicationDevice(device) else audio.clearCommunicationDevice()

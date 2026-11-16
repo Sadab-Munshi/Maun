@@ -2,6 +2,9 @@ package org.maun.messenger.push
 
 import android.annotation.SuppressLint
 import android.app.Notification
+import android.app.NotificationManager
+import android.os.Build
+import androidx.core.app.Person
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -156,10 +159,14 @@ class Notifications(context: Context) {
             .setContentTitle("Maun")
             .setContentText(what)
             .build()
+        // Android's own look for a call that is coming in: the caller, and Answer and Decline side by side.
+        val caller = Person.Builder().setName(name).setImportant(true).build()
         val notification = NotificationCompat.Builder(context, CHANNEL_RING)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(name)
             .setContentText(what)
+            .setStyle(NotificationCompat.CallStyle.forIncomingCall(caller, decline, answer).setIsVideo(video))
+            .addPerson(caller)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
@@ -168,9 +175,8 @@ class Notifications(context: Context) {
             .setAutoCancel(false)
             .setTimeoutAfter(CallManager.RING_MILLIS)
             .setContentIntent(open)
+            // Lights the screen and opens the call over the lock screen.
             .setFullScreenIntent(open, true)
-            .addAction(0, "Decline", decline)
-            .addAction(0, "Answer", answer)
             .build()
         // Ring again and again until answered, declined or timed out, not once.
         notification.flags = notification.flags or Notification.FLAG_INSISTENT
@@ -183,31 +189,56 @@ class Notifications(context: Context) {
         if (!allowed) return
         try {
             manager.notify(ID_RINGING, notification)
-        } catch (_: SecurityException) {
-            // Permission was withdrawn between the check and the call.
+        } catch (_: Exception) {
+            // Permission was withdrawn between the check and the call, or Android
+            // would not show a call's notification without a service behind it.
         }
     }
+
+    /**
+     * Shown for the moment between a wake-up that says "a call" and the call
+     * itself being fetched. Silent: the ringing follows when it is known who calls.
+     */
+    fun callComing(): Notification =
+        NotificationCompat.Builder(context, CHANNEL_CALL_ONGOING)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Maun")
+            .setContentText("Incoming call…")
+            .setOngoing(true)
+            .setShowWhen(false)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setContentIntent(openApp())
+            .build()
+
+    /**
+     * Whether Android lets Maun open a call over the lock screen. From
+     * Android 14 on that is a setting of its own, which can be off for an app
+     * that was not installed from a store.
+     */
+    fun mayShowCallsOverLockScreen(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+            (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).canUseFullScreenIntent()
 
     fun clearIncomingCall() {
         manager.cancel(ID_RINGING)
     }
 
     /** The notification Android requires while a call goes on. Says that there is one, not with whom. */
-    fun inCall(hangUp: Intent): Notification =
-        NotificationCompat.Builder(context, CHANNEL_CALL_ONGOING)
+    fun inCall(hangUp: Intent): Notification {
+        val end = PendingIntent.getService(context, 4, hangUp, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        // Android's own look for a call in progress. It names no one: it is on the lock screen too.
+        val maun = Person.Builder().setName("Maun call").setImportant(true).build()
+        return NotificationCompat.Builder(context, CHANNEL_CALL_ONGOING)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Maun call")
             .setContentText("Tap to return to the call.")
+            .setStyle(NotificationCompat.CallStyle.forOngoingCall(maun, end))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setContentIntent(openApp())
-            .addAction(
-                0,
-                "Hang up",
-                PendingIntent.getService(context, 4, hangUp, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT),
-            )
             .build()
+    }
 
     /** The permanent notification Android requires while Maun stays connected. */
     fun connected(): Notification = quiet("Maun is connected", "Waiting for messages. Tap to open.")

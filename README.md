@@ -7,7 +7,7 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 
-## Status: app 0.12.0 (files, voice messages, voice and video calls, and an optional member-only mode with usernames)
+## Status: app 0.13.0 (files, voice messages, voice and video calls, and an optional member-only mode with usernames)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
 messages while the app is closed. The app can be locked behind the phone's
@@ -55,13 +55,39 @@ tell a message from a read receipt.
 
 ### Messages while the app is closed
 
-The relay wakes the phone for a message as soon as it arrives (messages that
-come within five seconds of each other share one wake-up), the phone fetches
-it, and a notification shows who wrote and what, like other messengers do.
-The text can be turned off in Settings ("Show messages in notifications");
-a locked screen is only ever told that a message arrived. Receipts
-("delivered", "read") never wake a phone: they have nothing to show, and
-wait for the next time the phone is there.
+Nothing of Maun runs while nothing is happening. The path a message takes
+to a phone whose app is closed, with the screen locked:
+
+1. The relay stores the encrypted message and sends the phone a **wake-up**
+   through the push service: a high-priority, data-only push that says only
+   "message" (or "call"), encrypted for the phone. It never carries anything
+   of the message itself.
+2. The push wakes Maun, which starts an **expedited job** at once. Android
+   gives such a job the network straight away, also in Doze.
+3. The job connects to the relay, fetches what is waiting, decrypts it and
+   stores it in the phone's encrypted database.
+4. It sends the **delivered** receipt back, so the sender's one tick becomes
+   two right then, without the app being opened.
+5. It shows the notification, and Maun goes back to sleep.
+
+The ticks, then: a clock while the message is only on the sender's phone;
+one tick when the relay has it; two when the other phone has fetched and
+decrypted it; two blue ones when that conversation was opened and looked at.
+
+Messages that come within five seconds of each other share one wake-up.
+Receipts ("delivered", "read") never wake a phone: they have nothing to
+show, and are handed over the next time the phone is connected, which is
+the moment its owner opens the app to look at the ticks. A notification
+shows who wrote and what, like other messengers do; the text can be turned
+off in Settings, and a locked screen is only ever told that a message
+arrived.
+
+Two notes on how this is built. The wake-up reaches Google's push service
+as standard Web Push, which that service delivers exactly like a
+high-priority data message of its own; it needs no Firebase project and no
+Google code in the app. And the fetch runs over the same encrypted
+connection the open app uses, because each message is deleted from the relay
+only once the phone has confirmed it over that connection.
 
 What the push service (Google's, or the push app's) learns from this: that
 this phone was woken, and when, once for every burst of messages. It does
@@ -203,11 +229,21 @@ at once). Calls can be started from the top of a conversation and from the
 contact's page. Both phones need app 0.11.0 or newer; with an older one a
 call may not ring.
 
-**Ringing.** While Maun is not on screen, a call rings through a
-notification that carries the phone's own ringtone and a vibration and
-repeats them until the call is answered, declined or given up. A small
-service stays up for that time, so that the phone hears it when the caller
-gives up. The phone's silent and vibrate settings apply, as for any call. On
+**Ringing.** The wake-up for a call says "call" and is dropped by the push
+service after 30 seconds, so a phone that comes back later does not ring for
+a call that is over. The moment it arrives, a short-lived service of the
+phone-call kind starts; it exists only until the call is answered, declined
+or given up. The call then rings through Android's own incoming-call
+notification (caller, Answer, Decline) on a channel that carries the
+phone's ringtone and a vibration, repeated for as long as it rings, and it
+lights up a locked screen and shows the call there. From Android 14 on,
+showing over the lock screen is a setting of its own; where it is off, Maun's
+Settings says so and leads to it.
+
+Calls are also handed to Android's call system (Telecom), so that a
+headset's or a car's buttons answer and hang up and an ordinary phone call
+does not talk over a Maun call. Phones without it (many tablets) and calls it
+turns down run as before; a switch in Settings turns it off. The phone's silent and vibrate settings apply, as for any call. On
 phones that put apps to sleep hard (many OnePlus, Oppo, Xiaomi and Vivo
 models), calls may still not ring until Maun is allowed to run in the
 background: Settings in Maun offers that when the phone's battery saving

@@ -28,7 +28,9 @@ import {
   PROTOCOL_VERSION,
   PUSH_CONTACT,
   PUSH_DAILY_CAP,
+  PUSH_CALL_TTL_SECONDS,
   PUSH_PAYLOAD,
+  PUSH_PAYLOAD_CALL,
   PUSH_REPEAT_MS,
   PUSH_URGENT_REPEAT_MS,
   PUSH_SETTLE_MS,
@@ -660,13 +662,13 @@ export class Mailbox extends DurableObject<Env> {
     if (sentToday >= PUSH_DAILY_CAP) return;
     sql.exec("UPDATE push SET last = ?, pending = 1, day = ?, sent = ? WHERE id = 1", now, today, sentToday + 1);
     sql.exec("INSERT OR REPLACE INTO push_result (id, status) VALUES (1, ?)", PUSH_UNFINISHED);
-    this.ctx.waitUntil(this.deliverWake(row.url as string, bytes(row.key), bytes(row.auth)));
+    this.ctx.waitUntil(this.deliverWake(row.url as string, bytes(row.key), bytes(row.auth), urgent));
   }
 
-  private async deliverWake(url: string, key: Uint8Array, auth: Uint8Array): Promise<void> {
+  private async deliverWake(url: string, key: Uint8Array, auth: Uint8Array, call = false): Promise<void> {
     const sql = this.ctx.storage.sql;
     const gone = (status: number) => status === 404 || status === 410;
-    let status = await this.postWake(url, key, auth);
+    let status = await this.postWake(url, key, auth, call);
     // "Gone" from a push service that only just handed the address out means
     // it is not ready yet. Waiting a little is all it takes.
     for (const wait of PUSH_SETTLE_WAITS_MS) {
@@ -674,7 +676,7 @@ export class Mailbox extends DurableObject<Env> {
       await scheduler.wait(wait);
       // The phone has come by itself; there is nobody left to wake.
       if (this.connected()) return;
-      status = await this.postWake(url, key, auth);
+      status = await this.postWake(url, key, auth, call);
     }
     // Kept for the phone to see at its next login. Without it, a push service
     // that turns the relay away would look exactly like one that works. Not
@@ -700,10 +702,16 @@ export class Mailbox extends DurableObject<Env> {
   }
 
   /** Sends one wake-up. Returns the push service's HTTP status, or 0 if it could not be reached. */
-  private async postWake(url: string, key: Uint8Array, auth: Uint8Array): Promise<number> {
+  /**
+   * Hands one wake-up to the push service. It is always sent as urgent: a
+   * wake-up is only ever sent for something the phone will show its owner (a
+   * message or a ringing call), never for a receipt, so the push service has
+   * no reason to slow them down.
+   */
+  private async postWake(url: string, key: Uint8Array, auth: Uint8Array, call: boolean): Promise<number> {
     let status = 0;
     try {
-      const body = await encryptWebPush(new TextEncoder().encode(PUSH_PAYLOAD), key, auth);
+      const body = await encryptWebPush(new TextEncoder().encode(call ? PUSH_PAYLOAD_CALL : PUSH_PAYLOAD), key, auth);
       const response = await fetch(url, {
         method: "POST",
         headers: {
@@ -712,7 +720,7 @@ export class Mailbox extends DurableObject<Env> {
           Authorization: await vapidAuthorization(url, await this.vapidKeys(), PUSH_CONTACT, Date.now()),
           "Content-Encoding": "aes128gcm",
           "Content-Type": "application/octet-stream",
-          TTL: String(PUSH_TTL_SECONDS),
+          TTL: String(call ? PUSH_CALL_TTL_SECONDS : PUSH_TTL_SECONDS),
           Urgency: "high",
         },
         body,

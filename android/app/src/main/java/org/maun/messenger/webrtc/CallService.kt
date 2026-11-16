@@ -34,7 +34,7 @@ class CallService : Service() {
                 // A video call also keeps the camera when Maun is not in front, if the camera may be used at all.
                 val camera = intent?.getBooleanExtra(EXTRA_VIDEO, false) == true &&
                     ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-                val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
                     if (camera) ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA else 0
                 startForeground(Notifications.ID_CALL, notification, types)
             } else {

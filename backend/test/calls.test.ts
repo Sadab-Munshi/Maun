@@ -1,6 +1,14 @@
 import { SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PUSH_REPEAT_MS, PUSH_URGENT_REPEAT_MS, toBase64 } from "../src/protocol";
+import {
+  PUSH_CALL_TTL_SECONDS,
+  PUSH_PAYLOAD,
+  PUSH_PAYLOAD_CALL,
+  PUSH_REPEAT_MS,
+  PUSH_TTL_SECONDS,
+  PUSH_URGENT_REPEAT_MS,
+  toBase64,
+} from "../src/protocol";
 import { TURN_DAILY_CAP, TURN_TTL_SECONDS, forgetTurnOrder, turnConfig } from "../src/turn";
 import { hangUp, login, makePushKeys, randomBytes, registered, requestId, type Inbox, type User } from "./helpers";
 
@@ -11,6 +19,8 @@ type Asked = { url: string; authorization: string | null; body: string };
 /** What the relay asked the call service, what it sent to push services, and what the call service answers. */
 let asked: Asked[] = [];
 let wakes: string[] = [];
+let wakeHeaders: Headers[] = [];
+let wakeBodies: Uint8Array[] = [];
 let service: () => Response = () => new Response(null, { status: 500 });
 
 const CLOUDFLARE_ANSWER = {
@@ -28,6 +38,8 @@ beforeEach(() => {
   forgetTurnOrder();
   asked = [];
   wakes = [];
+  wakeHeaders = [];
+  wakeBodies = [];
   service = () => Response.json(CLOUDFLARE_ANSWER, { status: 201 });
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const request = new Request(input as RequestInfo, init);
@@ -36,6 +48,8 @@ beforeEach(() => {
       return service();
     }
     wakes.push(request.url);
+    wakeHeaders.push(request.headers);
+    wakeBodies.push(new Uint8Array(await request.arrayBuffer()));
     return new Response(null, { status: 201 });
   });
 });
@@ -197,6 +211,34 @@ describe("a call that is ringing", () => {
     await send(alice, bob.id, true);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(wakes).toHaveLength(2);
+    await hangUp(alice);
+  });
+
+  it("is announced as a call, urgently, and not kept by the push service once it has rung out", async () => {
+    const user = await registered();
+    const keys = await makePushKeys();
+    const inbox = await online(user);
+    const saved = await ask(inbox, { t: "put_push", url: `https://push.example.org/up${requestId()}`, key: toBase64(keys.publicKey), auth: toBase64(keys.auth) });
+    expect(saved.t).toBe("saved");
+    await hangUp(inbox);
+    const alice = await online(await registered());
+    const real = Date.now();
+
+    await send(alice, user.id, false);
+    await vi.waitFor(() => expect(wakes).toHaveLength(1));
+    vi.spyOn(Date, "now").mockReturnValue(real + 30_000);
+    await send(alice, user.id, true);
+    await vi.waitFor(() => expect(wakes).toHaveLength(2));
+
+    const said = async (i: number) => new TextDecoder().decode(await keys.decrypt(wakeBodies[i]!));
+    // An ordinary message: the push service may hold the wake-up for a day if the phone is off.
+    expect(await said(0)).toBe(PUSH_PAYLOAD);
+    expect(wakeHeaders[0]!.get("ttl")).toBe(String(PUSH_TTL_SECONDS));
+    expect(wakeHeaders[0]!.get("urgency")).toBe("high");
+    // A call: half a minute, then it is dropped, so a phone that comes back later does not ring for nothing.
+    expect(await said(1)).toBe(PUSH_PAYLOAD_CALL);
+    expect(wakeHeaders[1]!.get("ttl")).toBe(String(PUSH_CALL_TTL_SECONDS));
+    expect(wakeHeaders[1]!.get("urgency")).toBe("high");
     await hangUp(alice);
   });
 

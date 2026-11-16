@@ -82,8 +82,16 @@ export const PUSH_DAILY_CAP = 2000;
 export const PUSH_URGENT_REPEAT_MS = 2 * 1000;
 /** How long the push service should keep a wake-up for a phone it cannot reach, in seconds. */
 export const PUSH_TTL_SECONDS = 24 * 60 * 60;
+/** A wake-up for a call is of no use once the call has stopped ringing: the push service drops it after this long. */
+export const PUSH_CALL_TTL_SECONDS = 30;
 /** What a wake-up says once decrypted. It names nobody and carries nothing. */
-export const PUSH_PAYLOAD = "wake";
+export const PUSH_PAYLOAD = "message";
+/**
+ * What the wake-up for a ringing call says instead, so that the phone can get
+ * ready to ring before it has even fetched the call. Like the other, it is
+ * encrypted for the phone: the push service cannot read which of the two it is.
+ */
+export const PUSH_PAYLOAD_CALL = "call";
 /**
  * Where a push service's operator can reach whoever runs this relay. Sent with
  * every wake-up, as Web Push asks. Change it if you run your own relay.

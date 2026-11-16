@@ -198,19 +198,20 @@ class Messenger(context: Context) {
             }
 
             override fun ringing(peer: String?, on: Boolean, video: Boolean): Boolean {
-                if (!on) {
+                // In front, the call has the whole screen already and rings there.
+                if (!on || peer == null || inForeground) {
                     RingService.stop(appContext)
                     notifications.clearIncomingCall()
                     return false
                 }
-                // In front, the call has the whole screen already and rings there.
-                if (peer == null || inForeground) return false
-                val name = _contacts.value.firstOrNull { it.id == peer }?.name ?: "Maun"
-                if (!RingService.start(appContext, name, video)) {
+                val name = nameOf(peer)
+                if (!RingService.ring(appContext, name, video)) {
                     notifications.showIncomingCall(notifications.incomingCall(name, video))
                 }
                 return true
             }
+
+            override fun nameOf(peer: String): String = _contacts.value.firstOrNull { it.id == peer }?.name ?: "Maun"
         },
     )
 

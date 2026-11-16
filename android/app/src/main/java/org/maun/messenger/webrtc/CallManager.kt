@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import android.os.SystemClock
+import android.telecom.DisconnectCause
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -101,6 +102,9 @@ interface CallSignals {
      * it returns false, and the call screen rings by itself.
      */
     fun ringing(peer: String?, on: Boolean, video: Boolean): Boolean
+
+    /** What this phone calls [peer]. */
+    fun nameOf(peer: String): String
 }
 
 /**
@@ -142,6 +146,20 @@ class CallManager(context: Context, private val signals: CallSignals) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val audio = CallAudio(appContext)
+
+    /** Android's own call system, where the phone has one and takes the call. */
+    private val telecom = TelecomBridge(appContext)
+    private val fromTelecom = object : TelecomBridge.Listener {
+        override fun onAnswer() = accept()
+
+        override fun onHangUp() = hangUp()
+
+        override fun onRoutes(current: AudioRoute?, all: List<AudioRoute>) {
+            if (current != null) audio.noteRoute(current)
+            val call = _state.value ?: return
+            if (all.isNotEmpty()) _state.value = call.copy(route = current ?: call.route, routes = all)
+        }
+    }
 
     private val _state = MutableStateFlow<CallUi?>(null)
     val state: StateFlow<CallUi?> = _state.asStateFlow()
@@ -198,6 +216,7 @@ class CallManager(context: Context, private val signals: CallSignals) {
         val id = UUID.randomUUID().toString()
         callId = id
         _state.value = CallUi(peer = peer, incoming = false, phase = CallUi.Phase.Ringing, video = video, canVideo = true)
+        telecom.begin(signals.nameOf(peer), incoming = false, video = video, listener = fromTelecom)
         setup = scope.launch {
             try {
                 val pc = connect(peer, id)
@@ -234,6 +253,7 @@ class CallManager(context: Context, private val signals: CallSignals) {
         audio.stopRinging()
         signals.ringing(call.peer, false, call.video)
         _state.value = call.copy(phase = CallUi.Phase.Connecting, canVideo = hasVideo(remote))
+        telecom.answered(call.video)
         CallService.start(appContext, call.video)
         beginAudio(preferSpeaker = call.video)
         setup = scope.launch {
@@ -280,12 +300,20 @@ class CallManager(context: Context, private val signals: CallSignals) {
     /** Sends the other person's voice to the earpiece, the loudspeaker or a headset. */
     fun setRoute(route: AudioRoute) {
         if (_state.value == null) return
+        // Where Android has taken the call, it is asked; what it does comes back through fromTelecom.
+        if (telecom.inCharge && telecom.setRoute(route)) return
         audio.setRoute(route)
         showAudio()
     }
 
     /** Starts the phone's call sound and follows headsets that come and go. */
     private fun beginAudio(preferSpeaker: Boolean) {
+        if (telecom.inCharge) {
+            // Android steers the sound of a call it has taken. It starts at the ear; a video call wants the loudspeaker.
+            audio.begin(preferSpeaker, routing = false)
+            if (preferSpeaker) telecom.setRoute(AudioRoute.Speaker)
+            return
+        }
         audio.begin(preferSpeaker)
         var known = audio.routes()
         audio.onDevicesChanged = {
@@ -369,6 +397,7 @@ class CallManager(context: Context, private val signals: CallSignals) {
                     remoteSet = false
                     waitingCandidates.clear()
                     _state.value = CallUi(peer = from, incoming = true, phase = CallUi.Phase.Ringing, video = step.video)
+                    telecom.begin(signals.nameOf(from), incoming = true, video = step.video, listener = fromTelecom)
                     if (!signals.ringing(from, true, step.video)) audio.ringIncoming()
                     ringTimeout = scope.launch {
                         delay(RING_MILLIS - ageMillis)
@@ -515,6 +544,7 @@ class CallManager(context: Context, private val signals: CallSignals) {
                         lostTimeout?.cancel()
                         ringTimeout?.cancel()
                         audio.stopRinging()
+                        if (!call.incoming && call.connectedAt == 0L) telecom.active()
                         if (call.phase != CallUi.Phase.Ended) {
                             _state.value = call.copy(
                                 phase = CallUi.Phase.Active,
@@ -605,6 +635,7 @@ class CallManager(context: Context, private val signals: CallSignals) {
         val hadVideo = call.video || usedVideo
         usedVideo = false
         audio.release()
+        telecom.end(if (missed) DisconnectCause.MISSED else DisconnectCause.LOCAL)
         signals.ringing(call.peer, false, call.video)
         CallService.stop(appContext)
 

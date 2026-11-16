@@ -259,6 +259,16 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                     viewModel.refreshPrivacy()
                                 },
                                 onNotifyText = viewModel::setNotifyText,
+                                onTelecomCalls = viewModel::setTelecomCalls,
+                                onLockScreenCalls = {
+                                    // Android 14's own page for this; the answer shows when Settings is back in front.
+                                    runCatching {
+                                        activity?.startActivity(
+                                            Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT)
+                                                .setData(Uri.parse("package:${activity.packageName}")),
+                                        )
+                                    }
+                                },
                                 onBattery = {
                                     // Android's own question; the answer shows when Settings is back in front.
                                     runCatching {

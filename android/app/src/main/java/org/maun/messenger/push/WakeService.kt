@@ -1,6 +1,7 @@
 package org.maun.messenger.push
 
 import org.maun.messenger.MaunApp
+import org.maun.messenger.webrtc.RingService
 import org.maun.messenger.network.PushAddress
 import org.unifiedpush.android.connector.FailedReason
 import org.unifiedpush.android.connector.PushService
@@ -17,6 +18,11 @@ import org.unifiedpush.android.connector.data.PushMessage
  * there; the push service passes it on, and Maun connects and fetches.
  */
 class WakeService : PushService() {
+    private companion object {
+        /** What the relay's wake-up for a ringing call says. Anything else is a message. */
+        const val WAKE_CALL = "call"
+    }
+
 
     private val messenger
         get() = (application as MaunApp).messenger
@@ -40,6 +46,11 @@ class WakeService : PushService() {
         // did not decrypt came from someone who merely knows the address, and
         // must not be able to make this phone do work.
         if (!message.decrypted) return
+        // The relay says which it is. For a call, be awake as of this moment:
+        // right after an urgent wake-up Android allows the service that keeps
+        // Maun up while the call is fetched and rings. For a message, nothing
+        // of Maun stays running beyond the fetch.
+        if (String(message.content, Charsets.UTF_8) == WAKE_CALL) RingService.prepare(this)
         // Start at once: every second counts for a call that is ringing. The
         // scheduled job does the same work, and is what Android lets finish.
         messenger.fetchSoon()

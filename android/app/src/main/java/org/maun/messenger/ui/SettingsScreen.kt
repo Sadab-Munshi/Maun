@@ -34,6 +34,10 @@ data class PrivacyUi(
     val notifyText: Boolean = true,
     /** The phone's battery saving applies to Maun, and may put it to sleep. */
     val batterySaving: Boolean = false,
+    /** Android does not let Maun open a call over the lock screen. */
+    val lockScreenCallsBlocked: Boolean = false,
+    /** Calls are handed to Android's own call system. */
+    val telecomCalls: Boolean = true,
 )
 
 @Composable
@@ -55,6 +59,8 @@ fun SettingsScreen(
     onBlockScreenshots: (Boolean) -> Unit,
     onNotifyText: (Boolean) -> Unit = {},
     onBattery: () -> Unit = {},
+    onLockScreenCalls: () -> Unit = {},
+    onTelecomCalls: (Boolean) -> Unit = {},
     onOpenBlocked: () -> Unit,
     onOpenSetupCheck: () -> Unit,
     onBack: () -> Unit,
@@ -62,9 +68,27 @@ fun SettingsScreen(
     ScreenFrame(title = "Settings", onBack = onBack) {
         DeliveryCard(delivery, pushProblem, onChoosePushApp, onGooglePush, onStayConnected, onDeliveryChanged)
 
-        if (privacy.batterySaving) {
-            Column {
-                SectionTitle("Arriving on time", modifier = Modifier.padding(bottom = 4.dp))
+        Column {
+            SectionTitle("Calls and arriving on time", modifier = Modifier.padding(bottom = 4.dp))
+            if (privacy.lockScreenCallsBlocked) {
+                LinkRow(
+                    icon = MaunIcons.Call,
+                    title = "Let calls light up the locked screen",
+                    text = "Android is not letting Maun show a call over the lock screen, so a call only " +
+                        "rings and shows as a notification. Tap, then allow full-screen notifications for Maun.",
+                    onClick = onLockScreenCalls,
+                )
+            }
+            SwitchRow(
+                icon = MaunIcons.Call,
+                title = "Treat Maun calls as phone calls",
+                text = "Android handles a Maun call like any call: a headset's or a car's buttons answer it, " +
+                    "and a phone call does not talk over it. Turn this off if a call sounds wrong or does not connect.",
+                checked = privacy.telecomCalls,
+                enabled = true,
+                onChange = onTelecomCalls,
+            )
+            if (privacy.batterySaving) {
                 LinkRow(
                     icon = MaunIcons.Bell,
                     title = "Let Maun run in the background",

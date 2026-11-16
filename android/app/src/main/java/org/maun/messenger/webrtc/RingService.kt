@@ -4,49 +4,68 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.content.ContextCompat
 import org.maun.messenger.MaunApp
 import org.maun.messenger.push.Notifications
 
 /**
- * Stays up for as long as a call rings on this phone while Maun is not on
- * screen. Its notification is the ringing: Android plays the ringtone and
- * vibrates for it, over and over, whatever becomes of the app's own process;
- * and with this service running, the process is still there to hear that the
- * caller gave up, or to take the call when Answer is tapped.
+ * Runs only while a call is coming in and Maun is not on screen, never while
+ * nothing is happening.
+ *
+ * It starts the moment the relay's wake-up says "a call" ([prepare]), before
+ * the call itself has been fetched: from then on Android keeps the app awake.
+ * When the call is there it rings ([ring]): its notification carries the
+ * phone's ringtone and a vibration, which Android repeats until the call is
+ * answered, declined or given up, and opens the call over the lock screen. It
+ * stops as soon as the ringing does, or after a few seconds if no call
+ * turned up after all.
  */
 class RingService : Service() {
+    private val handler = Handler(Looper.getMainLooper())
+    private val giveUp = Runnable { if (!ringing) stop() }
+    private var ringing = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notifications = Notifications(this)
-        val notification = notifications.incomingCall(
-            name = intent?.getStringExtra(EXTRA_NAME) ?: "Maun",
-            video = intent?.getBooleanExtra(EXTRA_VIDEO, false) == true,
-        )
+        val ring = intent?.action == ACTION_RING
+        val notification = if (ring) {
+            notifications.incomingCall(
+                name = intent?.getStringExtra(EXTRA_NAME) ?: "Maun",
+                video = intent?.getBooleanExtra(EXTRA_VIDEO, false) == true,
+            )
+        } else {
+            notifications.callComing()
+        }
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                // Ringing lasts under a minute; this kind of service may run for three.
-                startForeground(Notifications.ID_RINGING, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE)
-            } else {
-                startForeground(Notifications.ID_RINGING, notification)
-            }
+            startForeground(Notifications.ID_RINGING, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
         } catch (_: Exception) {
             // Android would not let the service stay. The notification rings without it.
-            notifications.showIncomingCall(notification)
+            if (ring) notifications.showIncomingCall(notification)
             stopSelf()
             return START_NOT_STICKY
         }
-        // Started, then the call was over before this ran.
-        val call = (application as MaunApp).messenger.calls.state.value
-        if (call == null || !call.incoming || call.phase != CallUi.Phase.Ringing) stop()
+        if (ring) {
+            ringing = true
+            handler.removeCallbacks(giveUp)
+            // Started, then the call was over before this ran.
+            val call = (application as MaunApp).messenger.calls.state.value
+            if (call == null || !call.incoming || call.phase != CallUi.Phase.Ringing) stop()
+        } else if (!ringing) {
+            handler.removeCallbacks(giveUp)
+            handler.postDelayed(giveUp, PREPARE_MILLIS)
+        }
         return START_NOT_STICKY
     }
 
-    /** Android's limit for this kind of service has been reached. Ringing ends long before. */
-    override fun onTimeout(startId: Int) = stop()
+    override fun onDestroy() {
+        handler.removeCallbacks(giveUp)
+        super.onDestroy()
+    }
 
     private fun stop() {
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -54,15 +73,24 @@ class RingService : Service() {
     }
 
     companion object {
+        private const val ACTION_RING = "org.maun.messenger.RING"
         private const val EXTRA_NAME = "name"
         private const val EXTRA_VIDEO = "video"
 
-        /** Starts ringing. False when Android does not allow the service right now. */
-        fun start(context: Context, name: String, video: Boolean): Boolean = try {
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, RingService::class.java).putExtra(EXTRA_NAME, name).putExtra(EXTRA_VIDEO, video),
-            )
+        /** How long to wait for the call a wake-up announced, before concluding there is none. */
+        private const val PREPARE_MILLIS = 20_000L
+
+        /** A wake-up says a call is coming: stay awake for it. False when Android does not allow it right now. */
+        fun prepare(context: Context): Boolean = launch(context, Intent(context, RingService::class.java))
+
+        /** The call is here: ring. False when Android does not allow the service right now. */
+        fun ring(context: Context, name: String, video: Boolean): Boolean = launch(
+            context,
+            Intent(context, RingService::class.java).setAction(ACTION_RING).putExtra(EXTRA_NAME, name).putExtra(EXTRA_VIDEO, video),
+        )
+
+        private fun launch(context: Context, intent: Intent): Boolean = try {
+            ContextCompat.startForegroundService(context, intent)
             true
         } catch (_: Exception) {
             false
