@@ -163,7 +163,7 @@ fun DeliveryCard(
                     },
                 ) { Text("Allow notifications") }
             } else {
-                Note("Notifications say that a message arrived, never what it says.")
+                Note("A locked screen is only told that a message arrived. What an unlocked one shows is set below.")
             }
         }
     }
