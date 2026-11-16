@@ -46,6 +46,7 @@ class MainActivity : ComponentActivity() {
         AppLock.onCreate(this)
         lifecycleScope.launch { messenger.calls.state.collect { showOverLockScreen(it != null) } }
         if (savedInstanceState == null && intent?.action == ACTION_ANSWER) answer()
+        if (savedInstanceState == null && intent?.action == ACTION_OPEN_CHAT) messenger.requestChat(intent.getStringExtra(EXTRA_CHAT))
         setContent {
             MaunTheme {
                 // While locked, none of the app is drawn, and no conversation
@@ -127,6 +128,8 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         // "Answer" on the notification of a call that is ringing.
         if (intent.action == ACTION_ANSWER) answer()
+        // A message notification: go to the conversation it was about.
+        if (intent.action == ACTION_OPEN_CHAT) messenger.requestChat(intent.getStringExtra(EXTRA_CHAT))
     }
 
     override fun onStart() {
@@ -166,6 +169,10 @@ class MainActivity : ComponentActivity() {
     companion object {
         /** Sent by the notification of a ringing call: open, and take it. */
         const val ACTION_ANSWER = "org.maun.messenger.ANSWER"
+
+        /** Sent by a message notification: open, at the conversation named in [EXTRA_CHAT]. */
+        const val ACTION_OPEN_CHAT = "org.maun.messenger.OPEN_CHAT"
+        const val EXTRA_CHAT = "chat"
         private const val REVEAL_AFTER_MILLIS = 500L
     }
 }

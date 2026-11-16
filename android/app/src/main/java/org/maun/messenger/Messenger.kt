@@ -8,6 +8,7 @@ import org.maun.messenger.network.AuthApi
 import org.maun.messenger.webrtc.CallManager
 import org.maun.messenger.webrtc.CallSignals
 import org.maun.messenger.webrtc.CallUi
+import org.maun.messenger.webrtc.RingService
 import org.maun.messenger.network.FileApi
 import org.maun.messenger.network.Usernames
 import org.maun.messenger.security.DeviceFingerprint
@@ -196,13 +197,19 @@ class Messenger(context: Context) {
                 scope.launch { engine?.addNotice(peer, text, missed) }
             }
 
-            override fun ringing(peer: String?, on: Boolean, video: Boolean) {
-                // In front, the call has the whole screen already.
-                if (on && peer != null && !inForeground) {
-                    notifications.showIncomingCall(_contacts.value.firstOrNull { it.id == peer }?.name ?: "Maun", video)
-                } else if (!on) {
+            override fun ringing(peer: String?, on: Boolean, video: Boolean): Boolean {
+                if (!on) {
+                    RingService.stop(appContext)
                     notifications.clearIncomingCall()
+                    return false
                 }
+                // In front, the call has the whole screen already and rings there.
+                if (peer == null || inForeground) return false
+                val name = _contacts.value.firstOrNull { it.id == peer }?.name ?: "Maun"
+                if (!RingService.start(appContext, name, video)) {
+                    notifications.showIncomingCall(notifications.incomingCall(name, video))
+                }
+                return true
             }
         },
     )
@@ -712,6 +719,19 @@ class Messenger(context: Context) {
      * finished within [timeoutMillis]; whatever was not fetched stays on the
      * relay. Used when the phone is woken up while Maun is closed.
      */
+    /** Starts fetching right away, without waiting for anything to be scheduled. For the moment a wake-up arrives. */
+    fun fetchSoon() {
+        scope.launch { fetch() }
+    }
+
+    /** A notification was tapped: the conversation it was about, until the screen has gone there. */
+    private val _openChat = MutableStateFlow<String?>(null)
+    val openChat: StateFlow<String?> = _openChat.asStateFlow()
+
+    fun requestChat(peer: String?) {
+        _openChat.value = peer
+    }
+
     suspend fun fetch(timeoutMillis: Long = FETCH_TIMEOUT_MILLIS): Boolean {
         val current = account.first { it !is AccountState.Loading }
         if (current !is AccountState.Present || !current.registered || _banned.value || _awaiting.value) return true
@@ -722,6 +742,9 @@ class Messenger(context: Context) {
         try {
             return withTimeoutOrNull(timeoutMillis) {
                 engine?.awaitCaughtUp()
+                // A call that was among what arrived is handed to the main thread;
+                // let that happen before looking whether one is ringing.
+                withContext(Dispatchers.Main) { }
                 // What was waiting may have been a call. While it rings here, stay:
                 // letting go of the connection would be hanging up on it.
                 calls.state.first { it == null || !it.incoming || it.phase != CallUi.Phase.Ringing }
@@ -770,7 +793,7 @@ class Messenger(context: Context) {
     /** Tells the user about messages that arrived while they were not looking. Never says what is in them. */
     private fun announceUnread(chats: List<ChatSummary>) = synchronized(this) {
         val news = unread.hasNew(chats)
-        val announcement = announce(chats, _contacts.value.associate { it.id to it.name })
+        val announcement = announce(chats, _contacts.value.associate { it.id to it.name }, showText = notifications.showsText)
         when {
             announcement == null -> {
                 notifications.clearMessages()
@@ -909,7 +932,7 @@ class Messenger(context: Context) {
         private const val ONLINE_WAIT_MILLIS = 20_000L
         private const val BACKGROUND_LINGER_MILLIS = 10_000L
 
-        /** Long enough for a few hundred waiting messages on a slow connection. */
-        private const val FETCH_TIMEOUT_MILLIS = 45_000L
+        /** Long enough for a few hundred waiting messages on a slow connection, or for a call to ring out. */
+        private const val FETCH_TIMEOUT_MILLIS = 60_000L
     }
 }

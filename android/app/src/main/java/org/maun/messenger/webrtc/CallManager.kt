@@ -95,8 +95,12 @@ interface CallSignals {
     /** Writes how a call went into the conversation. [missed] makes it count as unread. */
     fun note(peer: String, text: String, missed: Boolean)
 
-    /** Shows, or takes away, the notification of a call that is ringing here. */
-    fun ringing(peer: String?, on: Boolean, video: Boolean)
+    /**
+     * A call has started ([on]) or stopped ringing here. While Maun is not on
+     * screen the app rings through a notification and returns true; in front
+     * it returns false, and the call screen rings by itself.
+     */
+    fun ringing(peer: String?, on: Boolean, video: Boolean): Boolean
 }
 
 /**
@@ -365,8 +369,7 @@ class CallManager(context: Context, private val signals: CallSignals) {
                     remoteSet = false
                     waitingCandidates.clear()
                     _state.value = CallUi(peer = from, incoming = true, phase = CallUi.Phase.Ringing, video = step.video)
-                    audio.ringIncoming()
-                    signals.ringing(from, true, step.video)
+                    if (!signals.ringing(from, true, step.video)) audio.ringIncoming()
                     ringTimeout = scope.launch {
                         delay(RING_MILLIS - ageMillis)
                         finish("Missed call", note = "Missed $kind", missed = true)

@@ -54,7 +54,14 @@ class CallAudio(context: Context) {
             runCatching {
                 @Suppress("DEPRECATION")
                 val vibrator = appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-                vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 800, 1200), 0))
+                // Named as ringing, or Android stops it the moment the app is not in front.
+                vibrator?.vibrate(
+                    VibrationEffect.createWaveform(longArrayOf(0, 800, 1200), 0),
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build(),
+                )
                 vibrating = vibrator != null
             }
         }

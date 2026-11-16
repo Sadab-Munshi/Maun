@@ -1,6 +1,7 @@
 package org.maun.messenger.ui
 
 import android.app.Application
+import android.os.PowerManager
 import java.io.File
 import org.maun.messenger.voice.VoicePlayer
 import org.maun.messenger.voice.VoiceState
@@ -308,6 +309,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             canLock = AppLock.available(context),
             blockScreenshots = AppLock.blocksScreenshots(context),
             lockBlocksScreenshots = AppLock.lockBlocksScreenshots,
+            notifyText = Notifications(context).showsText,
+            batterySaving = !(context.getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(context.packageName),
         )
     }
 
@@ -317,6 +320,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     suspend fun checkCode(text: String, typed: Boolean): CodeCheck = messenger.checkCode(text, typed)
+
+    /** The conversation a tapped notification was about, until the screen has gone there. */
+    val openChat = messenger.openChat
+
+    fun chatOpened() = messenger.requestChat(null)
+
+    fun setNotifyText(on: Boolean) {
+        Notifications(getApplication()).showsText = on
+        refreshPrivacy()
+    }
 
     /** A contact's ID changed (old to new): a screen showing the old one should show the new one. */
     val moved = messenger.moved

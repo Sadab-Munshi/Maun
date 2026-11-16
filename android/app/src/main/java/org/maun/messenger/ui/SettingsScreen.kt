@@ -30,6 +30,10 @@ data class PrivacyUi(
     val blockScreenshots: Boolean = false,
     /** On this version of Android the app lock can only hide Maun from the recent-apps list by blocking screenshots too. */
     val lockBlocksScreenshots: Boolean = false,
+    /** Notifications quote the newest message. */
+    val notifyText: Boolean = true,
+    /** The phone's battery saving applies to Maun, and may put it to sleep. */
+    val batterySaving: Boolean = false,
 )
 
 @Composable
@@ -49,6 +53,8 @@ fun SettingsScreen(
     onDeliveryChanged: () -> Unit,
     onAppLock: (Boolean) -> Unit,
     onBlockScreenshots: (Boolean) -> Unit,
+    onNotifyText: (Boolean) -> Unit = {},
+    onBattery: () -> Unit = {},
     onOpenBlocked: () -> Unit,
     onOpenSetupCheck: () -> Unit,
     onBack: () -> Unit,
@@ -56,8 +62,31 @@ fun SettingsScreen(
     ScreenFrame(title = "Settings", onBack = onBack) {
         DeliveryCard(delivery, pushProblem, onChoosePushApp, onGooglePush, onStayConnected, onDeliveryChanged)
 
+        if (privacy.batterySaving) {
+            Column {
+                SectionTitle("Arriving on time", modifier = Modifier.padding(bottom = 4.dp))
+                LinkRow(
+                    icon = MaunIcons.Bell,
+                    title = "Let Maun run in the background",
+                    text = "This phone's battery saving may put Maun to sleep, so that calls do not ring and " +
+                        "messages come late. Tap to take Maun out of it. If calls still do not ring, also " +
+                        "allow Maun to start by itself in the phone's own settings (often called Auto-launch).",
+                    onClick = onBattery,
+                )
+            }
+        }
+
         Column {
             SectionTitle("Privacy", modifier = Modifier.padding(bottom = 4.dp))
+            SwitchRow(
+                icon = MaunIcons.Bell,
+                title = "Show messages in notifications",
+                text = "A notification names who wrote and shows the message. Off, it only says that a " +
+                    "message arrived. A locked screen never shows either.",
+                checked = privacy.notifyText,
+                enabled = true,
+                onChange = onNotifyText,
+            )
             SwitchRow(
                 icon = MaunIcons.Lock,
                 title = "App lock",

@@ -723,7 +723,8 @@ class ChatEngine(
             val item = withContext(io) { dao.nextOutbox(after) } ?: break
             after = item.seq
             if (item.peer in held) continue
-            when (val outcome = sending.withLock { deliver(link, item) }) {
+            // A receipt has nothing to show anyone: it must not wake the other phone.
+            when (val outcome = sending.withLock { deliver(link, item, quiet = item.messageId == null) }) {
                 Outcome.Done -> Unit
                 // Their items now carry the new ID; this pass ends and another begins.
                 Outcome.Moved -> {
@@ -741,7 +742,7 @@ class ChatEngine(
         if (held.isNotEmpty()) retryLater()
     }
 
-    private suspend fun deliver(link: RelayLink, item: OutboxEntity, urgent: Boolean = false): Outcome {
+    private suspend fun deliver(link: RelayLink, item: OutboxEntity, urgent: Boolean = false, quiet: Boolean = false): Outcome {
         val peer = item.peer
         var sealed = if (item.cipher != null && item.cipherKind != null) Sealed(item.cipherKind, item.cipher) else null
         if (sealed == null) {
@@ -776,7 +777,10 @@ class ChatEngine(
                     .put("to", peer)
                     .put("kind", sealed.kind)
                     .put("body", Base64.getEncoder().encodeToString(sealed.body))
-                    .apply { if (urgent) put("urgent", true) },
+                    .apply {
+                        if (urgent) put("urgent", true)
+                        if (quiet) put("quiet", true)
+                    },
             )
         } catch (_: RelayException) {
             return Outcome.Stop

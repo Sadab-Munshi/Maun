@@ -220,12 +220,10 @@ fun ChatScreen(
             Column(modifier = Modifier.widthIn(max = 720.dp).fillMaxSize()) {
                 ChatHeader(
                     peerId = peerId,
-                    name = contactName ?: peerUsername?.let { "@$it" },
+                    name = contactName ?: (contactUsername ?: peerUsername)?.let { "@$it" },
                     onBack = onBack,
                     onOpenDetails = if (isContact) onOpenDetails else null,
                     onCall = if (isContact) onCall else null,
-                    // Shown under the name, unless the name is the username already.
-                    username = contactUsername?.takeIf { !it.equals(contactName, ignoreCase = true) },
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
@@ -337,7 +335,6 @@ private fun ChatHeader(
     onBack: () -> Unit,
     onOpenDetails: (() -> Unit)?,
     onCall: ((Boolean) -> Unit)? = null,
-    username: String? = null,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
@@ -355,20 +352,15 @@ private fun ChatHeader(
         ) {
             Avatar(id = peerId, name = name, size = 40.dp)
             Column {
+                // One line: the name this phone has for them, or failing that what they
+                // call themselves, or failing that the two ends of their ID.
                 Text(
-                    text = name ?: "Message request",
+                    text = name ?: shortId(peerId),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
+                    fontFamily = if (name == null) FontFamily.Monospace else null,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                )
-                // What they go by on the relay, where that is known; otherwise the start and end of their ID.
-                Text(
-                    text = username?.let { "@$it" } ?: shortId(peerId),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontFamily = if (username == null) FontFamily.Monospace else null,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
                 )
             }
         }

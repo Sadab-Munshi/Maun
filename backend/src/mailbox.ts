@@ -317,7 +317,7 @@ export class Mailbox extends DurableObject<Env> {
         try {
           // The recipient's mailbox writes the message before it answers, so
           // "stored" means it will survive whatever happens to either phone.
-          outcome = await this.peer(frame.to).store(state.m, frame.kind, frame.body, frame.to, frame.urgent);
+          outcome = await this.peer(frame.to).store(state.m, frame.kind, frame.body, frame.to, frame.urgent, frame.quiet);
         } catch {
           outcome = "unavailable";
         }
@@ -546,7 +546,7 @@ export class Mailbox extends DurableObject<Env> {
   // Worker's own code. `from` is therefore always a logged-in sender.
 
   /** Writes a message for this mailbox's owner and passes it on if they are connected. */
-  async store(from: string, kind: number, body: Uint8Array, self: string, urgent = false): Promise<StoreOutcome> {
+  async store(from: string, kind: number, body: Uint8Array, self: string, urgent = false, quiet = false): Promise<StoreOutcome> {
     if (!this.account()) return "no_account";
     this.ensureTables();
     if (await this.givenUp(self)) return "gone";
@@ -571,7 +571,7 @@ export class Mailbox extends DurableObject<Env> {
       this.expiryArmed = true;
     }
     for (const ws of this.ctx.getWebSockets()) this.pump(ws);
-    if (!this.connected()) this.wake(now, urgent);
+    if (!quiet && !this.connected()) this.wake(now, urgent);
     return "stored";
   }
 

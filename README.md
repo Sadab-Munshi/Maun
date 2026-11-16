@@ -7,7 +7,7 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 
-## Status: app 0.11.0 (files, voice messages, voice and video calls, and an optional member-only mode with usernames)
+## Status: app 0.12.0 (files, voice messages, voice and video calls, and an optional member-only mode with usernames)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
 messages while the app is closed. The app can be locked behind the phone's
@@ -54,6 +54,18 @@ What it can see: which ID sends to which, and when. It cannot read messages or
 tell a message from a read receipt.
 
 ### Messages while the app is closed
+
+The relay wakes the phone for a message as soon as it arrives (messages that
+come within five seconds of each other share one wake-up), the phone fetches
+it, and a notification shows who wrote and what, like other messengers do.
+The text can be turned off in Settings ("Show messages in notifications");
+a locked screen is only ever told that a message arrived. Receipts
+("delivered", "read") never wake a phone: they have nothing to show, and
+wait for the next time the phone is there.
+
+What the push service (Google's, or the push app's) learns from this: that
+this phone was woken, and when, once for every burst of messages. It does
+not learn by whom, and the wake-up carries nothing of the message.
 
 When a message arrives for a phone that is not connected, the relay sends a
 wake-up: encrypted, signed, and saying nothing but "wake". Maun then connects,
@@ -182,18 +194,25 @@ call up to about 7 MB a minute (the app sends 640 by 480 at no more than
 relay limits each account to 60 sets of credentials a day (a call needs one
 on each side) and each set works for four hours.
 
-Either side can turn its camera on or off at any time, so a voice call
-becomes a video call and back without hanging up; the camera can be changed
-between front and back, and the call goes on with sound if the camera may
-not be used. The button for the sound switches between the earpiece and the
+In a video call the camera can be turned off and on and changed between
+front and back, and the call goes on with sound if the camera may not be
+used. A voice call stays a voice call. The button for the sound switches between the earpiece and the
 loudspeaker, and lists a wired or Bluetooth headset when one is connected
 (on Android 12 and newer; a headset that is connected during a call is used
 at once). Calls can be started from the top of a conversation and from the
 contact's page. Both phones need app 0.11.0 or newer; with an older one a
 call may not ring.
 
-What a call does not do yet: ringing on a phone whose push service is slow
-to wake it (the call then shows as missed).
+**Ringing.** While Maun is not on screen, a call rings through a
+notification that carries the phone's own ringtone and a vibration and
+repeats them until the call is answered, declined or given up. A small
+service stays up for that time, so that the phone hears it when the caller
+gives up. The phone's silent and vibrate settings apply, as for any call. On
+phones that put apps to sleep hard (many OnePlus, Oppo, Xiaomi and Vivo
+models), calls may still not ring until Maun is allowed to run in the
+background: Settings in Maun offers that when the phone's battery saving
+applies to it, and the phone's own settings usually have an "Auto-launch"
+switch as well.
 
 ## A member-only relay
 

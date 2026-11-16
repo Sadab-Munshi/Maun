@@ -40,6 +40,9 @@ class WakeService : PushService() {
         // did not decrypt came from someone who merely knows the address, and
         // must not be able to make this phone do work.
         if (!message.decrypted) return
+        // Start at once: every second counts for a call that is ringing. The
+        // scheduled job does the same work, and is what Android lets finish.
+        messenger.fetchSoon()
         FetchWorker.schedule(this)
     }
 

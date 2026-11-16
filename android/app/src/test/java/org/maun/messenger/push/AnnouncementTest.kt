@@ -25,9 +25,9 @@ class AnnouncementTest {
 
     @Test
     fun oneContactIsNamed() {
-        assertEquals(Announcement("Asha", "New message", "New message", 1), announce(listOf(chat(asha, 1)), names))
+        assertEquals(Announcement("Asha", "New message", "New message", 1, peer = asha), announce(listOf(chat(asha, 1)), names))
         assertEquals(
-            Announcement("Asha", "3 new messages", "3 new messages", 3),
+            Announcement("Asha", "3 new messages", "3 new messages", 3, peer = asha),
             announce(listOf(chat(asha, 3), chat(rohan, 0)), names),
         )
     }
@@ -35,7 +35,7 @@ class AnnouncementTest {
     @Test
     fun severalChatsAreCounted() {
         assertEquals(
-            Announcement("Maun", "5 new messages in 2 chats", "5 new messages", 5),
+            Announcement("Maun", "5 new messages in 2 chats", "5 new messages", 5, lines = listOf("Asha: 2 new messages", "Rohan: 3 new messages")),
             announce(listOf(chat(asha, 2), chat(rohan, 3)), names),
         )
     }
@@ -43,23 +43,48 @@ class AnnouncementTest {
     @Test
     fun aStrangerIsNotNamed() {
         assertEquals(
-            Announcement("Maun", "New message request", "New message", 1),
+            Announcement("Maun", "New message request", "New message", 1, peer = stranger),
             announce(listOf(chat(stranger, 1)), names),
         )
         assertEquals("2 messages from someone new", announce(listOf(chat(stranger, 2)), names)!!.text)
     }
 
+    /** Everything of a notification that is put on the screen. */
+    private fun shown(a: Announcement) = (listOf(a.title, a.text, a.discreet) + a.lines).joinToString(" | ")
+
     @Test
-    fun neverContainsTheMessageOrAnId() {
+    fun withTextTurnedOffItNeverContainsTheMessageOrAnId() {
         val all = listOf(chat(asha, 1), chat(rohan, 2), chat(stranger, 1))
         for (chats in listOf(all, all.take(1), all.takeLast(1))) {
-            val said = announce(chats, names).toString()
+            val said = shown(announce(chats, names, showText = false)!!)
             assertFalse(said, said.contains("secret"))
             assertFalse(said, said.contains(stranger))
             assertFalse(said, said.contains(asha))
         }
         // What a locked screen shows names nobody at all.
         assertFalse(announce(all.take(1), names)!!.discreet.contains("Asha"))
+    }
+
+    @Test
+    fun withTextTurnedOnItQuotesTheNewestMessageOfContacts() {
+        val one = announce(listOf(chat(asha, 1, "See you at six")), names, showText = true)!!
+        assertEquals(Announcement("Asha", "See you at six", "New message", 1, peer = asha), one)
+        assertEquals("Asha (3 new)", announce(listOf(chat(asha, 3, "last one")), names, showText = true)!!.title)
+
+        val several = announce(listOf(chat(asha, 2, "hello"), chat(rohan, 1, "line one\nline two")), names, showText = true)!!
+        assertEquals(listOf("Asha: hello", "Rohan: line one line two"), several.lines)
+        assertNull(several.peer)
+    }
+
+    @Test
+    fun aStrangerIsNeverQuotedAndTheLockScreenNeverShowsText() {
+        val all = listOf(chat(asha, 1), chat(stranger, 1))
+        val said = announce(all, names, showText = true)!!
+        assertTrue(said.lines.contains("Someone new: new message"))
+        assertFalse(shown(said).contains(stranger))
+        assertFalse(said.discreet.contains("secret"))
+        assertFalse(announce(listOf(chat(stranger, 1)), names, showText = true)!!.text.contains("secret"))
+        assertFalse(announce(listOf(chat(asha, 1)), names, showText = true)!!.discreet.contains("secret"))
     }
 
     @Test

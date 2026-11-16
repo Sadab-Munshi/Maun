@@ -180,22 +180,53 @@ describe("a call that is ringing", () => {
     expect((await send(alice, bob.id, false)).t).toBe("stored");
     await vi.waitFor(() => expect(wakes).toHaveLength(1));
 
-    // An ordinary message a minute later: the phone was told already.
-    vi.spyOn(Date, "now").mockReturnValue(real + 60_000);
+    // An ordinary message right behind it rides on the same wake-up.
+    const soon = real + PUSH_URGENT_REPEAT_MS + 500;
+    expect(soon - real).toBeLessThan(PUSH_REPEAT_MS);
+    vi.spyOn(Date, "now").mockReturnValue(soon);
     await send(alice, bob.id, false);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(wakes).toHaveLength(1);
 
-    // A call: it is told again, now.
+    // A call at that moment does not wait: the phone is told again, now.
     await send(alice, bob.id, true);
     await vi.waitFor(() => expect(wakes).toHaveLength(2));
 
-    // But not twice within a few seconds: the pieces of one call come close together.
-    vi.spyOn(Date, "now").mockReturnValue(real + 60_000 + PUSH_URGENT_REPEAT_MS - 1000);
+    // But not twice within a second or two: the pieces of one call come close together.
+    vi.spyOn(Date, "now").mockReturnValue(soon + PUSH_URGENT_REPEAT_MS - 500);
     await send(alice, bob.id, true);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(wakes).toHaveLength(2);
-    expect(PUSH_URGENT_REPEAT_MS).toBeLessThan(PUSH_REPEAT_MS);
+    await hangUp(alice);
+  });
+
+  it("is not what a receipt is: one marked quiet waits for the phone without waking it", async () => {
+    const bob = await asleep();
+    const alice = await online(await registered());
+    const quiet = await ask(alice, { t: "send", to: bob.id, kind: 2, body: toBase64(randomBytes(40)), quiet: true });
+    expect(quiet.t).toBe("stored");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(wakes).toHaveLength(0);
+    // It is there when the phone next comes, and an ordinary message still wakes it.
+    await send(alice, bob.id, false);
+    await vi.waitFor(() => expect(wakes).toHaveLength(1));
+    const inbox = await online(bob);
+    expect((await inbox.nextJson()).t).toBe("msg");
+    expect((await inbox.nextJson()).t).toBe("msg");
+    await hangUp(inbox);
+    await hangUp(alice);
+  });
+
+  it("wakes the phone for each new message once the last wake-up is a few seconds old", async () => {
+    const bob = await asleep();
+    const alice = await online(await registered());
+    const real = Date.now();
+    await send(alice, bob.id, false);
+    await vi.waitFor(() => expect(wakes).toHaveLength(1));
+    // The phone never came for the first one. A minute later the next message still tells it.
+    vi.spyOn(Date, "now").mockReturnValue(real + 60_000);
+    await send(alice, bob.id, false);
+    await vi.waitFor(() => expect(wakes).toHaveLength(2));
     await hangUp(alice);
   });
 

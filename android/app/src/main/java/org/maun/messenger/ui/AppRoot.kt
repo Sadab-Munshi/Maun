@@ -1,5 +1,7 @@
 package org.maun.messenger.ui
 
+import android.net.Uri
+import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.layout.Box
@@ -68,6 +70,16 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
     }
 
     BackHandler(enabled = screen != HOME, onBack = goBack)
+
+    // A message notification was tapped: go to the conversation it was about.
+    val wanted by viewModel.openChat.collectAsStateWithLifecycle()
+    LaunchedEffect(wanted, account) {
+        val peer = wanted ?: return@LaunchedEffect
+        if ((account as? AccountState.Present)?.registered == true) {
+            screen = CHAT_PREFIX + peer
+            viewModel.chatOpened()
+        }
+    }
 
     // Someone whose conversation or details are open set Maun up again and
     // has a new ID: stay with the person, not with the old ID.
@@ -245,6 +257,16 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 onBlockScreenshots = { on ->
                                     if (activity != null) AppLock.setBlocksScreenshots(activity, on)
                                     viewModel.refreshPrivacy()
+                                },
+                                onNotifyText = viewModel::setNotifyText,
+                                onBattery = {
+                                    // Android's own question; the answer shows when Settings is back in front.
+                                    runCatching {
+                                        activity?.startActivity(
+                                            Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                                .setData(Uri.parse("package:${activity.packageName}")),
+                                        )
+                                    }
                                 },
                                 onOpenBlocked = { screen = BLOCKED },
                                 onOpenSetupCheck = { screen = SETUP_CHECK },

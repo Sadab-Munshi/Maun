@@ -69,15 +69,17 @@ export const KIND_MESSAGE = 2;
 export const KIND_PREKEY_MESSAGE = 3;
 
 /**
- * Wake-ups. One is sent when a message arrives and the phone is not connected.
- * No more follow until the phone has logged in, except one every
- * PUSH_REPEAT_MS in case the first was lost. PUSH_DAILY_CAP bounds what a
- * mailbox can make the relay send to an address of its choosing.
+ * Wake-ups. One is sent when a message arrives and the phone is not connected,
+ * so that the phone can fetch it and tell its owner at once. Messages that
+ * come within PUSH_REPEAT_MS of a wake-up ride on that one; after that the
+ * next message wakes the phone again, whether or not it came for the last.
+ * PUSH_DAILY_CAP bounds what a mailbox can make the relay send to an address
+ * of its choosing.
  */
-export const PUSH_REPEAT_MS = 10 * 60 * 1000;
-export const PUSH_DAILY_CAP = 200;
+export const PUSH_REPEAT_MS = 5 * 1000;
+export const PUSH_DAILY_CAP = 2000;
 /** A message marked urgent (a call that is ringing) may wake the phone again this soon after the last wake-up. */
-export const PUSH_URGENT_REPEAT_MS = 10 * 1000;
+export const PUSH_URGENT_REPEAT_MS = 2 * 1000;
 /** How long the push service should keep a wake-up for a phone it cannot reach, in seconds. */
 export const PUSH_TTL_SECONDS = 24 * 60 * 60;
 /** What a wake-up says once decrypted. It names nobody and carries nothing. */
@@ -166,8 +168,12 @@ export type ClientFrame =
   | { t: "put_keys"; id: string; regId: number; spk: SignedKey; kpk: SignedKey }
   | { t: "put_otks"; id: string; keys: OneTimeKey[] }
   | { t: "get_keys"; id: string; of: string }
-  /** `urgent`: wake the other phone at once, even if it was woken a moment ago. For a call that is ringing. */
-  | { t: "send"; id: string; to: string; kind: number; body: Uint8Array; urgent: boolean }
+  /**
+   * `urgent`: wake the other phone at once, even if it was woken a moment ago. For a call that is ringing.
+   * `quiet`: do not wake the other phone for this. For a receipt: it has nothing to show its owner,
+   * and waits for the next time the phone is there.
+   */
+  | { t: "send"; id: string; to: string; kind: number; body: Uint8Array; urgent: boolean; quiet: boolean }
   /** Asks for the servers a call goes through. */
   | { t: "turn"; id: string }
   | { t: "ack"; seq: number }
@@ -363,7 +369,7 @@ export function parseClientFrame(raw: string | ArrayBuffer): ClientFrame | Error
       if (frame.kind !== KIND_MESSAGE && frame.kind !== KIND_PREKEY_MESSAGE) return "bad_frame";
       const body = fromBase64(frame.body, MAX_BODY_BYTES);
       if (!body) return "bad_frame";
-      return { t: "send", id: frame.id, to: frame.to, kind: frame.kind, body, urgent: frame.urgent === true };
+      return { t: "send", id: frame.id, to: frame.to, kind: frame.kind, body, urgent: frame.urgent === true, quiet: frame.quiet === true };
     }
     case "turn":
       if (!isRequestId(frame.id)) return "bad_frame";

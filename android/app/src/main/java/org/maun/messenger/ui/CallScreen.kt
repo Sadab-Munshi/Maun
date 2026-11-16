@@ -64,9 +64,9 @@ class CallActions(
 /**
  * A call, over everything else: who it is with, where it has got to, and the
  * buttons for it. While it rings here those are Decline and Answer; after
- * that, the microphone, the camera, where the sound comes out, and hanging
- * up. [video] carries the pictures; while neither camera is on (or without
- * it) the screen shows the person's initial instead. [now] is
+ * that, the microphone, where the sound comes out, and hanging up, and in a
+ * video call the camera. [video] carries the pictures of a video call; a
+ * voice call shows the person's initial instead. [now] is
  * only there so that a picture of the screen can be drawn with a fixed clock.
  */
 @Composable
@@ -92,8 +92,9 @@ fun CallScreen(
         CallUi.Phase.Ended -> call.ended ?: "Call ended"
     }
     val ringingHere = call.incoming && call.phase == CallUi.Phase.Ringing
-    // Pictures are on screen while either camera runs: one's own from the moment it starts, before the other side answers.
-    val pictures = video != null && !ringingHere && call.phase != CallUi.Phase.Ended && (call.cameraOn || call.remoteVideo)
+    // A video call shows pictures from the moment this phone's camera runs, before the other side answers.
+    // A voice call stays a voice call: it has no camera button.
+    val pictures = call.video && video != null && !ringingHere && call.phase != CallUi.Phase.Ended
 
     if (pictures && video != null) {
         VideoCall(call, name, status, actions, video)
@@ -155,8 +156,6 @@ private fun VoiceCall(call: CallUi, name: String, status: String, ringingHere: B
                         Toggle(if (call.muted) MaunIcons.MicOff else MaunIcons.Mic, if (call.muted) "Muted" else "Mute", call.muted) {
                             actions.onMute(!call.muted)
                         }
-                        // Turning the camera on makes it a video call, for as long as it stays on.
-                        if (call.canVideo) Toggle(MaunIcons.Videocam, "Camera", false) { actions.onCamera(true) }
                         RouteButton(call, actions.onRoute) { icon, label, on, onClick -> Toggle(icon, label, on, onClick) }
                     }
                     RoundButton(MaunIcons.CallEnd, "Hang up", colors.error, colors.onError, onClick = actions.onHangUp)

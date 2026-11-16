@@ -5,6 +5,8 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -16,10 +18,11 @@ import org.maun.messenger.R
 /**
  * Everything Maun puts in the notification shade.
  *
- * A notification never contains a message. What it says is handed to Android
- * and can be read by other apps the user has allowed to read notifications,
- * so it stays at "a message arrived", with the contact's name only on an
- * unlocked phone.
+ * On an unlocked phone a message notification names the contact and quotes
+ * the newest message, unless the user has turned that off in Settings. What a
+ * notification says is handed to Android and can be read by other apps the
+ * user has allowed to read notifications. A locked screen is only ever told
+ * that a message arrived.
  */
 class Notifications(context: Context) {
     private val context = context.applicationContext
@@ -27,18 +30,27 @@ class Notifications(context: Context) {
 
     /** Safe to call every time the app starts. */
     fun createChannels() {
+        // From an earlier version: a silent channel for calls, replaced by one that rings.
+        manager.deleteNotificationChannel("calls")
         manager.createNotificationChannelsCompat(
             listOf(
                 NotificationChannelCompat.Builder(CHANNEL_MESSAGES, NotificationManagerCompat.IMPORTANCE_HIGH)
                     .setName("Messages")
                     .setDescription("Tells you that a message has arrived. Never shows the message.")
                     .build(),
-                // Silent: the app rings by itself, so that the ringing stops the moment the call is taken.
-                NotificationChannelCompat.Builder(CHANNEL_CALLS, NotificationManagerCompat.IMPORTANCE_HIGH)
-                    .setName("Calls")
-                    .setDescription("Shows a call that is coming in, and one that is going on.")
-                    .setSound(null, null)
-                    .setVibrationEnabled(false)
+                // The ringing itself: the phone's own ringtone, and a vibration, for as long as the call rings.
+                NotificationChannelCompat.Builder(CHANNEL_RING, NotificationManagerCompat.IMPORTANCE_HIGH)
+                    .setName("Incoming calls")
+                    .setDescription("Rings when someone calls while Maun is not open.")
+                    .setSound(
+                        RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build(),
+                    )
+                    .setVibrationEnabled(true)
+                    .setVibrationPattern(longArrayOf(0, 800, 1200, 800, 1200))
                     .build(),
                 // Quiet: a call that is going on has the screen already and needs no banner over it.
                 NotificationChannelCompat.Builder(CHANNEL_CALL_ONGOING, NotificationManagerCompat.IMPORTANCE_LOW)
@@ -54,6 +66,16 @@ class Notifications(context: Context) {
             ),
         )
     }
+
+    /**
+     * Whether notifications quote the newest message. On unless the user
+     * turned it off; a locked screen never shows the text either way.
+     */
+    var showsText: Boolean
+        get() = settings.getBoolean(KEY_SHOW_TEXT, true)
+        set(value) = settings.edit().putBoolean(KEY_SHOW_TEXT, value).apply()
+
+    private val settings get() = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
     /** Whether the user lets Maun show notifications at all. */
     val allowed: Boolean
@@ -73,13 +95,20 @@ class Notifications(context: Context) {
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(announcement.title)
             .setContentText(announcement.text)
+            .setStyle(
+                if (announcement.lines.isEmpty()) {
+                    NotificationCompat.BigTextStyle().bigText(announcement.text)
+                } else {
+                    NotificationCompat.InboxStyle().also { style -> announcement.lines.forEach(style::addLine) }
+                },
+            )
             .setNumber(announcement.total)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(onLockScreen)
             .setOnlyAlertOnce(!alert)
             .setAutoCancel(true)
-            .setContentIntent(openApp())
+            .setContentIntent(announcement.peer?.let(::openChat) ?: openApp())
             .build()
         try {
             manager.notify(ID_MESSAGES, notification)
@@ -93,14 +122,15 @@ class Notifications(context: Context) {
     }
 
     /**
-     * A call is coming in while Maun is not on screen. Opens the call over
-     * the lock screen where Android allows it, and otherwise shows at the top
-     * with Answer and Decline. [name] is shown on an unlocked phone only.
+     * The notification of a call that is coming in while Maun is not on
+     * screen. It is the ringing: its channel carries the phone's ringtone and
+     * a vibration, and it repeats them until it is taken away. It opens the
+     * call over the lock screen where Android allows it, and otherwise shows
+     * at the top with Answer and Decline. [name] is shown on an unlocked
+     * phone only.
      */
-    @SuppressLint("MissingPermission")
-    fun showIncomingCall(name: String, video: Boolean = false) {
+    fun incomingCall(name: String, video: Boolean): Notification {
         val what = if (video) "Incoming video call" else "Incoming voice call"
-        if (!allowed) return
         val open = PendingIntent.getActivity(
             context,
             1,
@@ -121,12 +151,12 @@ class Notifications(context: Context) {
             CallService.hangUp(context),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val onLockScreen = NotificationCompat.Builder(context, CHANNEL_CALLS)
+        val onLockScreen = NotificationCompat.Builder(context, CHANNEL_RING)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Maun")
             .setContentText(what)
             .build()
-        val notification = NotificationCompat.Builder(context, CHANNEL_CALLS)
+        val notification = NotificationCompat.Builder(context, CHANNEL_RING)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(name)
             .setContentText(what)
@@ -142,6 +172,15 @@ class Notifications(context: Context) {
             .addAction(0, "Decline", decline)
             .addAction(0, "Answer", answer)
             .build()
+        // Ring again and again until answered, declined or timed out, not once.
+        notification.flags = notification.flags or Notification.FLAG_INSISTENT
+        return notification
+    }
+
+    /** Shows [notification] (from [incomingCall]) without a service behind it. */
+    @SuppressLint("MissingPermission")
+    fun showIncomingCall(notification: Notification) {
+        if (!allowed) return
         try {
             manager.notify(ID_RINGING, notification)
         } catch (_: SecurityException) {
@@ -187,6 +226,18 @@ class Notifications(context: Context) {
             .setContentIntent(openApp())
             .build()
 
+    /** Opens Maun at the conversation with [peer]. */
+    private fun openChat(peer: String): PendingIntent =
+        PendingIntent.getActivity(
+            context,
+            10,
+            Intent(context, MainActivity::class.java)
+                .setAction(MainActivity.ACTION_OPEN_CHAT)
+                .putExtra(MainActivity.EXTRA_CHAT, peer)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
     private fun openApp(): PendingIntent =
         PendingIntent.getActivity(
             context,
@@ -196,12 +247,13 @@ class Notifications(context: Context) {
         )
 
     companion object {
+        private const val KEY_SHOW_TEXT = "notify_text"
         const val ID_MESSAGES = 1
         const val ID_CONNECTED = 2
         const val ID_FETCH = 3
         const val ID_CALL = 4
         const val ID_RINGING = 5
-        private const val CHANNEL_CALLS = "calls"
+        private const val CHANNEL_RING = "incoming_calls"
         private const val CHANNEL_CALL_ONGOING = "call_ongoing"
 
         private const val CHANNEL_MESSAGES = "messages"

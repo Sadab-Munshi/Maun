@@ -18,6 +18,11 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <!-- Lets the user take Maun out of the phone's battery saving, on phones
+         that otherwise put it to sleep and make calls and messages arrive late. -->
+    <uses-permission
+        android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        tools:ignore="BatteryLife" />
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />
@@ -93,6 +98,10 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+        <service
+            android:name=".webrtc.RingService"
+            android:exported="false"
+            android:foregroundServiceType="shortService" />
         <service
             android:name=".webrtc.CallService"
             android:exported="false"
