@@ -25,6 +25,8 @@ class PayloadTest {
             Payload.Call(id, Payload.CALL_HANGUP, reason = "declined"),
             Payload.Call(id, Payload.CALL_HANGUP),
             Payload.Call(id, Payload.CALL_BUSY),
+            Payload.Call(id, Payload.CALL_VIDEO, reason = "on"),
+            Payload.Call(id, Payload.CALL_VIDEO, reason = "off"),
         )
         for (step in steps) assertEquals(step, Payload.decode(Payload.encode(step)))
     }

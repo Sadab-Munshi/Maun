@@ -47,6 +47,8 @@ fun ContactScreen(
     onChecked: (Boolean) -> Unit,
     onRemove: () -> Unit,
     onBlock: () -> Unit,
+    /** Starts a call with this contact, a video call when given true. Null where calls cannot be made. */
+    onCall: ((Boolean) -> Unit)? = null,
 ) {
     var confirming by rememberSaveable { mutableStateOf(false) }
     var confirmingBlock by rememberSaveable { mutableStateOf(false) }
@@ -66,10 +68,26 @@ fun ContactScreen(
                 fontWeight = FontWeight.SemiBold,
                 textAlign = TextAlign.Center,
             )
+            contact.username?.let {
+                Text("@$it", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             TextButton(onClick = {
                 newName = contact.name
                 renaming = true
             }) { Text("Change name") }
+            if (onCall != null) {
+                val call = rememberCallStarter(onCall)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(onClick = { call(false) }) {
+                        Icon(MaunIcons.Call, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("Call", modifier = Modifier.padding(start = 8.dp))
+                    }
+                    OutlinedButton(onClick = { call(true) }) {
+                        Icon(MaunIcons.Videocam, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("Video call", modifier = Modifier.padding(start = 8.dp))
+                    }
+                }
+            }
         }
 
         Surface(

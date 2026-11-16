@@ -53,17 +53,21 @@ data class CallUi(
     /** When the two phones got through to each other, on the clock that does not jump ([SystemClock.elapsedRealtime]). */
     val connectedAt: Long = 0,
     val muted: Boolean = false,
-    val speaker: Boolean = false,
+    /** Where their voice comes out, and where else it could. */
+    val route: AudioRoute = AudioRoute.Earpiece,
+    val routes: List<AudioRoute> = listOf(AudioRoute.Earpiece, AudioRoute.Speaker),
     /** Once it is over: why, in words. */
     val ended: String? = null,
-    /** A video call. */
+    /** It was started as a video call. Either side can turn its camera on or off afterwards. */
     val video: Boolean = false,
-    /** In a video call: this phone's camera is sending. */
+    /** This phone's camera is sending. */
     val cameraOn: Boolean = false,
-    /** In a video call: the camera in use is the one facing the user. */
+    /** The camera in use is the one facing the user. */
     val frontCamera: Boolean = true,
-    /** In a video call: pictures from the other phone have started to arrive. */
+    /** The other phone's camera is sending. */
     val remoteVideo: Boolean = false,
+    /** Pictures can be sent in this call: both phones made room for them when it was set up. */
+    val canVideo: Boolean = false,
 ) {
     enum class Phase {
         /** Ringing on their phone (a call going out) or on this one (a call coming in). */
@@ -153,6 +157,9 @@ class CallManager(context: Context, private val signals: CallSignals) {
     private var cameraSource: VideoSource? = null
     private var cameraHelper: SurfaceTextureHelper? = null
     private var cameraTrack: VideoTrack? = null
+
+    /** Somebody's camera was on at some point in this call. */
+    private var usedVideo = false
     private var offer: String? = null
     private var remoteSet = false
     private val waitingCandidates = ArrayList<IceCandidate>()
@@ -186,17 +193,17 @@ class CallManager(context: Context, private val signals: CallSignals) {
         clearing?.cancel()
         val id = UUID.randomUUID().toString()
         callId = id
-        _state.value = CallUi(peer = peer, incoming = false, phase = CallUi.Phase.Ringing, video = video, cameraOn = video, speaker = video)
+        _state.value = CallUi(peer = peer, incoming = false, phase = CallUi.Phase.Ringing, video = video, canVideo = true)
         setup = scope.launch {
             try {
-                val pc = connect(peer, id, video)
+                val pc = connect(peer, id)
                 // Only now is there a call to keep alive and to ring for: one
                 // that the relay cannot serve ends before anything is started.
                 CallService.start(appContext, video)
-                audio.begin()
-                if (video) audio.setSpeaker(true)
+                beginAudio(preferSpeaker = video)
                 audio.ringOutgoing()
-                val description = pc.createOffer(video)
+                if (video) startCamera()
+                val description = pc.createOffer()
                 pc.setLocal(description)
                 if (!signals.send(peer, Payload.Call(id, Payload.CALL_OFFER, sdp = description.description, video = video), urgent = true)) {
                     finish("Could not reach them. Check your connection.", note = null)
@@ -222,18 +229,18 @@ class CallManager(context: Context, private val signals: CallSignals) {
         ringTimeout?.cancel()
         audio.stopRinging()
         signals.ringing(call.peer, false, call.video)
-        _state.value = call.copy(phase = CallUi.Phase.Connecting, cameraOn = call.video, speaker = call.video)
+        _state.value = call.copy(phase = CallUi.Phase.Connecting, canVideo = hasVideo(remote))
         CallService.start(appContext, call.video)
-        audio.begin()
-        if (call.video) audio.setSpeaker(true)
+        beginAudio(preferSpeaker = call.video)
         setup = scope.launch {
             try {
-                val pc = connect(call.peer, id, call.video)
+                val pc = connect(call.peer, id)
+                if (call.video) startCamera()
                 pc.setRemote(SessionDescription(SessionDescription.Type.OFFER, remote))
                 remoteSet = true
                 waitingCandidates.forEach { pc.addIceCandidate(it) }
                 waitingCandidates.clear()
-                val description = pc.createAnswer(call.video)
+                val description = pc.createAnswer()
                 pc.setLocal(description)
                 if (!signals.send(call.peer, Payload.Call(id, Payload.CALL_ANSWER, sdp = description.description), urgent = false)) {
                     finish("Could not reach them. Check your connection.", note = null)
@@ -266,25 +273,64 @@ class CallManager(context: Context, private val signals: CallSignals) {
         _state.value = call.copy(muted = muted)
     }
 
-    fun setSpeaker(on: Boolean) {
-        val call = _state.value ?: return
-        audio.setSpeaker(on)
-        _state.value = call.copy(speaker = on)
+    /** Sends the other person's voice to the earpiece, the loudspeaker or a headset. */
+    fun setRoute(route: AudioRoute) {
+        if (_state.value == null) return
+        audio.setRoute(route)
+        showAudio()
     }
 
-    /** In a video call: stops or restarts this phone's camera. The call goes on with sound. */
+    /** Starts the phone's call sound and follows headsets that come and go. */
+    private fun beginAudio(preferSpeaker: Boolean) {
+        audio.begin(preferSpeaker)
+        var known = audio.routes()
+        audio.onDevicesChanged = {
+            val now = audio.routes()
+            val arrived = now.filter { it !in known && (it == AudioRoute.Bluetooth || it == AudioRoute.Wired) }
+            known = now
+            when {
+                // A headset that has just been connected is what its owner wants to use.
+                arrived.isNotEmpty() -> audio.setRoute(arrived.first())
+                // The one in use is gone: back to the phone itself.
+                audio.route !in now -> audio.setRoute(audio.best(now, preferSpeaker = _state.value?.let { it.cameraOn || it.remoteVideo } == true))
+            }
+            showAudio()
+        }
+        showAudio()
+    }
+
+    private fun showAudio() {
+        _state.value?.let { _state.value = it.copy(route = audio.route, routes = audio.routes()) }
+    }
+
+    /**
+     * Turns this phone's camera on or off during a call, voice or video. The
+     * other phone is told, so that it makes room for the picture or takes it
+     * away. The camera permission has been given by the time this is called
+     * with true.
+     */
     fun setCamera(on: Boolean) {
         val call = _state.value ?: return
-        if (!call.video || call.cameraOn == on) return
-        runCatching { cameraTrack?.setEnabled(on) }
-        runCatching { if (on) camera?.startCapture(VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS) else camera?.stopCapture() }
-        _state.value = call.copy(cameraOn = on)
+        val id = callId ?: return
+        if (!call.canVideo || call.phase == CallUi.Phase.Ended || call.cameraOn == on) return
+        if (on) {
+            if (!startCamera()) return
+            // Whoever shows their face is not holding the phone to their ear.
+            if (audio.route == AudioRoute.Earpiece) setRoute(AudioRoute.Speaker)
+            // From here on the camera has to survive Maun leaving the screen.
+            CallService.start(appContext, video = true)
+        } else {
+            runCatching { cameraTrack?.setEnabled(false) }
+            runCatching { camera?.stopCapture() }
+            _state.value = call.copy(cameraOn = false)
+        }
+        scope.launch { signals.send(call.peer, Payload.Call(id, Payload.CALL_VIDEO, reason = if (on) "on" else "off"), urgent = false) }
     }
 
-    /** In a video call: changes between the camera facing the user and the one on the back. */
+    /** Changes between the camera facing the user and the one on the back. */
     fun switchCamera() {
         val call = _state.value ?: return
-        if (!call.video) return
+        if (!call.cameraOn) return
         runCatching {
             camera?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
                 override fun onCameraSwitchDone(front: Boolean) {
@@ -337,7 +383,7 @@ class CallManager(context: Context, private val signals: CallSignals) {
                 if (current.incoming || current.phase != CallUi.Phase.Ringing) return
                 ringTimeout?.cancel()
                 audio.stopRinging()
-                _state.value = current.copy(phase = CallUi.Phase.Connecting)
+                _state.value = current.copy(phase = CallUi.Phase.Connecting, canVideo = hasVideo(sdp), cameraOn = current.cameraOn && hasVideo(sdp))
                 val pc = connection ?: return
                 try {
                     pc.setRemote(SessionDescription(SessionDescription.Type.ANSWER, sdp))
@@ -360,13 +406,22 @@ class CallManager(context: Context, private val signals: CallSignals) {
                 else -> finish("Call ended", note = null)
             }
             Payload.CALL_BUSY -> finish("Busy on another call", note = "They were on another call")
+            Payload.CALL_VIDEO -> {
+                val on = step.reason == "on"
+                if (on) usedVideo = true
+                _state.value = current.copy(remoteVideo = on)
+            }
         }
     }
 
     // ---- The connection --------------------------------------------------------
 
-    /** Opens the connection for a call and puts this phone's microphone, and for [video] its camera, on it. */
-    private suspend fun connect(peer: String, id: String, video: Boolean): PeerConnection {
+    /**
+     * Opens the connection for a call and puts this phone's microphone on it,
+     * and a place for its camera's pictures. The camera itself is only
+     * started when somebody turns it on.
+     */
+    private suspend fun connect(peer: String, id: String): PeerConnection {
         val servers = signals.servers().map {
             PeerConnection.IceServer.builder(it.urls).setUsername(it.username).setPassword(it.credential).createIceServer()
         }
@@ -382,27 +437,10 @@ class CallManager(context: Context, private val signals: CallSignals) {
         val source = factory.createAudioSource(MediaConstraints())
         microphone = source
         pc.addTrack(factory.createAudioTrack("voice", source), listOf("maun"))
-        if (video) addCamera(pc)
-        return pc
-    }
-
-    /** Starts the camera facing the user and sends what it sees. A phone without a usable camera sends sound only. */
-    private fun addCamera(pc: PeerConnection) {
-        try {
-            val allowed = ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-            if (!allowed) {
-                _state.value?.let { _state.value = it.copy(cameraOn = false) }
-                return
-            }
-            val cameras = Camera2Enumerator(appContext)
-            val names = cameras.deviceNames
-            val name = names.firstOrNull { cameras.isFrontFacing(it) } ?: names.firstOrNull() ?: return
-            val capturer = cameras.createCapturer(name, null) ?: return
-            val helper = SurfaceTextureHelper.create("camera", eglContext)
-            val source = factory.createVideoSource(false)
-            capturer.initialize(helper, appContext, source.capturerObserver)
-            capturer.startCapture(VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS)
-            val track = factory.createVideoTrack("camera", source)
+        runCatching {
+            val pictures = factory.createVideoSource(false)
+            val track = factory.createVideoTrack("camera", pictures)
+            track.setEnabled(false)
             track.addSink(ownPictures)
             val sender = pc.addTrack(track, listOf("maun"))
             // Modest on purpose: the call goes through a relay, and the other side may be on a slow line.
@@ -411,15 +449,49 @@ class CallManager(context: Context, private val signals: CallSignals) {
                 parameters.encodings.forEach { it.maxBitrateBps = VIDEO_MAX_BITS_PER_SECOND }
                 sender.parameters = parameters
             }
-            camera = capturer
-            cameraHelper = helper
-            cameraSource = source
+            cameraSource = pictures
             cameraTrack = track
-            _state.value?.let { _state.value = it.copy(cameraOn = true, frontCamera = cameras.isFrontFacing(name)) }
+        }
+        return pc
+    }
+
+    /**
+     * Starts the camera (the one facing the user, the first time) and sends
+     * what it sees. Returns false when the phone has no usable camera or may
+     * not use it; the call then goes on with sound.
+     */
+    private fun startCamera(): Boolean {
+        val source = cameraSource ?: return false
+        try {
+            val allowed = ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            if (!allowed) return false
+            var front = _state.value?.frontCamera ?: true
+            val running = camera
+            if (running != null) {
+                running.startCapture(VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS)
+            } else {
+                val cameras = Camera2Enumerator(appContext)
+                val names = cameras.deviceNames
+                val name = names.firstOrNull { cameras.isFrontFacing(it) } ?: names.firstOrNull() ?: return false
+                val capturer = cameras.createCapturer(name, null) ?: return false
+                val helper = SurfaceTextureHelper.create("camera", eglContext)
+                capturer.initialize(helper, appContext, source.capturerObserver)
+                capturer.startCapture(VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS)
+                camera = capturer
+                cameraHelper = helper
+                front = cameras.isFrontFacing(name)
+            }
+            cameraTrack?.setEnabled(true)
+            usedVideo = true
+            _state.value?.let { _state.value = it.copy(cameraOn = true, frontCamera = front) }
+            return true
         } catch (_: Exception) {
-            _state.value?.let { _state.value = it.copy(cameraOn = false) }
+            return false
         }
     }
+
+    /** Whether a call's description has room for pictures that the other side did not turn down. */
+    private fun hasVideo(sdp: String): Boolean = Regex("^m=video ([0-9]+) ", RegexOption.MULTILINE).find(sdp)?.groupValues?.get(1).let { it != null && it != "0" }
 
     /** What the connection reports, on a thread of its own; everything is taken over to the main thread. */
     private inner class Watcher(private val peer: String, private val id: String) : PeerConnection.Observer {
@@ -465,7 +537,11 @@ class CallManager(context: Context, private val signals: CallSignals) {
             // The other phone's camera. Its pictures go to whatever view is on screen.
             val track = receiver.track() as? VideoTrack ?: return
             remotePictures.onFirst = {
-                scope.launch { if (callId == id) _state.value?.let { _state.value = it.copy(remoteVideo = true) } }
+                scope.launch {
+                    if (callId != id) return@launch
+                    usedVideo = true
+                    _state.value?.let { _state.value = it.copy(remoteVideo = true) }
+                }
             }
             runCatching { track.addSink(remotePictures) }
         }
@@ -523,12 +599,14 @@ class CallManager(context: Context, private val signals: CallSignals) {
         cameraHelper?.let { runCatching { it.dispose() } }
         cameraHelper = null
         cameraTrack = null
+        val hadVideo = call.video || usedVideo
+        usedVideo = false
         audio.release()
         signals.ringing(call.peer, false, call.video)
         CallService.stop(appContext)
 
         val line = if (call.connectedAt != 0L) {
-            "${if (call.video) "Video call" else "Voice call"}, ${length(SystemClock.elapsedRealtime() - call.connectedAt)}"
+            "${if (hadVideo) "Video call" else "Voice call"}, ${length(SystemClock.elapsedRealtime() - call.connectedAt)}"
         } else {
             note
         }
@@ -572,16 +650,17 @@ private suspend fun described(ask: (SdpObserver) -> Unit): SessionDescription? =
     ask(Waiting { result -> result.fold({ if (waiting.isActive) waiting.resume(it) }, { if (waiting.isActive) waiting.resumeWithException(it) }) })
 }
 
-private fun wanted(video: Boolean) = MediaConstraints().apply {
+// Every call has room for pictures, so that a camera can be turned on later without setting the call up again.
+private val wanted = MediaConstraints().apply {
     mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
-    if (video) mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
 }
 
-private suspend fun PeerConnection.createOffer(video: Boolean): SessionDescription =
-    described { createOffer(it, wanted(video)) } ?: throw IllegalStateException("The call could not be set up.")
+private suspend fun PeerConnection.createOffer(): SessionDescription =
+    described { createOffer(it, wanted) } ?: throw IllegalStateException("The call could not be set up.")
 
-private suspend fun PeerConnection.createAnswer(video: Boolean): SessionDescription =
-    described { createAnswer(it, wanted(video)) } ?: throw IllegalStateException("The call could not be set up.")
+private suspend fun PeerConnection.createAnswer(): SessionDescription =
+    described { createAnswer(it, wanted) } ?: throw IllegalStateException("The call could not be set up.")
 
 private suspend fun PeerConnection.setLocal(description: SessionDescription) {
     described { setLocalDescription(it, description) }

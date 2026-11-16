@@ -57,7 +57,10 @@ sealed interface Payload {
         const val CALL_ICE = "ice"
         const val CALL_HANGUP = "hangup"
         const val CALL_BUSY = "busy"
-        private val CALL_TYPES = setOf(CALL_OFFER, CALL_ANSWER, CALL_ICE, CALL_HANGUP, CALL_BUSY)
+
+        /** During a call: this phone's camera was turned on (reason "on") or off ("off"). */
+        const val CALL_VIDEO = "video"
+        private val CALL_TYPES = setOf(CALL_OFFER, CALL_ANSWER, CALL_ICE, CALL_HANGUP, CALL_BUSY, CALL_VIDEO)
 
         /**
          * A voice call's description is about 2,000 characters, a video call's

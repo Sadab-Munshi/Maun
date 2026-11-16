@@ -139,6 +139,8 @@ fun ChatScreen(
     peerUsername: String? = null,
     /** Starts a call with this contact, a video call when given true. Null where calls cannot be made. */
     onCall: ((Boolean) -> Unit)? = null,
+    /** The contact's username on the relay, where there is one. */
+    contactUsername: String? = null,
     onLoadOlder: () -> Unit,
     onDelete: (Long) -> Unit,
     onBack: () -> Unit,
@@ -222,6 +224,8 @@ fun ChatScreen(
                     onBack = onBack,
                     onOpenDetails = if (isContact) onOpenDetails else null,
                     onCall = if (isContact) onCall else null,
+                    // Shown under the name, unless the name is the username already.
+                    username = contactUsername?.takeIf { !it.equals(contactName, ignoreCase = true) },
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
@@ -327,7 +331,14 @@ fun ChatScreen(
 private const val LOAD_AHEAD = 12
 
 @Composable
-private fun ChatHeader(peerId: String, name: String?, onBack: () -> Unit, onOpenDetails: (() -> Unit)?, onCall: ((Boolean) -> Unit)? = null) {
+private fun ChatHeader(
+    peerId: String,
+    name: String?,
+    onBack: () -> Unit,
+    onOpenDetails: (() -> Unit)?,
+    onCall: ((Boolean) -> Unit)? = null,
+    username: String? = null,
+) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -351,36 +362,22 @@ private fun ChatHeader(peerId: String, name: String?, onBack: () -> Unit, onOpen
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                // What they go by on the relay, where that is known; otherwise the start and end of their ID.
                 Text(
-                    text = shortId(peerId),
+                    text = username?.let { "@$it" } ?: shortId(peerId),
                     style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = if (username == null) FontFamily.Monospace else null,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
             }
         }
         if (onCall != null) {
-            // The microphone, and for a video call the camera, are asked for the
-            // first time they are needed. A call needs the microphone; without
-            // the camera a video call still goes ahead, with sound only.
-            val context = LocalContext.current
-            var wantsVideo by remember { mutableStateOf(false) }
-            val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
-                val mic = granted[Manifest.permission.RECORD_AUDIO] == true ||
-                    ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-                if (mic) onCall(wantsVideo) else Toast.makeText(context, "Maun needs the microphone for a call.", Toast.LENGTH_LONG).show()
-            }
-            fun call(video: Boolean) {
-                val needed = listOfNotNull(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA.takeIf { video })
-                    .filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
-                wantsVideo = video
-                if (needed.isEmpty()) onCall(video) else ask.launch(needed.toTypedArray())
-            }
-            IconButton(onClick = { call(video = true) }) { Icon(MaunIcons.Videocam, contentDescription = "Video call") }
-            IconButton(onClick = { call(video = false) }) { Icon(MaunIcons.Call, contentDescription = "Voice call") }
-        }
-        if (onOpenDetails != null) {
+            val call = rememberCallStarter(onCall)
+            IconButton(onClick = { call(true) }) { Icon(MaunIcons.Videocam, contentDescription = "Video call") }
+            IconButton(onClick = { call(false) }) { Icon(MaunIcons.Call, contentDescription = "Voice call") }
+        } else if (onOpenDetails != null) {
+            // With the call buttons there, the details are behind the name itself.
             IconButton(onClick = onOpenDetails) { Icon(MaunIcons.Info, contentDescription = "Contact details") }
         }
     }

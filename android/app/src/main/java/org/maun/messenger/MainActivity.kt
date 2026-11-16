@@ -67,13 +67,12 @@ class MainActivity : ComponentActivity() {
                                 onAccept = ::answer,
                                 onHangUp = calls::hangUp,
                                 onMute = calls::setMuted,
-                                onSpeaker = calls::setSpeaker,
-                                onCamera = calls::setCamera,
+                                onRoute = calls::setRoute,
+                                onCamera = ::camera,
                                 onSwitchCamera = calls::switchCamera,
                             )
                         },
-                        // What video is drawn with is only made when a call has pictures.
-                        video = if (current.video) remember { CallVideo(calls.eglContext, calls.remotePictures, calls.ownPictures) } else null,
+                        video = remember { CallVideo(calls.eglContext, calls.remotePictures, calls.ownPictures) },
                     )
                 } else if (AppLock.locked) {
                     LockScreen(onShown = ::reveal, onUnlock = { AppLock.unlock(this) })
@@ -93,6 +92,16 @@ class MainActivity : ComponentActivity() {
         val needed = listOfNotNull(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA.takeIf { video })
             .filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (needed.isEmpty()) messenger.calls.accept() else askForCall.launch(needed.toTypedArray())
+    }
+
+    /** Turns the camera on or off during a call, asking for it the first time. */
+    private fun camera(on: Boolean) {
+        val allowed = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        if (!on || allowed) messenger.calls.setCamera(on) else askForCamera.launch(Manifest.permission.CAMERA)
+    }
+
+    private val askForCamera = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) messenger.calls.setCamera(true) else Toast.makeText(this, "Maun needs the camera to show you.", Toast.LENGTH_LONG).show()
     }
 
     private val askForCall = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {

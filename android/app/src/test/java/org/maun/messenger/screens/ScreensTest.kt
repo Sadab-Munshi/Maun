@@ -18,6 +18,7 @@ import org.maun.messenger.ui.CallActions
 import org.maun.messenger.ui.CallScreen
 import org.maun.messenger.ui.PendingScreen
 import org.maun.messenger.ui.RecordingBar
+import org.maun.messenger.webrtc.AudioRoute
 import org.maun.messenger.webrtc.CallUi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -117,6 +118,8 @@ class ScreensTest {
         ChatScreen(
             peerId = asha.id,
             contactName = contactName,
+            contactUsername = "asha_k",
+            onCall = {},
             // Newest first.
             messages = listOf(
                 message(9, true, "Leaving now", 1 * minute, MessageStatus.PENDING),
@@ -148,7 +151,7 @@ class ScreensTest {
         SettingsScreen(
             memberEmail = memberEmail,
             username = username,
-            version = "0.10.0",
+            version = "0.11.0",
             relayName = "maun.example.workers.dev",
             relay = RelayState.Online,
             delivery = DeliveryUi(pushApp = "Google's push service", google = true),
@@ -177,6 +180,7 @@ class ScreensTest {
             onChecked = {},
             onRemove = {},
             onBlock = {},
+            onCall = {},
         )
     }
 
@@ -356,8 +360,16 @@ class ScreensTest {
         }
     }
 
-    private fun call(incoming: Boolean, phase: CallUi.Phase, connectedAt: Long = 0, muted: Boolean = false, speaker: Boolean = false, ended: String? = null, video: Boolean = false) =
-        CallUi(peer = asha.id, incoming = incoming, phase = phase, connectedAt = connectedAt, muted = muted, speaker = speaker, ended = ended, video = video)
+    private fun call(
+        incoming: Boolean,
+        phase: CallUi.Phase,
+        connectedAt: Long = 0,
+        muted: Boolean = false,
+        route: AudioRoute = AudioRoute.Earpiece,
+        routes: List<AudioRoute> = listOf(AudioRoute.Earpiece, AudioRoute.Speaker),
+        ended: String? = null,
+        video: Boolean = false,
+    ) = CallUi(asha.id, incoming, phase, connectedAt, muted, route, routes, ended, video, canVideo = true)
 
     @Composable
     private fun Call(call: CallUi) {
@@ -378,7 +390,13 @@ class ScreensTest {
     fun callIncomingVideo() = shoot("call-incoming-video") { Call(call(incoming = true, phase = CallUi.Phase.Ringing, video = true)) }
 
     @Test
-    fun callOutgoing() = shoot("call-outgoing") { Call(call(incoming = false, phase = CallUi.Phase.Ringing, speaker = true)) }
+    fun callOutgoing() = shoot("call-outgoing") { Call(call(incoming = false, phase = CallUi.Phase.Ringing, route = AudioRoute.Speaker)) }
+
+    @Test
+    fun callWithHeadset() = shoot("call-bluetooth") {
+        val everything = listOf(AudioRoute.Earpiece, AudioRoute.Speaker, AudioRoute.Bluetooth)
+        Call(call(incoming = true, phase = CallUi.Phase.Active, connectedAt = 1_000_000 - 61_000, route = AudioRoute.Bluetooth, routes = everything))
+    }
 
     @Test
     fun callEnded() = shoot("call-ended") { Call(call(incoming = false, phase = CallUi.Phase.Ended, ended = "No answer")) }

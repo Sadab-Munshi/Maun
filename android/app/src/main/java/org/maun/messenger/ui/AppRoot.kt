@@ -280,6 +280,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 contactName = contacts.firstOrNull { it.id == chatPeer }?.name,
                                 peerUsername = peerUsername,
                                 onCall = { video -> viewModel.startCall(chatPeer, video) },
+                                contactUsername = contacts.firstOrNull { it.id == chatPeer }?.username,
                                 loading = !conversation.loaded,
                                 messages = conversation.messages,
                                 hasOlder = conversation.hasOlder,
@@ -333,6 +334,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                     viewModel.removeContact(detailsOf.id)
                                     goHome()
                                 },
+                                onCall = { video -> viewModel.startCall(detailsOf.id, video) },
                                 onBlock = {
                                     viewModel.block(detailsOf.id)
                                     goHome()

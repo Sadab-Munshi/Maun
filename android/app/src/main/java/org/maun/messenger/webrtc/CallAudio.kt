@@ -2,6 +2,7 @@ package org.maun.messenger.webrtc
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -12,6 +13,9 @@ import android.os.Build
 import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
+
+/** Where the other person's voice comes out during a call. */
+enum class AudioRoute { Earpiece, Speaker, Wired, Bluetooth }
 
 /**
  * The phone's sound during a call: the ringing on both sides, where the
@@ -81,8 +85,53 @@ class CallAudio(context: Context) {
         }
     }
 
-    /** Puts the phone into its call mode: the voice goes to the earpiece (or a headset) until [setSpeaker] says otherwise. */
-    fun begin() {
+    /** Told when a headset is plugged in or taken out, or a Bluetooth one comes or goes. */
+    var onDevicesChanged: (() -> Unit)? = null
+
+    private val devices = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>) {
+            onDevicesChanged?.invoke()
+        }
+
+        override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) {
+            onDevicesChanged?.invoke()
+        }
+    }
+    private var watching = false
+
+    /** Where the other person's voice comes out right now. */
+    var route: AudioRoute = AudioRoute.Earpiece
+        private set
+
+    private fun routeOf(type: Int): AudioRoute? = when (type) {
+        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> AudioRoute.Earpiece
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> AudioRoute.Speaker
+        AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_USB_HEADSET -> AudioRoute.Wired
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLE_HEADSET -> AudioRoute.Bluetooth
+        else -> null
+    }
+
+    /**
+     * The places the voice can come out of at the moment, in the order they
+     * are offered. Before Android 12 a call cannot be steered to a headset by
+     * hand; a wired one is used by itself there, so only the two built into
+     * the phone are listed.
+     */
+    fun routes(): List<AudioRoute> {
+        val found = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { audio.availableCommunicationDevices.mapNotNull { routeOf(it.type) } }.getOrDefault(emptyList())
+        } else {
+            listOf(AudioRoute.Earpiece, AudioRoute.Speaker)
+        }
+        return found.distinct().sortedBy { it.ordinal }.ifEmpty { listOf(AudioRoute.Speaker) }
+    }
+
+    /**
+     * Puts the phone into its call mode and picks where the voice comes out:
+     * a headset if there is one, otherwise the earpiece, or the loudspeaker
+     * when [preferSpeaker] (a video call) or the device has no earpiece.
+     */
+    fun begin(preferSpeaker: Boolean) {
         if (modeBefore == null) modeBefore = audio.mode
         runCatching { audio.mode = AudioManager.MODE_IN_COMMUNICATION }
         if (focus == null) {
@@ -97,22 +146,35 @@ class CallAudio(context: Context) {
             runCatching { audio.requestAudioFocus(request) }
             focus = request
         }
-        setSpeaker(false)
+        if (!watching) {
+            runCatching { audio.registerAudioDeviceCallback(devices, null) }
+            watching = true
+        }
+        setRoute(best(routes(), preferSpeaker))
     }
 
-    /** Loudspeaker on or off. Off also lets the screen go dark when the phone is held to the ear. */
-    fun setSpeaker(on: Boolean) {
+    /** The route to use when nobody has chosen: a headset before the phone's own. */
+    fun best(available: List<AudioRoute>, preferSpeaker: Boolean): AudioRoute = when {
+        AudioRoute.Bluetooth in available -> AudioRoute.Bluetooth
+        AudioRoute.Wired in available -> AudioRoute.Wired
+        preferSpeaker || AudioRoute.Earpiece !in available -> AudioRoute.Speaker
+        else -> AudioRoute.Earpiece
+    }
+
+    /** Sends the voice to [wanted]. At the earpiece the screen also goes dark when the phone is held to the ear. */
+    fun setRoute(wanted: AudioRoute) {
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val speaker = audio.availableCommunicationDevices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                if (on && speaker != null) audio.setCommunicationDevice(speaker) else audio.clearCommunicationDevice()
+                val device = audio.availableCommunicationDevices.firstOrNull { routeOf(it.type) == wanted }
+                if (device != null) audio.setCommunicationDevice(device) else audio.clearCommunicationDevice()
             } else {
                 @Suppress("DEPRECATION")
-                audio.isSpeakerphoneOn = on
+                audio.isSpeakerphoneOn = wanted == AudioRoute.Speaker
             }
         }
+        route = wanted
         runCatching {
-            if (on) {
+            if (wanted != AudioRoute.Earpiece) {
                 atEar?.takeIf { it.isHeld }?.release()
             } else if (power.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
                 val lock = atEar ?: power.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "maun:call").also { atEar = it }
@@ -124,6 +186,11 @@ class CallAudio(context: Context) {
     /** Ends everything this class started and puts the phone's sound back as it was. */
     fun release() {
         stopRinging()
+        onDevicesChanged = null
+        if (watching) {
+            runCatching { audio.unregisterAudioDeviceCallback(devices) }
+            watching = false
+        }
         runCatching { atEar?.takeIf { it.isHeld }?.release() }
         atEar = null
         runCatching {
@@ -138,6 +205,7 @@ class CallAudio(context: Context) {
         focus = null
         modeBefore?.let { runCatching { audio.mode = it } }
         modeBefore = null
+        route = AudioRoute.Earpiece
     }
 
     private companion object {

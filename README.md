@@ -7,7 +7,7 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 
-## Status: app 0.10.0 (files, voice messages, voice and video calls, and an optional member-only mode with usernames)
+## Status: app 0.11.0 (files, voice messages, voice and video calls, and an optional member-only mode with usernames)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
 messages while the app is closed. The app can be locked behind the phone's
@@ -182,13 +182,18 @@ call up to about 7 MB a minute (the app sends 640 by 480 at no more than
 relay limits each account to 60 sets of credentials a day (a call needs one
 on each side) and each set works for four hours.
 
-In a video call the camera can be turned off or changed between front and
-back, and the call goes on with sound if the camera may not be used. Both
-phones need app 0.10.0 or newer for video; an older one does not ring.
+Either side can turn its camera on or off at any time, so a voice call
+becomes a video call and back without hanging up; the camera can be changed
+between front and back, and the call goes on with sound if the camera may
+not be used. The button for the sound switches between the earpiece and the
+loudspeaker, and lists a wired or Bluetooth headset when one is connected
+(on Android 12 and newer; a headset that is connected during a call is used
+at once). Calls can be started from the top of a conversation and from the
+contact's page. Both phones need app 0.11.0 or newer; with an older one a
+call may not ring.
 
-What a call does not do yet: choosing a Bluetooth headset by hand, turning a
-voice call into a video call, and ringing on a phone whose push service is
-slow to wake it (the call then shows as missed).
+What a call does not do yet: ringing on a phone whose push service is slow
+to wake it (the call then shows as missed).
 
 ## A member-only relay
 

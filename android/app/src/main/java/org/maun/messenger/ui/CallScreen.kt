@@ -38,6 +38,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.runtime.mutableStateOf
+import org.maun.messenger.webrtc.AudioRoute
 import org.maun.messenger.webrtc.CallUi
 import org.maun.messenger.webrtc.PictureSink
 import org.webrtc.EglBase
@@ -52,7 +56,7 @@ class CallActions(
     val onAccept: () -> Unit = {},
     val onHangUp: () -> Unit = {},
     val onMute: (Boolean) -> Unit = {},
-    val onSpeaker: (Boolean) -> Unit = {},
+    val onRoute: (AudioRoute) -> Unit = {},
     val onCamera: (Boolean) -> Unit = {},
     val onSwitchCamera: () -> Unit = {},
 )
@@ -60,9 +64,9 @@ class CallActions(
 /**
  * A call, over everything else: who it is with, where it has got to, and the
  * buttons for it. While it rings here those are Decline and Answer; after
- * that, the microphone, the loudspeaker and hanging up, and in a video call
- * the camera. [video] carries the pictures of a video call; without it (and
- * in a voice call) the screen shows the person's initial instead. [now] is
+ * that, the microphone, the camera, where the sound comes out, and hanging
+ * up. [video] carries the pictures; while neither camera is on (or without
+ * it) the screen shows the person's initial instead. [now] is
  * only there so that a picture of the screen can be drawn with a fixed clock.
  */
 @Composable
@@ -88,8 +92,8 @@ fun CallScreen(
         CallUi.Phase.Ended -> call.ended ?: "Call ended"
     }
     val ringingHere = call.incoming && call.phase == CallUi.Phase.Ringing
-    // Pictures are on screen from the moment this phone's camera runs: before the other side answers, one's own.
-    val pictures = call.video && video != null && !ringingHere && call.phase != CallUi.Phase.Ended
+    // Pictures are on screen while either camera runs: one's own from the moment it starts, before the other side answers.
+    val pictures = video != null && !ringingHere && call.phase != CallUi.Phase.Ended && (call.cameraOn || call.remoteVideo)
 
     if (pictures && video != null) {
         VideoCall(call, name, status, actions, video)
@@ -134,31 +138,80 @@ private fun VoiceCall(call: CallUi, name: String, status: String, ringingHere: B
             }
             Spacer(modifier = Modifier.weight(2f))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.Top,
-            ) {
-                when {
-                    call.phase == CallUi.Phase.Ended -> Unit
-                    ringingHere -> {
-                        RoundButton(MaunIcons.CallEnd, "Decline", colors.error, colors.onError, onClick = actions.onHangUp)
-                        RoundButton(
-                            icon = if (call.video) MaunIcons.Videocam else MaunIcons.Call,
-                            label = "Answer",
-                            container = LocalStatusColors.current.passed,
-                            content = Color.White,
-                            onClick = actions.onAccept,
-                        )
-                    }
-                    else -> {
+            when {
+                call.phase == CallUi.Phase.Ended -> Unit
+                ringingHere -> Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.Top) {
+                    RoundButton(MaunIcons.CallEnd, "Decline", colors.error, colors.onError, onClick = actions.onHangUp)
+                    RoundButton(
+                        icon = if (call.video) MaunIcons.Videocam else MaunIcons.Call,
+                        label = "Answer",
+                        container = LocalStatusColors.current.passed,
+                        content = Color.White,
+                        onClick = actions.onAccept,
+                    )
+                }
+                else -> Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(28.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.Top) {
                         Toggle(if (call.muted) MaunIcons.MicOff else MaunIcons.Mic, if (call.muted) "Muted" else "Mute", call.muted) {
                             actions.onMute(!call.muted)
                         }
-                        RoundButton(MaunIcons.CallEnd, "Hang up", colors.error, colors.onError, onClick = actions.onHangUp)
-                        Toggle(MaunIcons.Speaker, "Speaker", call.speaker) { actions.onSpeaker(!call.speaker) }
+                        // Turning the camera on makes it a video call, for as long as it stays on.
+                        if (call.canVideo) Toggle(MaunIcons.Videocam, "Camera", false) { actions.onCamera(true) }
+                        RouteButton(call, actions.onRoute) { icon, label, on, onClick -> Toggle(icon, label, on, onClick) }
                     }
+                    RoundButton(MaunIcons.CallEnd, "Hang up", colors.error, colors.onError, onClick = actions.onHangUp)
                 }
+            }
+        }
+    }
+}
+
+private fun iconOf(route: AudioRoute): ImageVector = when (route) {
+    AudioRoute.Earpiece -> MaunIcons.Call
+    AudioRoute.Speaker -> MaunIcons.Speaker
+    AudioRoute.Wired -> MaunIcons.Headset
+    AudioRoute.Bluetooth -> MaunIcons.Bluetooth
+}
+
+private fun nameOf(route: AudioRoute): String = when (route) {
+    AudioRoute.Earpiece -> "Phone"
+    AudioRoute.Speaker -> "Speaker"
+    AudioRoute.Wired -> "Headset"
+    AudioRoute.Bluetooth -> "Bluetooth"
+}
+
+/**
+ * The button for where the sound comes out. With only the phone's own two
+ * places it switches between them; with a headset as well it opens a list.
+ * [button] draws it, so that it looks like its neighbours on either screen.
+ */
+@Composable
+private fun RouteButton(
+    call: CallUi,
+    onRoute: (AudioRoute) -> Unit,
+    button: @Composable (icon: ImageVector, label: String, on: Boolean, onClick: () -> Unit) -> Unit,
+) {
+    var choosing by remember { mutableStateOf(false) }
+    Box {
+        button(iconOf(call.route), nameOf(call.route), call.route != AudioRoute.Earpiece) {
+            val others = call.routes.filter { it != call.route }
+            when (others.size) {
+                0 -> Unit
+                1 -> onRoute(others.first())
+                else -> choosing = true
+            }
+        }
+        DropdownMenu(expanded = choosing, onDismissRequest = { choosing = false }) {
+            for (route in call.routes) {
+                DropdownMenuItem(
+                    text = { Text(nameOf(route)) },
+                    leadingIcon = { Icon(iconOf(route), contentDescription = null) },
+                    trailingIcon = { if (route == call.route) Icon(MaunIcons.Check, contentDescription = "In use") },
+                    onClick = {
+                        choosing = false
+                        onRoute(route)
+                    },
+                )
             }
         }
     }
@@ -204,13 +257,11 @@ private fun VideoCall(call: CallUi, name: String, status: String, actions: CallA
                 SmallButton(if (call.cameraOn) MaunIcons.Videocam else MaunIcons.VideocamOff, if (call.cameraOn) "Turn camera off" else "Turn camera on", if (call.cameraOn) quiet else Color.White, if (call.cameraOn) Color.White else Color.Black) {
                     actions.onCamera(!call.cameraOn)
                 }
-                SmallButton(MaunIcons.SwitchCamera, "Other camera", quiet, Color.White, onClick = actions.onSwitchCamera)
+                if (call.cameraOn) SmallButton(MaunIcons.SwitchCamera, "Other camera", quiet, Color.White, onClick = actions.onSwitchCamera)
                 SmallButton(if (call.muted) MaunIcons.MicOff else MaunIcons.Mic, if (call.muted) "Unmute" else "Mute", if (call.muted) Color.White else quiet, if (call.muted) Color.Black else Color.White) {
                     actions.onMute(!call.muted)
                 }
-                SmallButton(MaunIcons.Speaker, "Speaker", if (call.speaker) Color.White else quiet, if (call.speaker) Color.Black else Color.White) {
-                    actions.onSpeaker(!call.speaker)
-                }
+                RouteButton(call, actions.onRoute) { icon, label, _, onClick -> SmallButton(icon, label, quiet, Color.White, onClick = onClick) }
                 SmallButton(MaunIcons.CallEnd, "Hang up", MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.onError, size = 64.dp, onClick = actions.onHangUp)
             }
         }
