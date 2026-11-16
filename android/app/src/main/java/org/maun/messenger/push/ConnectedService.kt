@@ -30,6 +30,12 @@ class ConnectedService : Service() {
     // Called for every start request, and each one must be answered by going
     // (or staying) in the foreground, or Android stops the app.
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!Background.stayConnected(this)) {
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            Notifications(this).clearConnected()
+            stopSelf()
+            return START_NOT_STICKY
+        }
         try {
             ServiceCompat.startForeground(
                 this,
@@ -56,21 +62,25 @@ class ConnectedService : Service() {
 
     override fun onDestroy() {
         if (holding) messenger.onStayConnected(false)
+        Notifications(this).clearConnected()
         super.onDestroy()
     }
 
     companion object {
-        /** Returns false when Android refuses, which it may while the app is not on screen. */
-        fun start(context: Context): Boolean =
-            try {
+        /** Returns false when off or when Android refuses, which it may while the app is not on screen. */
+        fun start(context: Context): Boolean {
+            if (!Background.stayConnected(context)) return false
+            return try {
                 ContextCompat.startForegroundService(context, Intent(context, ConnectedService::class.java))
                 true
             } catch (_: Exception) {
                 false
             }
+        }
 
         fun stop(context: Context) {
-            context.stopService(Intent(context, ConnectedService::class.java))
+            runCatching { context.stopService(Intent(context, ConnectedService::class.java)) }
+            Notifications(context).clearConnected()
         }
     }
 }

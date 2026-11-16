@@ -46,6 +46,8 @@ import org.maun.messenger.ui.HomeLists
 import org.maun.messenger.ui.HomeScreen
 import org.maun.messenger.ui.LockScreen
 import org.maun.messenger.ui.MaunTheme
+import org.maun.messenger.ui.PermissionSetupState
+import org.maun.messenger.ui.PermissionsScreen
 import org.maun.messenger.ui.PrivacyUi
 import org.maun.messenger.ui.SettingsScreen
 import org.robolectric.RobolectricTestRunner
@@ -469,4 +471,17 @@ class ScreensTest {
 
     @Test
     fun locked() = shoot("locked") { LockScreen(onShown = {}, onUnlock = {}) }
+
+    @Test
+    fun permissionsSetup() = shoot("permissions") {
+        PermissionsScreen(
+            onContinue = {},
+            initialState = PermissionSetupState(
+                notifications = true,
+                microphone = false,
+                camera = false,
+                fullScreenCalls = false,
+            ),
+        )
+    }
 }

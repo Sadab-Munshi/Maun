@@ -121,7 +121,6 @@ fun DeliveryCard(
                             "It is not told who wrote or what the message says.",
                     )
                     if (problem != null) Note(problem, warning = true)
-                    TextButton(onClick = { onStayConnected(true) }) { Text("Stay connected instead") }
                 }
 
                 ui.pushChoices.size > 1 -> {
@@ -134,20 +133,17 @@ fun DeliveryCard(
                 ui.googleOffered -> {
                     Note(
                         "Messages arrive when you open Maun, and Maun looks for them about once an hour. " +
-                            "To get them right away, let Google's push service wake Maun, " +
-                            "or let Maun stay connected, which uses more battery and shows a permanent notification.",
+                            "To get them right away without a permanent notification, let Google's push service wake Maun.",
                     )
                     Button(onClick = { onGooglePush(true) }) { Text("Use Google's push service") }
-                    OutlinedButton(onClick = { onStayConnected(true) }) { Text("Stay connected") }
                 }
 
                 else -> {
                     Note(
                         "Messages arrive when you open Maun, and Maun looks for them about once an hour. " +
-                            "This phone has no push service. To get messages right away, install a push app " +
-                            "such as Sunup and open Maun again. Or let Maun stay connected, which uses more battery.",
+                            "This phone has no push service. Install a push app such as Sunup and open Maun again, " +
+                            "or turn on Stay connected below if push notifications are blocked on your device.",
                     )
-                    OutlinedButton(onClick = { onStayConnected(true) }) { Text("Stay connected") }
                 }
             }
 

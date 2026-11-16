@@ -33,6 +33,7 @@ import org.maun.messenger.AppLock
 import org.maun.messenger.BuildConfig
 import org.maun.messenger.CodeCheck
 import org.maun.messenger.MaunApp
+import org.maun.messenger.MediaSaver
 import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.network.RelayException
 import org.maun.messenger.push.Background
@@ -76,9 +77,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** The relay's owner has shut this member out. */
     val banned = messenger.banned
 
+    /** Shown once right after first-time login so permissions work out of the box. */
+    val needsPermissionSetup = messenger.needsPermissionSetup
+
+    fun completePermissionSetup() {
+        messenger.completePermissionSetup()
+        refreshDelivery()
+        refreshPrivacy()
+    }
+
     val fileProgress = messenger.fileProgress
 
     private val attachProblem = MutableStateFlow<String?>(null)
+    private val _fileNotice = MutableStateFlow<String?>(null)
+
+    /** Brief confirmation when a file or media item is saved (e.g. "Saved to Gallery"). */
+    val fileNotice: StateFlow<String?> = _fileNotice.asStateFlow()
+
+    fun clearFileNotice() {
+        _fileNotice.value = null
+    }
 
     /** Why a file could not be picked up, sent or fetched: said once, then cleared. */
     val fileProblem: StateFlow<String?> = combine(attachProblem, messenger.fileProblem) { mine, theirs -> mine ?: theirs }
@@ -154,9 +172,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startFile(seq: Long) = messenger.startFile(seq)
 
-    fun saveFile(seq: Long, file: Attachment, target: Uri) {
+    fun saveFile(seq: Long, file: Attachment) {
         viewModelScope.launch {
-            if (!messenger.saveFile(seq, file, target)) attachProblem.value = "The file could not be saved there."
+            val saved = messenger.saveFileToDevice(seq, file)
+            if (saved != null) {
+                _fileNotice.value = saved
+            } else {
+                attachProblem.value = "The file could not be saved."
+            }
         }
     }
 
@@ -226,9 +249,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** How messages arrive while Maun is closed. Call [refreshDelivery] to bring it up to date. */
     val delivery: StateFlow<DeliveryUi> = _delivery.asStateFlow()
 
-    private val _privacy = MutableStateFlow(PrivacyUi())
+    private val _privacy = MutableStateFlow(readPrivacy())
 
-    /** The app lock and screenshot switches. Call [refreshPrivacy] to bring it up to date. */
+    /** Privacy, media saving, and chat wallpaper switches. Call [refreshPrivacy] to bring it up to date. */
     val privacy: StateFlow<PrivacyUi> = _privacy.asStateFlow()
 
     val home: StateFlow<HomeLists> = combine(messenger.contacts, messenger.chats, ::homeLists)
@@ -302,10 +325,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshDelivery()
     }
 
-    /** Reads the two privacy switches and whether the phone has a screen lock. */
+    /** Reads privacy, media-saving, and wallpaper switches and whether the phone has a screen lock. */
     fun refreshPrivacy() {
+        _privacy.value = readPrivacy()
+    }
+
+    private fun readPrivacy(): PrivacyUi {
         val context = getApplication<Application>()
-        _privacy.value = PrivacyUi(
+        return PrivacyUi(
             appLock = AppLock.enabled(context),
             canLock = AppLock.available(context),
             blockScreenshots = AppLock.blocksScreenshots(context),
@@ -313,8 +340,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             notifyText = Notifications(context).showsText,
             lockScreenCallsBlocked = !Notifications(context).mayShowCallsOverLockScreen(),
             telecomCalls = TelecomBridge.enabled(context),
-            batterySaving = !(context.getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(context.packageName),
+            batterySaving = (context.getSystemService(Context.POWER_SERVICE) as? PowerManager)
+                ?.isIgnoringBatteryOptimizations(context.packageName) == false,
+            saveIncomingMedia = MediaSaver.saveIncomingMediaEnabled(context),
+            chatPattern = MediaSaver.chatPatternEnabled(context),
         )
+    }
+
+    fun setSaveIncomingMedia(on: Boolean) {
+        MediaSaver.setSaveIncomingMediaEnabled(getApplication(), on)
+        refreshPrivacy()
+    }
+
+    fun setChatPattern(on: Boolean) {
+        MediaSaver.setChatPatternEnabled(getApplication(), on)
+        refreshPrivacy()
     }
 
     fun setStayConnected(on: Boolean) {

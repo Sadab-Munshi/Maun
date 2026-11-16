@@ -110,6 +110,38 @@ val LocalStatusColors = staticCompositionLocalOf {
     )
 }
 
+/** Conversation surfaces: wallpaper, incoming white bubbles, outgoing green bubbles, and composer pill. */
+@Immutable
+data class ChatColors(
+    val wallpaper: Color,
+    val patternTint: Color,
+    val incomingBubble: Color,
+    val incomingContent: Color,
+    val incomingMeta: Color,
+    val outgoingBubble: Color,
+    val outgoingContent: Color,
+    val outgoingMeta: Color,
+    val composerPill: Color,
+    val actionButton: Color,
+    val onActionButton: Color,
+)
+
+val LocalChatColors = staticCompositionLocalOf {
+    ChatColors(
+        wallpaper = Color.Unspecified,
+        patternTint = Color.Unspecified,
+        incomingBubble = Color.Unspecified,
+        incomingContent = Color.Unspecified,
+        incomingMeta = Color.Unspecified,
+        outgoingBubble = Color.Unspecified,
+        outgoingContent = Color.Unspecified,
+        outgoingMeta = Color.Unspecified,
+        composerPill = Color.Unspecified,
+        actionButton = Color.Unspecified,
+        onActionButton = Color.Unspecified,
+    )
+}
+
 /**
  * Backgrounds for the circles that stand in for a picture of a person. All
  * are dark enough for white letters, in the light theme and the dark one.
@@ -146,7 +178,36 @@ fun MaunTheme(content: @Composable () -> Unit) {
             read = Color(0xFF1479C9),
         )
     }
-    CompositionLocalProvider(LocalStatusColors provides status) {
+    val chat = if (dark) {
+        ChatColors(
+            wallpaper = Color(0xFF0B1210),
+            patternTint = Color(0xFF9FD8C0).copy(alpha = 0.045f),
+            incomingBubble = Color(0xFF1D2724),
+            incomingContent = Color(0xFFE5EAE6),
+            incomingMeta = Color(0xFF9BA6A0),
+            outgoingBubble = Color(0xFF1D4B3B),
+            outgoingContent = Color(0xFFE4F4EC),
+            outgoingMeta = Color(0xFFA9CBBB),
+            composerPill = Color(0xFF1E2925),
+            actionButton = Color(0xFF2C8665),
+            onActionButton = Color.White,
+        )
+    } else {
+        ChatColors(
+            wallpaper = Color(0xFFECE6DC),
+            patternTint = Color(0xFF2F6B55).copy(alpha = 0.065f),
+            incomingBubble = Color.White,
+            incomingContent = Ink,
+            incomingMeta = Color(0xFF66706B),
+            outgoingBubble = Color(0xFFD8F3E0),
+            outgoingContent = Color(0xFF102A20),
+            outgoingMeta = Color(0xFF3E6353),
+            composerPill = Color.White,
+            actionButton = Color(0xFF216E53),
+            onActionButton = Color.White,
+        )
+    }
+    CompositionLocalProvider(LocalStatusColors provides status, LocalChatColors provides chat) {
         MaterialTheme(colorScheme = if (dark) DarkColors else LightColors, content = content)
     }
 }

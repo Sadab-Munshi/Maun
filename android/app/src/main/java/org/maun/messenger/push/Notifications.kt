@@ -243,6 +243,10 @@ class Notifications(context: Context) {
     /** The permanent notification Android requires while Maun stays connected. */
     fun connected(): Notification = quiet("Maun is connected", "Waiting for messages. Tap to open.")
 
+    fun clearConnected() {
+        manager.cancel(ID_CONNECTED)
+    }
+
     /** Shown by older Android versions while Maun fetches after a wake-up. */
     fun fetching(): Notification = quiet("Maun", "Checking for messages")
 

@@ -22,7 +22,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import org.maun.messenger.network.RelayState
 
-/** The two privacy switches, as the settings screen shows them. */
+/** Privacy, incoming media, and chat appearance switches, as the settings screen shows them. */
 data class PrivacyUi(
     val appLock: Boolean = false,
     /** The phone has a screen lock, so the app lock has something to ask for. */
@@ -38,6 +38,10 @@ data class PrivacyUi(
     val lockScreenCallsBlocked: Boolean = false,
     /** Calls are handed to Android's own call system. */
     val telecomCalls: Boolean = true,
+    /** Save incoming photos and videos straight to Gallery (`Pictures/Maun`). */
+    val saveIncomingMedia: Boolean = true,
+    /** Show a soft background pattern behind conversations (off = solid background). */
+    val chatPattern: Boolean = true,
 )
 
 @Composable
@@ -61,6 +65,8 @@ fun SettingsScreen(
     onBattery: () -> Unit = {},
     onLockScreenCalls: () -> Unit = {},
     onTelecomCalls: (Boolean) -> Unit = {},
+    onSaveIncomingMedia: (Boolean) -> Unit = {},
+    onChatPattern: (Boolean) -> Unit = {},
     onOpenBlocked: () -> Unit,
     onOpenSetupCheck: () -> Unit,
     onBack: () -> Unit,
@@ -70,6 +76,14 @@ fun SettingsScreen(
 
         Column {
             SectionTitle("Calls and arriving on time", modifier = Modifier.padding(bottom = 4.dp))
+            SwitchRow(
+                icon = MaunIcons.Bell,
+                title = "Stay connected",
+                text = "Only needed if push notifications are blocked on your device; shows a permanent notification.",
+                checked = delivery.stayConnected,
+                enabled = true,
+                onChange = onStayConnected,
+            )
             if (privacy.lockScreenCallsBlocked) {
                 LinkRow(
                     icon = MaunIcons.Call,
@@ -98,6 +112,26 @@ fun SettingsScreen(
                     onClick = onBattery,
                 )
             }
+        }
+
+        Column {
+            SectionTitle("Chats and media", modifier = Modifier.padding(bottom = 4.dp))
+            SwitchRow(
+                icon = MaunIcons.Image,
+                title = "Save incoming media to Gallery",
+                text = "Save received photos and videos straight to your phone's Gallery under Pictures/Maun.",
+                checked = privacy.saveIncomingMedia,
+                enabled = true,
+                onChange = onSaveIncomingMedia,
+            )
+            SwitchRow(
+                icon = MaunIcons.Wallpaper,
+                title = "Chat background pattern",
+                text = "Show a soft, subtle pattern behind conversations. Turn off for a solid background.",
+                checked = privacy.chatPattern,
+                enabled = true,
+                onChange = onChatPattern,
+            )
         }
 
         Column {

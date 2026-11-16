@@ -111,12 +111,15 @@ interface ContactDao {
         PreKeyEntity::class,
         KyberUseEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
-    // Version 3 only adds tables (messages and encryption sessions). Room
-    // writes this migration itself from the two committed schema files, so it
-    // cannot disagree with them.
-    autoMigrations = [AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4)],
+    // Room writes these migrations itself from the committed schema files, so
+    // they cannot disagree with them.
+    autoMigrations = [
+        AutoMigration(from = 2, to = 3),
+        AutoMigration(from = 3, to = 4),
+        AutoMigration(from = 4, to = 5),
+    ],
 )
 abstract class AppDatabase : RoomDatabase(), Transactor {
 

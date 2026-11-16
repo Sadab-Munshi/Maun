@@ -121,6 +121,9 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
     override fun setText(seq: Long, text: String): Int =
         apply({ it.seq == seq }) { it.copy(text = text) }
 
+    override fun markSavedToGallery(seq: Long): Int =
+        apply({ it.seq == seq }) { it.copy(savedToGallery = true) }
+
     override fun fileMessages(): List<Long> =
         lock.withLock { state.messages.filter { it.kind == MessageKind.FILE }.map { it.seq } }
 

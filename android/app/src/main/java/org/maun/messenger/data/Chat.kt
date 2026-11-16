@@ -71,6 +71,9 @@ data class MessageEntity(
     val unread: Boolean = false,
     /** Incoming only: a [ReceiptLevel]. */
     val receipt: Int = ReceiptLevel.NONE,
+    /** Whether this file or media message has already been saved to Gallery or Downloads/Maun. */
+    @ColumnInfo(defaultValue = "0")
+    val savedToGallery: Boolean = false,
 )
 
 /**
@@ -172,6 +175,9 @@ interface ChatDao {
 
     @Query("UPDATE messages SET text = :text WHERE seq = :seq")
     fun setText(seq: Long, text: String): Int
+
+    @Query("UPDATE messages SET savedToGallery = 1 WHERE seq = :seq")
+    fun markSavedToGallery(seq: Long): Int
 
     /** Every message that has a file, for telling which stored files still belong to one. */
     @Query("SELECT seq FROM messages WHERE kind = 2")

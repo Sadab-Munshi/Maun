@@ -7,6 +7,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -23,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,17 +35,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.material3.LinearProgressIndicator
 import java.io.File
 import java.util.Locale
-import org.maun.messenger.voice.VoiceState
 import org.maun.messenger.Attachment
 import org.maun.messenger.data.MessageEntity
+import org.maun.messenger.voice.VoiceState
 
 /**
  * What a conversation needs in order to show and move files. The defaults do
@@ -55,12 +57,15 @@ class FileActions(
     /** Why a file could not be sent or fetched, to be said once. */
     val problem: String? = null,
     val onProblemShown: () -> Unit = {},
-    /** The user picked a file to send. */
+    /** Brief confirmation when a file or photo is saved (e.g. "Saved to Gallery"). */
+    val notice: String? = null,
+    val onNoticeShown: () -> Unit = {},
+    /** The user picked or captured a file to send. */
     val onAttach: (Uri) -> Unit = {},
     /** Send or fetch the file of a message, whichever it still needs. */
     val onStart: (Long) -> Unit = {},
-    /** Write the file of a message, decrypted, to the place the user picked. */
-    val onSave: (Long, Attachment, Uri) -> Unit = { _, _, _ -> },
+    /** Save the file of a message directly to Gallery or Downloads/Maun via MediaStore. */
+    val onSave: (Long, Attachment) -> Unit = { _, _ -> },
     /** The picture of a message, about so many pixels on its longer side. */
     val loadImage: suspend (Long, Attachment, Int) -> Bitmap? = { _, _, _ -> null },
     /** The same without waiting, when it has been shown since the app started. */
@@ -73,8 +78,8 @@ class FileActions(
     val voice: VoiceState? = null,
 )
 
-/** Pictures up to this size are fetched as soon as their message is on screen. */
-private const val AUTO_FETCH_BYTES = 5_000_000L
+/** Pictures and short videos up to this size are fetched as soon as their message is on screen. */
+internal const val AUTO_FETCH_BYTES = 5_000_000L
 private const val PREVIEW_PIXELS = 720
 private const val FULL_PIXELS = 2048
 
@@ -97,7 +102,16 @@ internal fun fileStep(file: Attachment, outgoing: Boolean, active: Boolean): Fil
     else -> FileStep.Retry
 }
 
-internal fun fileLine(file: Attachment, outgoing: Boolean, step: FileStep, fraction: Float?): String {
+/** Whether this message renders as an edge-to-edge photo bubble with overlaid timestamp. */
+internal fun isPictureBubble(message: MessageEntity, file: Attachment, step: FileStep): Boolean {
+    if (!file.isImage || file.isVoice) return false
+    val unsent = message.outgoing && file.key.isEmpty()
+    val here = step == FileStep.Open || (unsent && step != FileStep.Gone)
+    val arriving = !message.outgoing && (step == FileStep.Working || (step == FileStep.Fetch && file.size <= AUTO_FETCH_BYTES))
+    return here || arriving
+}
+
+internal fun fileLine(file: Attachment, message: MessageEntity, step: FileStep, fraction: Float?): String {
     val size = formatSize(file.size)
     return when (step) {
         FileStep.Working -> {
@@ -105,9 +119,19 @@ internal fun fileLine(file: Attachment, outgoing: Boolean, step: FileStep, fract
             if (file.key.isEmpty()) "$size · Sending $percent%" else "$size · Fetching $percent%"
         }
         FileStep.Fetch -> "$size · Tap to fetch"
-        FileStep.Open -> if (file.isImage) size else "$size · Tap to save"
-        FileStep.Retry -> if (outgoing && file.key.isEmpty()) "$size · Not sent. Tap to try again" else "$size · Tap to try again"
-        FileStep.Gone -> if (outgoing) "$size · No longer on this phone" else "$size · No longer available"
+        FileStep.Open -> when {
+            file.isImage -> size
+            message.savedToGallery && file.isVideo -> "$size · Saved to Gallery"
+            message.savedToGallery -> "$size · Saved to Downloads/Maun"
+            file.isVideo -> "$size · Tap to save to Gallery"
+            else -> "$size · Tap to save"
+        }
+        FileStep.Retry -> if (message.outgoing && file.key.isEmpty()) {
+            "$size · Not sent. Tap to try again"
+        } else {
+            "$size · Tap to try again"
+        }
+        FileStep.Gone -> if (message.outgoing) "$size · No longer on this phone" else "$size · No longer available"
     }
 }
 
@@ -123,13 +147,15 @@ fun FileContent(
     files: FileActions,
     text: Color,
     quiet: Color,
+    imageShape: Shape = RoundedCornerShape(15.dp),
+    imageOverlay: (@Composable BoxScope.() -> Unit)? = null,
 ) {
     val fraction = files.progress[message.seq]
     val step = fileStep(file, message.outgoing, active = fraction != null)
 
-    // A small picture someone sent is fetched without being asked for.
+    // Small incoming photos, short videos, and voice messages are fetched right away.
     LaunchedEffect(message.seq, step) {
-        val small = (file.isImage && file.size <= AUTO_FETCH_BYTES) || file.isVoice
+        val small = (file.isGalleryMedia && file.size <= AUTO_FETCH_BYTES) || file.isVoice
         if (step == FileStep.Fetch && small) files.onStart(message.seq)
     }
 
@@ -138,17 +164,13 @@ fun FileContent(
         return
     }
 
-    // A picture that is on this phone is shown as a picture: one that arrived,
-    // and one of one's own that is still on its way out.
+    val showAsPicture = isPictureBubble(message, file, step)
     val unsent = message.outgoing && file.key.isEmpty()
     val here = file.isImage && (step == FileStep.Open || (unsent && step != FileStep.Gone))
-    // One that is being fetched gets its room straight away, so the list does not jump when it lands.
-    val arriving = file.isImage && !message.outgoing &&
-        (step == FileStep.Working || (step == FileStep.Fetch && file.size <= AUTO_FETCH_BYTES))
     val picture by produceState(files.cachedImage(message.seq, PREVIEW_PIXELS), message.seq, here) {
         if (here && value == null) value = files.loadImage(message.seq, file, PREVIEW_PIXELS)
     }
-    if (here || arriving) {
+    if (showAsPicture) {
         val shown = picture
         val ratio = when {
             shown != null -> shown.width.toFloat() / shown.height
@@ -157,9 +179,9 @@ fun FileContent(
         }.coerceIn(0.6f, 1.8f)
         Box(
             modifier = Modifier
-                .width(240.dp)
+                .width(248.dp)
                 .aspectRatio(ratio)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(imageShape)
                 .background(text.copy(alpha = 0.08f)),
             contentAlignment = Alignment.Center,
         ) {
@@ -190,6 +212,7 @@ fun FileContent(
                 ) { Icon(MaunIcons.Retry, contentDescription = "Not sent. Tap to try again", tint = Color.White) }
                 else -> Unit
             }
+            imageOverlay?.invoke(this)
         }
         return
     }
@@ -200,20 +223,28 @@ fun FileContent(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            modifier = Modifier.size(44.dp).clip(CircleShape).background(text.copy(alpha = 0.10f)),
+            modifier = Modifier.size(42.dp).clip(CircleShape).background(text.copy(alpha = 0.10f)),
             contentAlignment = Alignment.Center,
         ) {
             when (step) {
                 FileStep.Working -> CircularProgressIndicator(
                     progress = { fraction ?: 0f },
-                    modifier = Modifier.size(28.dp),
+                    modifier = Modifier.size(26.dp),
                     strokeWidth = 3.dp,
                     color = text,
                     trackColor = text.copy(alpha = 0.2f),
                 )
                 FileStep.Fetch -> Icon(MaunIcons.Download, contentDescription = null, tint = text)
                 FileStep.Retry -> Icon(MaunIcons.Retry, contentDescription = null, tint = text)
-                else -> Icon(if (file.isImage) MaunIcons.Image else MaunIcons.File, contentDescription = null, tint = text)
+                else -> Icon(
+                    when {
+                        file.isImage -> MaunIcons.Image
+                        file.isVideo -> MaunIcons.Videocam
+                        else -> MaunIcons.File
+                    },
+                    contentDescription = null,
+                    tint = text,
+                )
             }
         }
         Column(modifier = Modifier.weight(1f, fill = false)) {
@@ -226,7 +257,7 @@ fun FileContent(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = fileLine(file, message.outgoing, step, fraction),
+                text = fileLine(file, message, step, fraction),
                 style = MaterialTheme.typography.bodySmall,
                 color = quiet,
             )
@@ -254,13 +285,13 @@ private fun VoiceContent(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            modifier = Modifier.size(44.dp).clip(CircleShape).background(text.copy(alpha = 0.12f)),
+            modifier = Modifier.size(42.dp).clip(CircleShape).background(text.copy(alpha = 0.12f)),
             contentAlignment = Alignment.Center,
         ) {
             when {
                 step == FileStep.Working -> CircularProgressIndicator(
                     progress = { fraction ?: 0f },
-                    modifier = Modifier.size(28.dp),
+                    modifier = Modifier.size(26.dp),
                     strokeWidth = 3.dp,
                     color = text,
                     trackColor = text.copy(alpha = 0.2f),
@@ -329,7 +360,7 @@ fun ImageViewer(seq: Long, file: Attachment, files: FileActions, onSave: () -> U
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
             )
-            IconButton(onClick = onSave) { Icon(MaunIcons.Download, contentDescription = "Save", tint = Color.White) }
+            IconButton(onClick = onSave) { Icon(MaunIcons.Download, contentDescription = "Save to Gallery", tint = Color.White) }
         }
     }
 }

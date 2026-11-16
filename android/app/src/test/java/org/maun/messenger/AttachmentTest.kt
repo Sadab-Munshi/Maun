@@ -96,4 +96,22 @@ class AttachmentTest {
         assertFalse(file.copy(mime = "image/svg+xml").isImage)
         assertFalse(file.copy(mime = "application/pdf").isImage)
     }
+
+    @Test
+    fun `gallery media covers photos and videos while documents go to Downloads`() {
+        assertTrue(file.isGalleryMedia)
+        assertFalse(file.isVideo)
+
+        val video = file.copy(name = "clip.mp4", mime = "video/mp4")
+        assertTrue(video.isVideo)
+        assertTrue(video.isGalleryMedia)
+        assertEquals("Saved to Gallery", MediaSaver.savedNotice(file))
+        assertEquals("Saved to Gallery", MediaSaver.savedNotice(video))
+        assertEquals("Already saved to Gallery", MediaSaver.savedNotice(video, alreadySaved = true))
+
+        val doc = file.copy(name = "Tickets.pdf", mime = "application/pdf")
+        assertFalse(doc.isGalleryMedia)
+        assertEquals("Saved to Downloads/Maun", MediaSaver.savedNotice(doc))
+        assertEquals("Already saved to Downloads/Maun", MediaSaver.savedNotice(doc, alreadySaved = true))
+    }
 }

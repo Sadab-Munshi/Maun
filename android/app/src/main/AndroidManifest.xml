@@ -31,8 +31,13 @@
         android:name="android.hardware.camera"
         android:required="false" />
 
-    <!-- To say that a message has arrived. Asked for from the home screen. -->
+    <!-- To say that a message has arrived. Asked for at first login or from Settings. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Android 9 and older only: fallback direct saving to Pictures/Maun and Download/Maun. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <!--
         The optional app lock. Android checks the fingerprint, face or screen
@@ -41,17 +46,12 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
     <!--
-        "Stay connected": for phones without a push app, Maun can keep its
-        connection open while closed. Off until the user turns it on. Android
-        then requires the permanent notification, and the last permission lets
-        Maun ask to be left running while the phone rests.
+        "Stay connected": only when push notifications are blocked and the user
+        explicitly turns it on. Off by default.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission
-        android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
-        tools:ignore="BatteryLife" />
 
     <!--
         Backups are off everywhere: messages and keys must never leave the
@@ -110,6 +110,17 @@
             android:name=".webrtc.CallService"
             android:exported="false"
             android:foregroundServiceType="phoneCall|microphone|camera" />
+
+        <!-- Hands a temporary file in Maun's cache to the camera app when taking a photo. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

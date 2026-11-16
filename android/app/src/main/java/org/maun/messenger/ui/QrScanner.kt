@@ -72,6 +72,9 @@ fun QrScanner(onCode: (String) -> Unit, onError: (String) -> Unit, modifier: Mod
         } catch (e: IllegalStateException) {
             currentOnError("The camera could not be started.")
             return@LaunchedEffect
+        } catch (_: SecurityException) {
+            currentOnError("Camera access is turned off in Android settings.")
+            return@LaunchedEffect
         }
         try {
             // Keep the camera until the scanner leaves the screen.

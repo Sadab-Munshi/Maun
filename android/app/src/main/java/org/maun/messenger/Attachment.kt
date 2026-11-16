@@ -31,6 +31,11 @@ data class Attachment(
 ) {
     val isImage: Boolean get() = mime in IMAGE_TYPES
 
+    val isVideo: Boolean get() = mime.startsWith("video/")
+
+    /** Photos and videos belong in the phone's Gallery (`Pictures/Maun`); other files go to `Download/Maun`. */
+    val isGalleryMedia: Boolean get() = isImage || isVideo
+
     /** A voice message: recorded in the conversation, and played there. */
     val isVoice: Boolean get() = duration > 0 && mime.startsWith("audio/")
 

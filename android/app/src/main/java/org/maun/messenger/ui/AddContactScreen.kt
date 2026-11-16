@@ -39,6 +39,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.launch
 import org.maun.messenger.CodeCheck
 import org.maun.messenger.Messenger
@@ -107,6 +108,11 @@ private fun FindCodeStep(
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         cameraAllowed = granted
         cameraAsked = true
+    }
+    LifecycleResumeEffect(Unit) {
+        cameraAllowed = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        onPauseOrDispose { }
     }
 
     var typed by rememberSaveable { mutableStateOf("") }

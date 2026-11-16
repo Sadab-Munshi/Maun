@@ -71,9 +71,13 @@ object AppLock {
     @Volatile
     var loggingIn = false
 
+    /** Set briefly while Maun launches Android's camera, file picker, or permission page. */
+    @Volatile
+    var externalFlow = false
+
     /** The app left the screen. Turning the phone around does not count. */
     fun onStop(activity: Activity) {
-        if (!activity.isChangingConfigurations && !loggingIn) locked = wanted(activity)
+        if (!activity.isChangingConfigurations && !loggingIn && !externalFlow) locked = wanted(activity)
     }
 
     /** Asks for the fingerprint or screen lock, and opens the app if it matches. */

@@ -151,7 +151,8 @@ object PushApps {
 /** How Maun gets messages while it is not on screen, and the user's choices about it. */
 object Background {
     private const val SETTINGS = "settings"
-    private const val KEY_STAY_CONNECTED = "stay_connected"
+    private const val LEGACY_STAY_CONNECTED = "stay_connected"
+    private const val KEY_STAY_CONNECTED = "stay_connected_v2"
     private const val KEY_RELAY_KEY = "relay_push_key"
     private const val KEY_GOOGLE_OFF = "google_push_off"
 
@@ -182,8 +183,26 @@ object Background {
         context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE).getBoolean(KEY_STAY_CONNECTED, false)
 
     fun setStayConnected(context: Context, on: Boolean) {
-        context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE).edit { putBoolean(KEY_STAY_CONNECTED, on) }
+        context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE).edit {
+            remove(LEGACY_STAY_CONNECTED)
+            putBoolean(KEY_STAY_CONNECTED, on)
+        }
         if (on) ConnectedService.start(context) else ConnectedService.stop(context)
+    }
+
+    /**
+     * Clears any legacy pre-0.14 "stay_connected" setting on upgrade and stops
+     * any running foreground connection unless the user explicitly enabled it.
+     */
+    fun enforceDefaultOffOnUpgrade(context: Context) {
+        val app = context.applicationContext
+        val prefs = app.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE)
+        if (prefs.contains(LEGACY_STAY_CONNECTED)) {
+            prefs.edit { remove(LEGACY_STAY_CONNECTED) }
+        }
+        if (!stayConnected(app)) {
+            ConnectedService.stop(app)
+        }
     }
 
     /** Whether Android has been told not to pause Maun while the phone rests. */
@@ -198,8 +217,9 @@ object Background {
      */
     fun resume(context: Context) {
         val app = context.applicationContext as MaunApp
+        enforceDefaultOffOnUpgrade(app)
         if (!PushApps.refresh(app)) app.messenger.onPushAddress(null)
-        if (stayConnected(app)) ConnectedService.start(app)
+        if (stayConnected(app)) ConnectedService.start(app) else ConnectedService.stop(app)
     }
 }
 

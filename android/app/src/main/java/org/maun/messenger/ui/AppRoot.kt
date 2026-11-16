@@ -110,6 +110,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
             val registered = current is AccountState.Present && current.registered
             val banned by viewModel.banned.collectAsStateWithLifecycle()
             val awaiting by viewModel.awaitingApproval.collectAsStateWithLifecycle()
+            val needsPermissionSetup by viewModel.needsPermissionSetup.collectAsStateWithLifecycle()
             val username by viewModel.username.collectAsStateWithLifecycle()
             // Once the relay has asked for the email login, the login screen
             // stays until the relay has let this phone in (or refused it for
@@ -195,6 +196,10 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                     )
                 }
 
+                needsPermissionSetup -> PermissionsScreen(
+                    onContinue = viewModel::completePermissionSetup,
+                )
+
                 else -> {
                     val contacts by viewModel.contacts.collectAsStateWithLifecycle()
                     val chatPeer = screen.takeIf { it.startsWith(CHAT_PREFIX) }?.removePrefix(CHAT_PREFIX)
@@ -260,6 +265,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 },
                                 onNotifyText = viewModel::setNotifyText,
                                 onTelecomCalls = viewModel::setTelecomCalls,
+                                onSaveIncomingMedia = viewModel::setSaveIncomingMedia,
+                                onChatPattern = viewModel::setChatPattern,
                                 onLockScreenCalls = {
                                     // Android 14's own page for this; the answer shows when Settings is back in front.
                                     runCatching {
@@ -304,6 +311,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             val waiting by viewModel.waiting.collectAsStateWithLifecycle()
                             val fileProgress by viewModel.fileProgress.collectAsStateWithLifecycle()
                             val fileProblem by viewModel.fileProblem.collectAsStateWithLifecycle()
+                            val fileNotice by viewModel.fileNotice.collectAsStateWithLifecycle()
+                            val privacy by viewModel.privacy.collectAsStateWithLifecycle()
                             val voice by viewModel.voice.collectAsStateWithLifecycle()
                             // Leaving the conversation ends what was playing in it.
                             DisposableEffect(chatPeer) { onDispose { viewModel.stopVoice() } }
@@ -313,6 +322,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 peerUsername = peerUsername,
                                 onCall = { video -> viewModel.startCall(chatPeer, video) },
                                 contactUsername = contacts.firstOrNull { it.id == chatPeer }?.username,
+                                chatPattern = privacy.chatPattern,
                                 loading = !conversation.loaded,
                                 messages = conversation.messages,
                                 hasOlder = conversation.hasOlder,
@@ -324,6 +334,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                     progress = fileProgress,
                                     problem = fileProblem,
                                     onProblemShown = viewModel::clearFileProblem,
+                                    notice = fileNotice,
+                                    onNoticeShown = viewModel::clearFileNotice,
                                     onAttach = { uri -> viewModel.sendFile(chatPeer, uri) },
                                     onStart = viewModel::startFile,
                                     onSave = viewModel::saveFile,

@@ -91,8 +91,16 @@ sealed interface CodeCheck {
 class Messenger(context: Context) {
 
     private val appContext = context.applicationContext
+    private val settingsPrefs = appContext.getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val relayClient = RelayClient()
+
+    private val _needsPermissionSetup = MutableStateFlow(
+        settingsPrefs.getBoolean(KEY_PERMISSIONS_SETUP_PENDING, false),
+    )
+
+    /** Shown once right after the user logs in for the first time, until completed or skipped. */
+    val needsPermissionSetup: StateFlow<Boolean> = _needsPermissionSetup.asStateFlow()
 
     private val _account = MutableStateFlow<AccountState>(AccountState.Loading)
     val account: StateFlow<AccountState> = _account.asStateFlow()
@@ -277,6 +285,10 @@ class Messenger(context: Context) {
                 if (row == null) {
                     _account.value = AccountState.None
                 } else {
+                    if (row.registered && !settingsPrefs.getBoolean(KEY_PERMISSIONS_SETUP_PENDING, false)) {
+                        // Already logged in before this launch: do not interrupt with first-login onboarding.
+                        settingsPrefs.edit().putBoolean(KEY_PERMISSIONS_SETUP_DONE, true).apply()
+                    }
                     open(db, row)
                 }
             } catch (e: DatabaseKey.LostException) {
@@ -454,7 +466,22 @@ class Messenger(context: Context) {
         val current = _account.value as? AccountState.Present ?: return
         if (current.registered) return
         withContext(Dispatchers.IO) { database?.account()?.markRegistered() }
+        triggerFirstLoginPermissionSetup()
         _account.value = current.copy(registered = true)
+    }
+
+    private fun triggerFirstLoginPermissionSetup() {
+        if (settingsPrefs.getBoolean(KEY_PERMISSIONS_SETUP_DONE, false)) return
+        settingsPrefs.edit().putBoolean(KEY_PERMISSIONS_SETUP_PENDING, true).apply()
+        _needsPermissionSetup.value = true
+    }
+
+    fun completePermissionSetup() {
+        settingsPrefs.edit()
+            .putBoolean(KEY_PERMISSIONS_SETUP_PENDING, false)
+            .putBoolean(KEY_PERMISSIONS_SETUP_DONE, true)
+            .apply()
+        _needsPermissionSetup.value = false
     }
 
     private fun closeConnection() = synchronized(this) {
@@ -596,7 +623,10 @@ class Messenger(context: Context) {
             withContext(Dispatchers.IO) { db.meta().put(MetaEntry(KEY_USERNAME, name.orEmpty())) }
         }
         if (email == null) return
-        if (accessToken != null) setAccessToken(null)
+        if (accessToken != null) {
+            triggerFirstLoginPermissionSetup()
+            setAccessToken(null)
+        }
     }
 
     /**
@@ -663,6 +693,8 @@ class Messenger(context: Context) {
 
     /** The same picture without waiting, if it has been shown since the app started. */
     fun cachedImage(seq: Long, maxPixels: Int): Bitmap? = files?.cachedImage(seq, maxPixels)
+
+    suspend fun saveFileToDevice(seq: Long, file: Attachment): String? = files?.saveToDevice(seq, file)
 
     suspend fun saveFile(seq: Long, file: Attachment, target: Uri): Boolean = files?.saveTo(seq, file, target) == true
 
@@ -917,6 +949,9 @@ class Messenger(context: Context) {
         /** How many messages a conversation loads at first, and each time the reader reaches the oldest. */
         const val MESSAGE_PAGE = 100
 
+        private const val SETTINGS_PREFS = "settings"
+        private const val KEY_PERMISSIONS_SETUP_PENDING = "permissions_setup_pending"
+        private const val KEY_PERMISSIONS_SETUP_DONE = "permissions_setup_done"
         private const val KEY_REGISTRATION_ID = "signal_registration_id"
         private const val KEY_PUSH_WANTED = "push_wanted"
         private const val KEY_PUSH_UPLOADED = "push_uploaded"

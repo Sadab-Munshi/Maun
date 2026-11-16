@@ -10,7 +10,7 @@ import android.provider.OpenableColumns
 import android.util.LruCache
 import java.io.File
 import java.io.IOException
-import java.io.OutputStream
+import java.io.InputStream
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
@@ -34,10 +34,10 @@ import org.maun.messenger.network.FileException
  * Sends and fetches the files of messages, and keeps them on this phone.
  *
  * A file is encrypted with a key of its own before anything else happens to
- * it. That encrypted form is what goes to the relay, and it is also the only
- * form kept here, in the app's private folder, named after its message. The
- * key is in the message row, inside the encrypted database. The file is
- * decrypted only into memory to show it, or into a place the user picks.
+ * it. That encrypted form goes to the relay and is stored in `filesDir/media`,
+ * while a decrypted copy is cached in Maun's private sandbox (`cacheDir/media`)
+ * for instant chat display and playback, and incoming photos/videos are saved
+ * straight to Gallery (`Pictures/Maun`) when enabled in Settings.
  */
 class FileTransfers(
     context: Context,
@@ -48,8 +48,11 @@ class FileTransfers(
     /** Returns once the relay is connected, or after waiting long enough for it. */
     private val whenOnline: suspend () -> Unit = {},
 ) {
-    private val resolver = context.applicationContext.contentResolver
-    private val dir = File(context.applicationContext.filesDir, "media")
+    private val appContext = context.applicationContext
+    private val resolver = appContext.contentResolver
+    private val dir = File(appContext.filesDir, "media")
+    private val plainDir = File(appContext.cacheDir, "media")
+    private val cameraDir = File(appContext.cacheDir, "camera")
 
     private val jobs = ConcurrentHashMap<Long, Job>()
     private val _progress = MutableStateFlow<Map<Long, Float>>(emptyMap())
@@ -72,7 +75,10 @@ class FileTransfers(
 
     private fun stored(seq: Long) = File(dir, "$seq.enc")
 
-    /** A small copy of a picture, kept so that opening a conversation does not decrypt whole photos. */
+    /** App-private decrypted cache copy for instant display, voice playback, and one-tap saving. */
+    private fun plain(seq: Long) = File(plainDir, "$seq.bin")
+
+    /** A small copy of a picture, kept so that opening a conversation does not decode huge photos. */
     private fun thumb(seq: Long) = File(dir, "$seq.thumb")
 
     /** The small copy has a key of its own, made from the file's: one key never seals two files. */
@@ -119,11 +125,28 @@ class FileTransfers(
             // Not every source answers questions about its files. The name stays a guess.
         }
         if (size > Attachment.MAX_BYTES) return@withContext TOO_LARGE
-        val mime = resolver.getType(uri)?.lowercase() ?: "application/octet-stream"
-        encryptAndQueue(peer, name, mime, open = { resolver.openInputStream(uri) }) { record ->
+        val mime = resolver.getType(uri)?.lowercase() ?: guessMimeFromName(name)
+        val result = encryptAndQueue(peer, name, mime, open = { resolver.openInputStream(uri) }) { record ->
             val picture = if (record.isImage) pictureSize(uri) else null
             if (picture == null) record else record.copy(width = picture.first, height = picture.second)
         }
+        // Clean up temporary quick-camera captures from Maun's cache once encrypted.
+        if (uri.authority?.endsWith(".fileprovider") == true) {
+            runCatching { resolver.delete(uri, null, null) }
+            cameraDir.listFiles()?.firstOrNull { it.name == name }?.delete()
+        }
+        result
+    }
+
+    private fun guessMimeFromName(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+        "jpg", "jpeg" -> "image/jpeg"
+        "png" -> "image/png"
+        "webp" -> "image/webp"
+        "gif" -> "image/gif"
+        "mp4", "m4v" -> "video/mp4"
+        "webm" -> "video/webm"
+        "pdf" -> "application/pdf"
+        else -> "application/octet-stream"
     }
 
     /**
@@ -145,7 +168,7 @@ class FileTransfers(
         peer: String,
         name: String,
         mime: String,
-        open: () -> java.io.InputStream?,
+        open: () -> InputStream?,
         describe: (Attachment) -> Attachment,
     ): String? {
         dir.mkdirs()
@@ -188,16 +211,60 @@ class FileTransfers(
             engine.deleteMessage(message.seq)
             return UNREADABLE
         }
+        ensurePlainCache(message.seq, secret)
         start(message.seq)
         return null
     }
 
+    /** Opens a decrypted stream for [seq], preferring the fast private cache when present. */
+    private fun openDecrypted(seq: Long, secret: ByteArray): InputStream? {
+        val cached = ensurePlainCache(seq, secret)
+        if (cached != null && cached.exists()) {
+            return try {
+                cached.inputStream().buffered()
+            } catch (_: IOException) {
+                null
+            }
+        }
+        val source = stored(seq)
+        if (!source.exists()) return null
+        return try {
+            open(source, secret)
+        } catch (_: IOException) {
+            null
+        }
+    }
+
+    /** Materializes the decrypted copy into Maun's private cache directory if not already cached. */
+    private fun ensurePlainCache(seq: Long, secret: ByteArray): File? {
+        val target = plain(seq)
+        if (target.exists() && target.length() > 0L) return target
+        val source = stored(seq)
+        if (!source.exists()) return null
+        plainDir.mkdirs()
+        val temp = File(plainDir, "$seq-${UUID.randomUUID()}.tmp")
+        return try {
+            source.inputStream().buffered().use { encrypted ->
+                temp.outputStream().buffered().use { out -> FileCipher.decrypt(encrypted, out, secret) }
+            }
+            if (temp.renameTo(target)) target else {
+                temp.delete()
+                null
+            }
+        } catch (_: IOException) {
+            temp.delete()
+            null
+        } catch (_: FileCipher.DamagedException) {
+            temp.delete()
+            null
+        }
+    }
+
     /** The whole file of message [seq], decrypted into memory. For small things only: a voice message. */
     suspend fun bytes(seq: Long, file: Attachment, maxBytes: Long): ByteArray? = withContext(Dispatchers.IO) {
-        val source = stored(seq)
-        if (!source.exists() || file.size > maxBytes) return@withContext null
+        if (file.size > maxBytes) return@withContext null
         try {
-            open(source, file.secretBytes()).use { it.readBytes() }
+            openDecrypted(seq, file.secretBytes())?.use { it.readBytes() }
         } catch (_: IOException) {
             null
         }
@@ -256,23 +323,43 @@ class FileTransfers(
     private suspend fun download(seq: Long, file: Attachment) {
         engine.setFileState(seq, Attachment.DOWNLOADING)
         dir.mkdirs()
+        plainDir.mkdirs()
         val part = File(dir, "$seq.part")
+        val plainPart = File(plainDir, "$seq-${UUID.randomUUID()}.tmp")
         try {
             api.download(file.key, part) { done, total ->
                 report(seq, done, if (total > 0) total else FileCipher.encryptedSize(file.size))
             }
-            // Read it through once before believing it: the relay, or anyone
-            // between, could have handed over something else.
+            val secret = file.secretBytes()
+            // Read and decrypt into our private cache once before believing it:
+            // verifies integrity and gives instant display + MediaStore saving.
             val plainBytes = try {
-                part.inputStream().buffered().use { FileCipher.decrypt(it, Discard, file.secretBytes()) }
+                part.inputStream().buffered().use { src ->
+                    plainPart.outputStream().buffered().use { dst ->
+                        FileCipher.decrypt(src, dst, secret)
+                    }
+                }
             } catch (e: FileCipher.DamagedException) {
                 throw FileException("The file arrived damaged. Ask for it to be sent again.", cause = e)
             }
             if (plainBytes != file.size) throw FileException("The file arrived damaged. Ask for it to be sent again.")
             if (!part.renameTo(stored(seq))) throw IOException("could not be moved into place")
+            if (!plainPart.renameTo(plain(seq))) plainPart.delete()
             engine.setFileState(seq, Attachment.READY)
+            maybeAutoSaveIncomingMedia(seq, file, secret)
         } finally {
             part.delete()
+            plainPart.delete()
+        }
+    }
+
+    private fun maybeAutoSaveIncomingMedia(seq: Long, file: Attachment, secret: ByteArray) {
+        if (!file.isGalleryMedia || file.isVoice) return
+        if (!MediaSaver.saveIncomingMediaEnabled(appContext)) return
+        val row = dao.message(seq) ?: return
+        if (row.outgoing || row.savedToGallery) return
+        if (MediaSaver.saveToDevice(appContext, file) { openDecrypted(seq, secret) }) {
+            dao.markSavedToGallery(seq)
         }
     }
 
@@ -307,18 +394,18 @@ class FileTransfers(
                 kept.delete()
             }
         }
-        val source = stored(seq)
-        if (!source.exists()) return@withContext null
+        if (!stored(seq).exists() && !plain(seq).exists()) return@withContext null
         try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            open(source, secret).use { BitmapFactory.decodeStream(it, null, bounds) }
+            openDecrypted(seq, secret)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return@withContext null
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
             var sample = 1
             while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxPixels) sample *= 2
             val options = BitmapFactory.Options().apply { inSampleSize = sample }
-            val decoded = open(source, secret).use { BitmapFactory.decodeStream(it, null, options) }
+            val decoded = openDecrypted(seq, secret)?.use { BitmapFactory.decodeStream(it, null, options) }
                 ?: return@withContext null
-            val upright = turnUpright(decoded, open(source, secret).use(::rotationOf))
+            val degrees = openDecrypted(seq, secret)?.use(::rotationOf) ?: 0
+            val upright = turnUpright(decoded, degrees)
             images.put(cacheKey, upright)
             if (small) keepThumb(seq, upright, secret)
             upright
@@ -329,13 +416,31 @@ class FileTransfers(
         }
     }
 
-    /** Writes the file of message [seq], decrypted, to the place the user picked. */
+    /**
+     * Saves the file of message [seq] straight to Gallery (`Pictures/Maun`) or
+     * `Download/Maun` via MediaStore, skipping duplicates tracked by `savedToGallery`.
+     * Returns the confirmation message to show, or null if saving failed.
+     */
+    suspend fun saveToDevice(seq: Long, file: Attachment): String? = withContext(Dispatchers.IO) {
+        val row = dao.message(seq)
+        if (row?.savedToGallery == true) {
+            return@withContext MediaSaver.savedNotice(file, alreadySaved = true)
+        }
+        if (!stored(seq).exists() && !plain(seq).exists()) return@withContext null
+        val secret = file.secretBytes()
+        val ok = MediaSaver.saveToDevice(appContext, file) { openDecrypted(seq, secret) }
+        if (!ok) return@withContext null
+        dao.markSavedToGallery(seq)
+        MediaSaver.savedNotice(file, alreadySaved = false)
+    }
+
+    /** Writes the file of message [seq], decrypted, to a specific [target] URI if ever needed. */
     suspend fun saveTo(seq: Long, file: Attachment, target: Uri): Boolean = withContext(Dispatchers.IO) {
-        val source = stored(seq)
-        if (!source.exists()) return@withContext false
+        if (!stored(seq).exists() && !plain(seq).exists()) return@withContext false
         try {
             val out = resolver.openOutputStream(target) ?: return@withContext false
-            out.use { open(source, file.secretBytes()).use { plain -> plain.copyTo(it) } }
+            val input = openDecrypted(seq, file.secretBytes()) ?: return@withContext false
+            input.use { plainStream -> out.use { plainStream.copyTo(it) } }
             true
         } catch (_: IOException) {
             false
@@ -360,7 +465,7 @@ class FileTransfers(
     private fun open(source: File, secret: ByteArray) = FileCipher.decrypting(source.inputStream().buffered(), secret)
 
     /** How far a photo has to be turned, according to what the camera noted in it. */
-    private fun rotationOf(stream: java.io.InputStream): Int = try {
+    private fun rotationOf(stream: InputStream): Int = try {
         when (ExifInterface(stream).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
             ExifInterface.ORIENTATION_ROTATE_90 -> 90
             ExifInterface.ORIENTATION_ROTATE_180 -> 180
@@ -389,6 +494,14 @@ class FileTransfers(
                 file.delete()
             }
         }
+        plainDir.listFiles()?.forEach { file ->
+            val seq = file.name.substringBefore('.').toLongOrNull()
+            val orphan = if (seq != null) seq !in kept else file.lastModified() < old
+            if (orphan) file.delete()
+        }
+        cameraDir.listFiles()?.forEach { file ->
+            if (file.lastModified() < old) file.delete()
+        }
     }
 
     /** Stops every transfer and deletes every stored file. */
@@ -396,11 +509,8 @@ class FileTransfers(
         jobs.values.forEach { it.cancel() }
         images.evictAll()
         dir.listFiles()?.forEach { it.delete() }
-    }
-
-    private object Discard : OutputStream() {
-        override fun write(b: Int) = Unit
-        override fun write(b: ByteArray, off: Int, len: Int) = Unit
+        plainDir.listFiles()?.forEach { it.delete() }
+        cameraDir.listFiles()?.forEach { it.delete() }
     }
 
     private companion object {
