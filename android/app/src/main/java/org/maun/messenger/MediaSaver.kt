@@ -12,21 +12,28 @@ import java.io.IOException
 import java.io.InputStream
 
 /**
- * Writes decrypted media and documents straight into the phone's Gallery
- * (`Pictures/Maun`) or Downloads (`Download/Maun`) without opening a folder picker.
+ * Writes decrypted files straight into the phone's Gallery (`Pictures/Maun`)
+ * or Downloads (`Download/Maun`) without opening a folder picker.
  */
 object MediaSaver {
     private const val SETTINGS = "settings"
-    private const val KEY_SAVE_INCOMING_MEDIA = "save_incoming_media"
+    private const val KEY_SAVE_INCOMING_FILES = "save_incoming_files"
+    /** What the switch was called when it only covered photos and videos. */
+    private const val KEY_SAVE_INCOMING_MEDIA_OLD = "save_incoming_media"
     private const val KEY_CHAT_PATTERN = "chat_wallpaper_pattern"
     private const val ALBUM_SUBDIR = "Maun"
 
-    fun saveIncomingMediaEnabled(context: Context): Boolean =
-        context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE).getBoolean(KEY_SAVE_INCOMING_MEDIA, true)
+    /** Whether arriving files of every kind are written to the phone by themselves. */
+    fun saveIncomingFilesEnabled(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE)
+        // Phones that were set up before the switch covered documents keep their answer.
+        if (prefs.contains(KEY_SAVE_INCOMING_FILES)) return prefs.getBoolean(KEY_SAVE_INCOMING_FILES, true)
+        return prefs.getBoolean(KEY_SAVE_INCOMING_MEDIA_OLD, true)
+    }
 
-    fun setSaveIncomingMediaEnabled(context: Context, enabled: Boolean) {
+    fun setSaveIncomingFilesEnabled(context: Context, enabled: Boolean) {
         context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE).edit {
-            putBoolean(KEY_SAVE_INCOMING_MEDIA, enabled)
+            putBoolean(KEY_SAVE_INCOMING_FILES, enabled)
         }
     }
 

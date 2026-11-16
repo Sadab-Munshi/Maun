@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
+    <!-- A quick photo, before it is encrypted and sent. -->
     <cache-path name="camera" path="camera/" />
+    <!-- Files decrypted again for the app that shows them (a PDF reader, a player). -->
+    <cache-path name="media" path="media/" />
 </paths>

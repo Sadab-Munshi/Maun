@@ -56,18 +56,28 @@ class MediaAndBackgroundTest {
     }
 
     @Test
+    fun `a phone that only had the media switch keeps its answer for files`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        prefs.edit().clear().putBoolean("save_incoming_media", false).commit()
+        assertFalse(MediaSaver.saveIncomingFilesEnabled(context))
+        prefs.edit().putBoolean("save_incoming_media", true).commit()
+        assertTrue(MediaSaver.saveIncomingFilesEnabled(context))
+    }
+
+    @Test
     fun `incoming media auto-save defaults on and chat pattern defaults off`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().clear().commit()
 
-        assertTrue(MediaSaver.saveIncomingMediaEnabled(context))
+        assertTrue(MediaSaver.saveIncomingFilesEnabled(context))
         assertFalse(MediaSaver.chatPatternEnabled(context))
         MediaSaver.setChatPatternEnabled(context, true)
         assertTrue(MediaSaver.chatPatternEnabled(context))
 
-        MediaSaver.setSaveIncomingMediaEnabled(context, false)
+        MediaSaver.setSaveIncomingFilesEnabled(context, false)
         MediaSaver.setChatPatternEnabled(context, false)
-        assertFalse(MediaSaver.saveIncomingMediaEnabled(context))
+        assertFalse(MediaSaver.saveIncomingFilesEnabled(context))
         assertFalse(MediaSaver.chatPatternEnabled(context))
     }
 

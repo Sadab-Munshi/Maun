@@ -26,8 +26,8 @@ android {
         applicationId = "org.maun.messenger"
         minSdk = 29 // Android 10: built-in Ogg/Opus recording, StrongBox API.
         targetSdk = 36
-        versionCode = 18
-        versionName = "0.14.1"
+        versionCode = 19
+        versionName = "0.15.0"
 
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
     }
@@ -115,6 +115,9 @@ android {
 val drawScreens: Boolean = providers.gradleProperty("maun.screens").isPresent
 
 tasks.withType<Test>().configureEach {
+    // The tests run Android's own code in a second Java process. Keeping that
+    // one modest lets the build run on a small machine as well as on CI.
+    maxHeapSize = "640m"
     if (drawScreens) {
         systemProperty("roborazzi.test.record", "true")
         filter { includeTestsMatching("org.maun.messenger.screens.*") }

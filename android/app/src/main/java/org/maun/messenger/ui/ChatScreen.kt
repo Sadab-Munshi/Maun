@@ -6,6 +6,10 @@ import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
 import android.net.Uri
 import android.os.Build
 import android.os.PersistableBundle
@@ -17,6 +21,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.ImageShader
+import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -81,10 +95,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -182,14 +193,17 @@ fun ChatScreen(
         currentMessages.firstOrNull { it.seq == seq && it.kind == MessageKind.FILE }?.let { Attachment.fromLocal(it.text) }
     }
 
-    // Gallery, Document, and Quick Camera launchers.
-    val pickGallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+    // Gallery, Document, and Quick Camera launchers. Several pictures or
+    // documents can be picked at once; they are sent one after the other.
+    val pickGallery = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(MAX_FILES_AT_ONCE),
+    ) { uris ->
         AppLock.externalFlow = false
-        if (uri != null) files.onAttach(uri)
+        if (uris.isNotEmpty()) files.onAttachMany(uris)
     }
-    val pickDocument = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    val pickDocument = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         AppLock.externalFlow = false
-        if (uri != null) files.onAttach(uri)
+        if (uris.isNotEmpty()) files.onAttachMany(uris)
     }
     var pendingCameraUri by rememberSaveable { mutableStateOf<String?>(null) }
     val takePicture = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { taken ->
@@ -325,7 +339,8 @@ fun ChatScreen(
                                                         when {
                                                             file.isVoice -> files.onPlay(seq, file)
                                                             file.isImage -> viewing = seq
-                                                            else -> save(seq, file)
+                                                            // A document, a video, a sound: whichever app reads it.
+                                                            else -> files.onOpen(seq, file)
                                                         }
                                                     },
                                                     onSaveFile = save,
@@ -448,12 +463,19 @@ fun ChatScreen(
     }
 }
 
+/** How many pictures or documents can be picked and sent in one go. */
+private const val MAX_FILES_AT_ONCE = 10
+
 /** How close to the oldest loaded message the reader must be before more are fetched, in list items. */
 private const val LOAD_AHEAD = 12
 
 /**
- * Soft, calm wallpaper behind the conversation: either a subtle staggered
- * motif pattern or a clean solid surface depending on the user's Settings choice.
+ * Soft, calm wallpaper behind the conversation: either a subtle motif pattern
+ * or a clean solid surface, depending on the user's Settings choice.
+ *
+ * The motif is drawn once into a tile the size of one cell and repeated by the
+ * GPU. Drawing several hundred shapes on every frame is what made a long
+ * conversation scroll unevenly.
  */
 @Composable
 private fun ChatWallpaper(
@@ -462,79 +484,73 @@ private fun ChatWallpaper(
     patternTint: Color,
     modifier: Modifier = Modifier,
 ) {
-    Box(
-        modifier = modifier
-            .background(baseColor)
-            .then(
-                if (!patterned) Modifier
-                else Modifier.drawWithCache {
-                    val cell = 96.dp.toPx()
-                    val stroke = Stroke(width = 1.25.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
-                    val rSmall = 3.dp.toPx()
-                    val rMed = 6.dp.toPx()
-                    val bubbleW = 14.dp.toPx()
-                    val bubbleH = 10.dp.toPx()
-                    val corner = CornerRadius(3.5.dp.toPx(), 3.5.dp.toPx())
-                    val diamondPath = Path()
-                    onDrawBehind {
-                        val cols = (size.width / cell).toInt() + 2
-                        val rows = (size.height / cell).toInt() + 2
-                        for (row in 0 until rows) {
-                            val shift = if (row % 2 == 1) cell * 0.5f else 0f
-                            val cy = row * cell
-                            for (col in -1 until cols) {
-                                val cx = col * cell + shift
-                                // Tiny rounded chat bubble outline
-                                drawRoundRect(
-                                    color = patternTint,
-                                    topLeft = Offset(cx + cell * 0.14f, cy + cell * 0.16f),
-                                    size = Size(bubbleW, bubbleH),
-                                    cornerRadius = corner,
-                                    style = stroke,
-                                )
-                                // Soft circle ring
-                                drawCircle(
-                                    color = patternTint,
-                                    radius = rMed,
-                                    center = Offset(cx + cell * 0.68f, cy + cell * 0.26f),
-                                    style = stroke,
-                                )
-                                // Four-point star / sparkle
-                                val sx = cx + cell * 0.34f
-                                val sy = cy + cell * 0.66f
-                                diamondPath.reset()
-                                diamondPath.moveTo(sx, sy - rMed)
-                                diamondPath.lineTo(sx + rSmall * 0.65f, sy - rSmall * 0.65f)
-                                diamondPath.lineTo(sx + rMed, sy)
-                                diamondPath.lineTo(sx + rSmall * 0.65f, sy + rSmall * 0.65f)
-                                diamondPath.lineTo(sx, sy + rMed)
-                                diamondPath.lineTo(sx - rSmall * 0.65f, sy + rSmall * 0.65f)
-                                diamondPath.lineTo(sx - rMed, sy)
-                                diamondPath.lineTo(sx - rSmall * 0.65f, sy - rSmall * 0.65f)
-                                diamondPath.close()
-                                drawPath(diamondPath, color = patternTint, style = stroke)
+    if (!patterned) {
+        Box(modifier = modifier.background(baseColor))
+        return
+    }
+    val density = LocalDensity.current
+    val tile = remember(patternTint, density) { patternTile(patternTint, density) }
+    Box(modifier = modifier.background(baseColor)) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            drawRect(brush = ShaderBrush(ImageShader(tile, TileMode.Repeated, TileMode.Repeated)))
+        }
+    }
+}
 
-                                // Tiny paper-plane / leaf chevron + soft dot
-                                val lx = cx + cell * 0.76f
-                                val ly = cy + cell * 0.74f
-                                drawLine(
-                                    color = patternTint,
-                                    start = Offset(lx - rMed, ly + rSmall),
-                                    end = Offset(lx + rMed, ly - rSmall),
-                                    strokeWidth = stroke.width,
-                                    cap = StrokeCap.Round,
-                                )
-                                drawCircle(
-                                    color = patternTint,
-                                    radius = 1.6.dp.toPx(),
-                                    center = Offset(cx + cell * 0.50f, cy + cell * 0.44f),
-                                )
-                            }
-                        }
-                    }
-                },
-            ),
+/** How wide one repeat of the wallpaper is. */
+private const val CELL_DP = 96f
+
+/** One cell of the wallpaper, drawn once: a bubble, a ring, a sparkle, and a soft stroke. */
+private fun patternTile(tint: Color, density: Density): ImageBitmap {
+    val cell = with(density) { CELL_DP.dp.toPx() }
+    val side = cell.toInt().coerceAtLeast(1)
+    val bitmap = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    val stroke = Paint().apply {
+        color = tint.toArgb()
+        style = Paint.Style.STROKE
+        strokeWidth = with(density) { 1.25.dp.toPx() }
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        isAntiAlias = true
+    }
+    val fill = Paint().apply {
+        color = tint.toArgb()
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+    // A bubble outline, top left.
+    canvas.drawRoundRect(
+        cell * 0.14f,
+        cell * 0.16f,
+        cell * 0.30f,
+        cell * 0.27f,
+        cell * 0.035f,
+        cell * 0.035f,
+        stroke,
     )
+    // A ring, top right.
+    canvas.drawCircle(cell * 0.68f, cell * 0.26f, cell * 0.062f, stroke)
+    // A four-point sparkle, lower left.
+    val sx = cell * 0.34f
+    val sy = cell * 0.66f
+    val r = cell * 0.062f
+    val sparkle = Path().apply {
+        moveTo(sx, sy - r)
+        lineTo(sx + r * 0.35f, sy - r * 0.35f)
+        lineTo(sx + r, sy)
+        lineTo(sx + r * 0.35f, sy + r * 0.35f)
+        lineTo(sx, sy + r)
+        lineTo(sx - r * 0.35f, sy + r * 0.35f)
+        lineTo(sx - r, sy)
+        lineTo(sx - r * 0.35f, sy - r * 0.35f)
+        close()
+    }
+    canvas.drawPath(sparkle, stroke)
+    // A short stroke, lower right, and a small dot.
+    canvas.drawLine(cell * 0.72f, cell * 0.76f, cell * 0.80f, cell * 0.72f, stroke)
+    canvas.drawCircle(cell * 0.50f, cell * 0.44f, cell * 0.012f, fill)
+    return bitmap.asImageBitmap()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -587,7 +603,7 @@ private fun AttachmentSheet(
                 )
             }
             Text(
-                text = "Up to 25 MB per file · Encrypted end-to-end",
+                text = "Up to $MAX_FILES_AT_ONCE at once · 25 MB per file · Encrypted end-to-end",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -721,7 +737,8 @@ private fun MessageRow(
 ) {
     val message = item.message
     val outgoing = message.outgoing
-    val file = if (message.kind == MessageKind.FILE) remember(message.text) { Attachment.fromLocal(message.text) } else null
+    // Worked out when the list was built, not on every frame (see MessageItem.file).
+    val file = item.file
     val fileStep = file?.let { fileStep(it, outgoing, active = message.seq in files.progress) }
     val onTap: (() -> Unit)? = when (fileStep) {
         null, FileStep.Working, FileStep.Gone -> null

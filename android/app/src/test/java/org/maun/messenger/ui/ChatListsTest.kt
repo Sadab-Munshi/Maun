@@ -60,6 +60,29 @@ class ChatListsTest {
     }
 
     @Test
+    fun `a file message arrives with its record already read`() {
+        val record = Attachment(
+            key = "ab".repeat(32),
+            secret = "c2VjcmV0",
+            name = "Statement.pdf",
+            mime = "application/pdf",
+            size = 1000,
+            state = Attachment.READY,
+        )
+        val message = MessageEntity(
+            peer = "peer",
+            id = "m1",
+            outgoing = false,
+            kind = MessageKind.FILE,
+            text = record.toLocal(),
+            at = 1_000L,
+        )
+        val item = chatItems(listOf(message), ZoneOffset.UTC).filterIsInstance<MessageItem>().single()
+        assertEquals("Statement.pdf", item.file?.name)
+        assertEquals(Attachment.READY, item.file?.state)
+    }
+
+    @Test
     fun `a length of time reads like a player shows it`() {
         assertEquals("0:00", formatDuration(0))
         assertEquals("0:01", formatDuration(700))

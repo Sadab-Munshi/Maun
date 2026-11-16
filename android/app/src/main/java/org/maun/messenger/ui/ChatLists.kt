@@ -84,8 +84,17 @@ sealed interface ChatItem {
 /**
  * [startsRun] and [endsRun] say where a run of messages from the same person
  * on the same day begins and ends; the bubbles of one run are drawn close together.
+ *
+ * [file] is the file record of a file message, read out of the message once.
+ * Reading it while drawing would parse the same record again and again, which
+ * is what made a long conversation scroll unevenly.
  */
-data class MessageItem(val message: MessageEntity, val startsRun: Boolean, val endsRun: Boolean) : ChatItem {
+data class MessageItem(
+    val message: MessageEntity,
+    val startsRun: Boolean,
+    val endsRun: Boolean,
+    val file: Attachment? = null,
+) : ChatItem {
     override val key: String get() = "m${message.seq}"
 }
 
@@ -113,10 +122,13 @@ fun chatItems(newestFirst: List<MessageEntity>, zone: ZoneId): List<ChatItem> {
     val items = ArrayList<ChatItem>(newestFirst.size + 8)
     for (i in newestFirst.indices) {
         val hasOlder = i + 1 < newestFirst.size
+        val message = newestFirst[i]
         items += MessageItem(
-            message = newestFirst[i],
+            message = message,
             startsRun = !hasOlder || !sameRun(i, i + 1),
             endsRun = i == 0 || !sameRun(i, i - 1),
+            // Parsed once here rather than on every frame the bubble is drawn.
+            file = if (message.kind == MessageKind.FILE) Attachment.fromLocal(message.text) else null,
         )
         if (!hasOlder || days[i + 1] != days[i]) items += DayItem(days[i], newestFirst[i].seq)
     }

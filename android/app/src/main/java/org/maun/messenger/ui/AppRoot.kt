@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -34,6 +35,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import org.maun.messenger.AccountState
 import org.maun.messenger.AppLock
+import org.maun.messenger.Avatars
 import org.maun.messenger.BuildConfig
 import org.maun.messenger.Messenger
 import org.maun.messenger.crypto.SafetyNumber
@@ -45,6 +47,7 @@ private const val ADD_CONTACT = "add-contact"
 private const val SETUP_CHECK = "setup-check"
 private const val BLOCKED = "blocked"
 private const val SETTINGS = "settings"
+private const val PROFILE = "profile"
 private const val CHAT_PREFIX = "chat:"
 private const val CONTACT_PREFIX = "contact:"
 
@@ -66,6 +69,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
         screen = when {
             screen.startsWith(CONTACT_PREFIX) -> CHAT_PREFIX + screen.removePrefix(CONTACT_PREFIX)
             screen == BLOCKED -> SETTINGS
+            screen == PROFILE -> SETTINGS
             screen == SETUP_CHECK && signedIn -> SETTINGS
             else -> HOME
         }
@@ -92,6 +96,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
         }
     }
 
+    val avatarRevision by viewModel.avatarRevision.collectAsStateWithLifecycle()
+    CompositionLocalProvider(LocalAvatarRevision provides avatarRevision) {
     when (val current = account) {
         AccountState.Loading -> Surface(modifier = Modifier.fillMaxSize()) {
             Column(
@@ -114,6 +120,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
             val awaiting by viewModel.awaitingApproval.collectAsStateWithLifecycle()
             val needsPermissionSetup by viewModel.needsPermissionSetup.collectAsStateWithLifecycle()
             val username by viewModel.username.collectAsStateWithLifecycle()
+            val memberEmail by viewModel.memberEmail.collectAsStateWithLifecycle()
             // Once the relay has asked for the email login, the login screen
             // stays until the relay has let this phone in (or refused it for
             // good), also while the answer to a token is still on its way.
@@ -237,7 +244,6 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             val delivery by viewModel.delivery.collectAsStateWithLifecycle()
                             val pushProblem by viewModel.pushProblem.collectAsStateWithLifecycle()
                             val privacy by viewModel.privacy.collectAsStateWithLifecycle()
-                            val memberEmail by viewModel.memberEmail.collectAsStateWithLifecycle()
                             // Permissions, push apps and the screen lock change outside Maun.
                             LifecycleResumeEffect(Unit) {
                                 viewModel.refreshDelivery()
@@ -267,7 +273,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 },
                                 onNotifyText = viewModel::setNotifyText,
                                 onTelecomCalls = viewModel::setTelecomCalls,
-                                onSaveIncomingMedia = viewModel::setSaveIncomingMedia,
+                                onSaveIncomingFiles = viewModel::setSaveIncomingFiles,
+                                onOpenProfile = { screen = PROFILE },
                                 onChatPattern = viewModel::setChatPattern,
                                 onLockScreenCalls = {
                                     // Android 14's own page for this; the answer shows when Settings is back in front.
@@ -292,6 +299,17 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 onBack = goHome,
                             )
                         }
+
+                        screen == PROFILE -> ProfileScreen(
+                            code = current.code.id,
+                            relayName = current.code.relay,
+                            username = username,
+                            memberEmail = memberEmail,
+                            onPhoto = { uri -> viewModel.setAvatar(Avatars.SELF, uri) },
+                            onRemovePhoto = { viewModel.removeAvatar(Avatars.SELF) },
+                            onShowCode = { screen = MY_CODE },
+                            onBack = goBack,
+                        )
 
                         chatPeer != null -> {
                             // How many messages are loaded. It grows a page at a
@@ -339,6 +357,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                     notice = fileNotice,
                                     onNoticeShown = viewModel::clearFileNotice,
                                     onAttach = { uri -> viewModel.sendFile(chatPeer, uri) },
+                                    onAttachMany = { uris -> viewModel.sendFiles(chatPeer, uris) },
+                                    onOpen = { seq, file -> viewModel.openFile(seq, file) },
                                     onStart = viewModel::startFile,
                                     onSave = viewModel::saveFile,
                                     loadImage = viewModel::image,
@@ -380,6 +400,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                     viewModel.removeContact(detailsOf.id)
                                     goHome()
                                 },
+                                onPhoto = { uri -> viewModel.setAvatar(detailsOf.id, uri) },
+                                onRemovePhoto = { viewModel.removeAvatar(detailsOf.id) },
                                 onCall = { video -> viewModel.startCall(detailsOf.id, video) },
                                 onBlock = {
                                     viewModel.block(detailsOf.id)
@@ -420,5 +442,6 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                 }
             }
         }
+    }
     }
 }

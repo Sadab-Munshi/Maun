@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import org.maun.messenger.Avatars
 import org.maun.messenger.network.RelayState
 
 /** Privacy, incoming media, and chat appearance switches, as the settings screen shows them. */
@@ -38,8 +39,8 @@ data class PrivacyUi(
     val lockScreenCallsBlocked: Boolean = false,
     /** Calls are handed to Android's own call system. */
     val telecomCalls: Boolean = true,
-    /** Save incoming photos and videos straight to Gallery (`Pictures/Maun`). */
-    val saveIncomingMedia: Boolean = true,
+    /** Save arriving files by themselves: pictures and videos to Gallery, the rest to Downloads. */
+    val saveIncomingFiles: Boolean = true,
     /** Show a soft background pattern behind conversations (off = solid background). */
     val chatPattern: Boolean = true,
 )
@@ -65,13 +66,17 @@ fun SettingsScreen(
     onBattery: () -> Unit = {},
     onLockScreenCalls: () -> Unit = {},
     onTelecomCalls: (Boolean) -> Unit = {},
-    onSaveIncomingMedia: (Boolean) -> Unit = {},
+    onSaveIncomingFiles: (Boolean) -> Unit = {},
     onChatPattern: (Boolean) -> Unit = {},
+    onOpenProfile: () -> Unit = {},
     onOpenBlocked: () -> Unit,
     onOpenSetupCheck: () -> Unit,
     onBack: () -> Unit,
 ) {
     ScreenFrame(title = "Settings", onBack = onBack) {
+        SectionTitle("Profile", modifier = Modifier.padding(bottom = 4.dp))
+        ProfileRow(onClick = onOpenProfile)
+
         DeliveryCard(delivery, pushProblem, onChoosePushApp, onGooglePush, onStayConnected, onDeliveryChanged)
 
         Column {
@@ -117,12 +122,13 @@ fun SettingsScreen(
         Column {
             SectionTitle("Chats and media", modifier = Modifier.padding(bottom = 4.dp))
             SwitchRow(
-                icon = MaunIcons.Image,
-                title = "Save incoming media to Gallery",
-                text = "Save received photos and videos straight to your phone's Gallery under Pictures/Maun.",
-                checked = privacy.saveIncomingMedia,
+                icon = MaunIcons.Download,
+                title = "Save arriving files automatically",
+                text = "Photos and videos go to Gallery under Pictures/Maun; documents and other files to " +
+                    "Download/Maun. Off: a file is saved only when you ask for it.",
+                checked = privacy.saveIncomingFiles,
                 enabled = true,
-                onChange = onSaveIncomingMedia,
+                onChange = onSaveIncomingFiles,
             )
             SwitchRow(
                 icon = MaunIcons.Wallpaper,
@@ -237,6 +243,28 @@ private fun SwitchRow(
         RowIcon(icon)
         RowText(title, text, modifier = Modifier.weight(1f))
         Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+    }
+}
+
+/** The top row of Settings: this phone's own picture, and a way to change it. */
+@Composable
+private fun ProfileRow(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Avatar(id = Avatars.SELF, name = "You", size = 46.dp)
+        RowText(
+            title = "Your profile",
+            text = "Picture, username, and Maun ID.",
+            modifier = Modifier.weight(1f),
+        )
+        Icon(MaunIcons.Forward, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

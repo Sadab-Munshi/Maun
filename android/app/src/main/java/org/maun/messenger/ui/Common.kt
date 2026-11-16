@@ -1,5 +1,18 @@
 package org.maun.messenger.ui
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.maun.messenger.Avatars
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -11,7 +24,6 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -118,11 +130,30 @@ fun TopBar(
 }
 
 /**
- * The circle that stands in for a picture of a person: their initial on their
- * own colour. Someone without a name (a message request) gets a grey "?".
+ * Changes when a profile picture does, so that every avatar on screen redraws
+ * at once without each of them asking the disk again.
+ */
+val LocalAvatarRevision = staticCompositionLocalOf { 0 }
+
+/**
+ * A person's picture, or the circle that stands in for one: their initial on
+ * their own colour. Someone without a name (a message request) gets a grey "?".
+ * A picture is read once and kept in memory; it never leaves this phone.
  */
 @Composable
 fun Avatar(id: String, name: String?, modifier: Modifier = Modifier, size: Dp = 48.dp) {
+    val context = LocalContext.current
+    val revision = LocalAvatarRevision.current
+    var picture by remember(id) { mutableStateOf(Avatars.cached(id)) }
+    LaunchedEffect(id, revision) {
+        if (!Avatars.has(context, id)) {
+            picture = null
+            return@LaunchedEffect
+        }
+        val known = Avatars.cached(id)
+        picture = known ?: withContext(Dispatchers.IO) { Avatars.load(context, id) }
+    }
+    val shown = picture
     val known = !name.isNullOrBlank()
     Box(
         modifier = modifier
@@ -133,12 +164,21 @@ fun Avatar(id: String, name: String?, modifier: Modifier = Modifier, size: Dp = 
             .clearAndSetSemantics { },
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = initialOf(name),
-            color = if (known) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = (size.value * 0.42f).sp,
-            fontWeight = FontWeight.Medium,
-        )
+        if (shown != null) {
+            Image(
+                bitmap = shown.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            Text(
+                text = initialOf(name),
+                color = if (known) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = (size.value * 0.42f).sp,
+                fontWeight = FontWeight.Medium,
+            )
+        }
     }
 }
 

@@ -8,6 +8,7 @@ import android.media.ExifInterface
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.LruCache
+import androidx.core.content.FileProvider
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -346,16 +347,17 @@ class FileTransfers(
             if (!part.renameTo(stored(seq))) throw IOException("could not be moved into place")
             if (!plainPart.renameTo(plain(seq))) plainPart.delete()
             engine.setFileState(seq, Attachment.READY)
-            maybeAutoSaveIncomingMedia(seq, file, secret)
+            maybeAutoSaveIncomingFile(seq, file, secret)
         } finally {
             part.delete()
             plainPart.delete()
         }
     }
 
-    private fun maybeAutoSaveIncomingMedia(seq: Long, file: Attachment, secret: ByteArray) {
-        if (!file.isGalleryMedia || file.isVoice) return
-        if (!MediaSaver.saveIncomingMediaEnabled(appContext)) return
+    private fun maybeAutoSaveIncomingFile(seq: Long, file: Attachment, secret: ByteArray) {
+        // A voice message is played in the conversation; it has no other home.
+        if (file.isVoice) return
+        if (!MediaSaver.saveIncomingFilesEnabled(appContext)) return
         val row = dao.message(seq) ?: return
         if (row.outgoing || row.savedToGallery) return
         if (MediaSaver.saveToDevice(appContext, file) { openDecrypted(seq, secret) }) {
@@ -396,15 +398,32 @@ class FileTransfers(
         }
         if (!stored(seq).exists() && !plain(seq).exists()) return@withContext null
         try {
+            // The decrypted copy on disk is read in place when it is there: no
+            // decrypting the same photo twice (once to measure, once to draw),
+            // and Android can read the picture the cheap way.
+            val ready = plain(seq).takeIf { it.exists() && it.length() > 0L }
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            openDecrypted(seq, secret)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return@withContext null
+            if (ready != null) {
+                BitmapFactory.decodeFile(ready.path, bounds)
+            } else {
+                val measuring = openDecrypted(seq, secret) ?: return@withContext null
+                measuring.use { BitmapFactory.decodeStream(it, null, bounds) }
+            }
+            // A bounds pass answers through the options, never through a picture.
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
             var sample = 1
             while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxPixels) sample *= 2
             val options = BitmapFactory.Options().apply { inSampleSize = sample }
-            val decoded = openDecrypted(seq, secret)?.use { BitmapFactory.decodeStream(it, null, options) }
-                ?: return@withContext null
-            val degrees = openDecrypted(seq, secret)?.use(::rotationOf) ?: 0
+            val decoded = if (ready != null) {
+                BitmapFactory.decodeFile(ready.path, options)
+            } else {
+                openDecrypted(seq, secret)?.use { BitmapFactory.decodeStream(it, null, options) }
+            } ?: return@withContext null
+            val degrees = if (ready != null) {
+                rotationOf(ready)
+            } else {
+                openDecrypted(seq, secret)?.use(::rotationOf) ?: 0
+            }
             val upright = turnUpright(decoded, degrees)
             images.put(cacheKey, upright)
             if (small) keepThumb(seq, upright, secret)
@@ -449,6 +468,20 @@ class FileTransfers(
         }
     }
 
+    /**
+     * A `content://` address for the file of message [seq], for whichever app
+     * on this phone reads that kind of file. Null when the file is not here.
+     */
+    suspend fun openTarget(seq: Long, file: Attachment): Uri? = withContext(Dispatchers.IO) {
+        if (!stored(seq).exists() && !plain(seq).exists()) return@withContext null
+        val ready = ensurePlainCache(seq, file.secretBytes()) ?: return@withContext null
+        try {
+            FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", ready)
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+    }
+
     /** Stores a small encrypted copy of [bitmap] for the next time the conversation is opened. */
     private fun keepThumb(seq: Long, bitmap: Bitmap, secret: ByteArray) {
         val temp = File(dir, "thumb-${UUID.randomUUID()}.tmp")
@@ -463,6 +496,13 @@ class FileTransfers(
     }
 
     private fun open(source: File, secret: ByteArray) = FileCipher.decrypting(source.inputStream().buffered(), secret)
+
+    /** The same, for a picture already decrypted on this phone. */
+    private fun rotationOf(source: File): Int = try {
+        source.inputStream().use(::rotationOf)
+    } catch (_: IOException) {
+        0
+    }
 
     /** How far a photo has to be turned, according to what the camera noted in it. */
     private fun rotationOf(stream: InputStream): Int = try {

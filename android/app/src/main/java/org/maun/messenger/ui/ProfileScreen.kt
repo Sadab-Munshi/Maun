@@ -1,0 +1,151 @@
+package org.maun.messenger.ui
+
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import org.maun.messenger.AppLock
+import org.maun.messenger.Avatars
+
+/**
+ * This phone's own profile: the picture people here see for them, and the ID
+ * others need to reach them. The picture stays on this phone; it is not sent
+ * to the relay or to anyone in a conversation.
+ */
+@Composable
+fun ProfileScreen(
+    code: String,
+    relayName: String,
+    username: String?,
+    memberEmail: String?,
+    onPhoto: (android.net.Uri) -> Unit,
+    onRemovePhoto: () -> Unit,
+    onShowCode: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    var hasPhoto by remember(code) { mutableStateOf(Avatars.has(context, Avatars.SELF)) }
+
+    val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        AppLock.externalFlow = false
+        if (uri != null) {
+            hasPhoto = true
+            onPhoto(uri)
+        }
+    }
+
+    ScreenFrame(title = "Your profile", onBack = onBack) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Avatar(id = Avatars.SELF, name = username ?: "You", size = 104.dp)
+            Text(
+                text = username?.let { "@$it" } ?: "No username on this relay",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = memberEmail ?: "This ID is not tied to an email address.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier.padding(top = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(onClick = {
+                    try {
+                        AppLock.externalFlow = true
+                        pickPhoto.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                        )
+                    } catch (_: Exception) {
+                        AppLock.externalFlow = false
+                        Toast.makeText(context, "Could not open Gallery.", Toast.LENGTH_SHORT).show()
+                    }
+                }) {
+                    Icon(MaunIcons.Camera, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(if (hasPhoto) "Change photo" else "Add photo")
+                }
+                if (hasPhoto) {
+                    OutlinedButton(onClick = {
+                        hasPhoto = false
+                        onRemovePhoto()
+                    }) { Text("Remove") }
+                }
+            }
+            Text(
+                text = "Your photo is kept on this phone only. It is never uploaded.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
+
+        Spacer(modifier = Modifier.size(8.dp))
+
+        SectionTitle("Your Maun ID", modifier = Modifier.padding(bottom = 4.dp))
+        Text(
+            text = groupedId(code),
+            style = MaterialTheme.typography.bodyMedium,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = "On $relayName. Anyone with this ID can write to you.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedButton(onClick = onShowCode, modifier = Modifier.padding(top = 8.dp)) {
+            Icon(MaunIcons.Qr, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Show my code")
+        }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun ProfilePreview() {
+    MaunTheme {
+        ProfileScreen(
+            code = "ab12cd34ef56ab12cd34ef56ab12cd34",
+            relayName = "maun.example",
+            username = "sadab",
+            memberEmail = null,
+            onPhoto = {},
+            onRemovePhoto = {},
+            onShowCode = {},
+            onBack = {},
+        )
+    }
+}

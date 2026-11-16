@@ -673,6 +673,20 @@ class Messenger(context: Context) {
         return transfers.send(peer, uri)
     }
 
+    /**
+     * Encrypts and starts sending several files picked at once, one after the
+     * other. Returns why the first of them could not be sent, or null.
+     */
+    suspend fun sendFiles(peer: String, uris: List<Uri>): String? {
+        val transfers = files ?: return "Maun is not ready yet. Try again in a moment."
+        var problem: String? = null
+        for (uri in uris) {
+            val why = transfers.send(peer, uri)
+            if (why != null && problem == null) problem = why
+        }
+        return problem
+    }
+
     /** Encrypts a voice message that was just recorded and starts sending it. [recording] is deleted. */
     suspend fun sendVoice(peer: String, recording: java.io.File, millis: Long): String? {
         val transfers = files
@@ -697,6 +711,12 @@ class Messenger(context: Context) {
     fun cachedImage(seq: Long, maxPixels: Int): Bitmap? = files?.cachedImage(seq, maxPixels)
 
     suspend fun saveFileToDevice(seq: Long, file: Attachment): String? = files?.saveToDevice(seq, file)
+
+    /**
+     * A `content://` address for the file of message [seq], for the app on this
+     * phone that shows files of that kind. Null when the file is not here.
+     */
+    suspend fun fileUri(seq: Long, file: Attachment): Uri? = files?.openTarget(seq, file)
 
     suspend fun saveFile(seq: Long, file: Attachment, target: Uri): Boolean = files?.saveTo(seq, file, target) == true
 

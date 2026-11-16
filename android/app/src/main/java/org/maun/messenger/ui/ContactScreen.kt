@@ -1,5 +1,8 @@
 package org.maun.messenger.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,16 +24,20 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import org.maun.messenger.AppLock
+import org.maun.messenger.Avatars
 import org.maun.messenger.Messenger
 import org.maun.messenger.data.ContactEntity
 
@@ -49,6 +56,9 @@ fun ContactScreen(
     onBlock: () -> Unit,
     /** Starts a call with this contact, a video call when given true. Null where calls cannot be made. */
     onCall: ((Boolean) -> Unit)? = null,
+    /** Keeps a picture for this person, on this phone only. */
+    onPhoto: (android.net.Uri) -> Unit = {},
+    onRemovePhoto: () -> Unit = {},
 ) {
     var confirming by rememberSaveable { mutableStateOf(false) }
     var confirmingBlock by rememberSaveable { mutableStateOf(false) }
@@ -71,10 +81,41 @@ fun ContactScreen(
             contact.username?.let {
                 Text("@$it", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            TextButton(onClick = {
-                newName = contact.name
-                renaming = true
-            }) { Text("Change name") }
+            Text(
+                text = "A picture you add is kept on this phone only.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = {
+                    newName = contact.name
+                    renaming = true
+                }) { Text("Change name") }
+                val context = LocalContext.current
+                var hasPhoto by remember(contact.id) { mutableStateOf(Avatars.has(context, contact.id)) }
+                val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+                    AppLock.externalFlow = false
+                    if (uri != null) {
+                        hasPhoto = true
+                        onPhoto(uri)
+                    }
+                }
+                TextButton(onClick = {
+                    if (hasPhoto) {
+                        hasPhoto = false
+                        onRemovePhoto()
+                    } else {
+                        try {
+                            AppLock.externalFlow = true
+                            pickPhoto.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                            )
+                        } catch (_: Exception) {
+                            AppLock.externalFlow = false
+                        }
+                    }
+                }) { Text(if (hasPhoto) "Remove photo" else "Add photo") }
+            }
             if (onCall != null) {
                 val call = rememberCallStarter(onCall)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

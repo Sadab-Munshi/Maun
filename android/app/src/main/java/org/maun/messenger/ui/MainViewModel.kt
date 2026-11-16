@@ -1,6 +1,9 @@
 package org.maun.messenger.ui
 
 import android.app.Application
+import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.Intent
 import android.os.PowerManager
 import java.io.File
 import org.maun.messenger.voice.VoicePlayer
@@ -9,6 +12,7 @@ import org.maun.messenger.voice.VoiceState
 import android.graphics.Bitmap
 import android.net.Uri
 import org.maun.messenger.Attachment
+import org.maun.messenger.Avatars
 import android.content.Context
 import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
@@ -171,6 +175,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { attachProblem.value = messenger.sendFile(peer, uri) }
     }
 
+    /** Several pictures or documents picked at once, sent one after the other. */
+    fun sendFiles(peer: String, uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch { attachProblem.value = messenger.sendFiles(peer, uris) }
+    }
+
+    /**
+     * Opens the file of message [seq] in whichever app on this phone reads that
+     * kind of file, so a PDF opens in a PDF reader and a video in a player.
+     */
+    fun openFile(seq: Long, file: Attachment) {
+        viewModelScope.launch {
+            val uri = messenger.fileUri(seq, file)
+            if (uri == null) {
+                attachProblem.value = "That file is not on this phone yet."
+                return@launch
+            }
+            val view = Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, file.mime.ifBlank { "*/*" })
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            view.clipData = ClipData.newRawUri(file.name, uri)
+            try {
+                getApplication<Application>().startActivity(
+                    Intent.createChooser(view, file.name).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } catch (_: ActivityNotFoundException) {
+                attachProblem.value = "No app on this phone opens ${file.name}."
+            } catch (_: SecurityException) {
+                attachProblem.value = "This phone would not let another app read that file."
+            }
+        }
+    }
+
     fun startFile(seq: Long) = messenger.startFile(seq)
 
     fun saveFile(seq: Long, file: Attachment) {
@@ -182,6 +219,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 attachProblem.value = "The file could not be saved."
             }
         }
+    }
+
+    /** Bumped whenever a profile picture changes, so that the names and lists redraw. */
+    private val _avatarRevision = MutableStateFlow(0)
+
+    /** Which pictures exist, by person: read after a change to know what to draw. */
+    val avatarRevision: StateFlow<Int> = _avatarRevision.asStateFlow()
+
+    /** Keeps the phone's own picture ([Avatars.SELF]) or a contact's. */
+    fun setAvatar(id: String, uri: Uri) {
+        viewModelScope.launch {
+            val saved = Avatars.save(getApplication(), id, uri)
+            if (saved) {
+                _avatarRevision.update { it + 1 }
+            } else {
+                attachProblem.value = "That picture could not be read."
+            }
+        }
+    }
+
+    fun removeAvatar(id: String) {
+        Avatars.remove(getApplication(), id)
+        _avatarRevision.update { it + 1 }
     }
 
     suspend fun image(seq: Long, file: Attachment, maxPixels: Int): Bitmap? = messenger.image(seq, file, maxPixels)
@@ -343,13 +403,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             telecomCalls = TelecomBridge.enabled(context),
             batterySaving = (context.getSystemService(Context.POWER_SERVICE) as? PowerManager)
                 ?.isIgnoringBatteryOptimizations(context.packageName) == false,
-            saveIncomingMedia = MediaSaver.saveIncomingMediaEnabled(context),
+            saveIncomingFiles = MediaSaver.saveIncomingFilesEnabled(context),
             chatPattern = MediaSaver.chatPatternEnabled(context),
         )
     }
 
-    fun setSaveIncomingMedia(on: Boolean) {
-        MediaSaver.setSaveIncomingMediaEnabled(getApplication(), on)
+    fun setSaveIncomingFiles(on: Boolean) {
+        MediaSaver.setSaveIncomingFilesEnabled(getApplication(), on)
         refreshPrivacy()
     }
 

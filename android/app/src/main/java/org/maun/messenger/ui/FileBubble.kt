@@ -63,6 +63,10 @@ class FileActions(
     val onNoticeShown: () -> Unit = {},
     /** The user picked or captured a file to send. */
     val onAttach: (Uri) -> Unit = {},
+    /** The user picked several pictures or documents at once. */
+    val onAttachMany: (List<Uri>) -> Unit = {},
+    /** Open the file of a message in whichever app on this phone reads that kind of file. */
+    val onOpen: (Long, Attachment) -> Unit = { _, _ -> },
     /** Send or fetch the file of a message, whichever it still needs. */
     val onStart: (Long) -> Unit = {},
     /** Save the file of a message directly to Gallery or Downloads/Maun via MediaStore. */
@@ -131,10 +135,9 @@ internal fun fileLine(file: Attachment, message: MessageEntity, step: FileStep, 
         FileStep.Fetch -> "$size · Tap to fetch"
         FileStep.Open -> when {
             file.isImage -> size
-            message.savedToGallery && file.isVideo -> "$size · Saved to Gallery"
+            message.savedToGallery && file.isGalleryMedia -> "$size · Saved to Gallery"
             message.savedToGallery -> "$size · Saved to Downloads/Maun"
-            file.isVideo -> "$size · Tap to save to Gallery"
-            else -> "$size · Tap to save"
+            else -> "$size · Tap to open"
         }
         FileStep.Retry -> if (message.outgoing && file.key.isEmpty()) {
             "$size · Not sent. Tap to try again"
@@ -278,6 +281,17 @@ fun FileContent(
                 style = MaterialTheme.typography.bodySmall,
                 color = quiet,
             )
+        }
+        // Saving is asked for on purpose; opening a file is what a tap does.
+        if (step == FileStep.Open) {
+            IconButton(onClick = { files.onSave(message.seq, file) }, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    imageVector = MaunIcons.Download,
+                    contentDescription = if (message.savedToGallery) "Saved. Tap to save again" else "Save to this phone",
+                    tint = text.copy(alpha = if (message.savedToGallery) 0.55f else 0.85f),
+                    modifier = Modifier.size(20.dp),
+                )
+            }
         }
     }
 }
