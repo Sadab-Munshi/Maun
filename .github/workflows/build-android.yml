@@ -100,18 +100,26 @@ jobs:
         run: ./gradlew :app:assembleDebug
 
       - name: Check APK size
+        # One APK per phone architecture, so a download carries one copy of the
+        # calling and encryption libraries rather than two. People install this
+        # over mobile data: keep each one well under the 40 MB budget.
         run: |
-          size=$(stat -c %s app/build/outputs/apk/debug/app-debug.apk)
-          echo "APK is $((size / 1024 / 1024)) MB"
-          if [ "$size" -gt $((100 * 1024 * 1024)) ]; then
-            echo "::error::The APK is over 100 MB. The native libraries were probably not stripped."
-            exit 1
-          fi
+          status=0
+          for apk in app/build/outputs/apk/debug/*.apk; do
+            size=$(stat -c %s "$apk")
+            echo "$apk is $((size / 1024 / 1024)) MB"
+            if [ "$size" -gt $((40 * 1024 * 1024)) ]; then
+              echo "::error::$apk is over 40 MB. Check that shrinking is on, the native libraries are stripped, and no architecture was added to every APK."
+              status=1
+            fi
+          done
+          exit $status
 
       - uses: actions/upload-artifact@v7
         with:
           name: maun-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          # arm64-v8a is every phone made since about 2015; armeabi-v7a is for older ones.
+          path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
       - name: Check that the database schema is committed

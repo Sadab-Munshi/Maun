@@ -110,7 +110,7 @@ val LocalStatusColors = staticCompositionLocalOf {
     )
 }
 
-/** Conversation surfaces: wallpaper, incoming white bubbles, outgoing green bubbles, and composer pill. */
+/** Conversation surfaces for the wallpaper, bubbles, and composer. */
 @Immutable
 data class ChatColors(
     val wallpaper: Color,
@@ -180,30 +180,30 @@ fun MaunTheme(content: @Composable () -> Unit) {
     }
     val chat = if (dark) {
         ChatColors(
-            wallpaper = Color(0xFF0B1210),
+            wallpaper = Color(0xFF11171D),
             patternTint = Color(0xFF9FD8C0).copy(alpha = 0.045f),
-            incomingBubble = Color(0xFF1D2724),
+            incomingBubble = Color(0xFF242E36),
             incomingContent = Color(0xFFE5EAE6),
             incomingMeta = Color(0xFF9BA6A0),
-            outgoingBubble = Color(0xFF1D4B3B),
-            outgoingContent = Color(0xFFE4F4EC),
-            outgoingMeta = Color(0xFFA9CBBB),
+            outgoingBubble = Color(0xFF30485C),
+            outgoingContent = Color(0xFFE8F2FA),
+            outgoingMeta = Color(0xFFB1C9DA),
             composerPill = Color(0xFF1E2925),
-            actionButton = Color(0xFF2C8665),
+            actionButton = Color(0xFF4E718A),
             onActionButton = Color.White,
         )
     } else {
         ChatColors(
-            wallpaper = Color(0xFFECE6DC),
+            wallpaper = Color(0xFFF1F2F0),
             patternTint = Color(0xFF2F6B55).copy(alpha = 0.065f),
             incomingBubble = Color.White,
             incomingContent = Ink,
             incomingMeta = Color(0xFF66706B),
-            outgoingBubble = Color(0xFFD8F3E0),
-            outgoingContent = Color(0xFF102A20),
-            outgoingMeta = Color(0xFF3E6353),
+            outgoingBubble = Color(0xFFDCEAF2),
+            outgoingContent = Color(0xFF1A3444),
+            outgoingMeta = Color(0xFF4C697A),
             composerPill = Color.White,
-            actionButton = Color(0xFF216E53),
+            actionButton = Color(0xFF476C83),
             onActionButton = Color.White,
         )
     }

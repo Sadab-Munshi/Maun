@@ -387,11 +387,6 @@ class Messenger(context: Context) {
         chatScope.launch { chat.waiting.collect { _waiting.value = it } }
         chatScope.launch { chat.pushProblem.collect { _pushProblem.value = it } }
         chatScope.launch { chat.moved.collect { _moved.emit(it) } }
-        _account.value = AccountState.Present(
-            code = ContactCode(identity.id, ContactCode.relayName(relayUrl)),
-            relayUrl = row.relayUrl,
-            registered = row.registered,
-        )
         val created = RelayConnection(
             relayUrl = relayUrl,
             identity = identity,
@@ -437,6 +432,13 @@ class Messenger(context: Context) {
             engine = chat
             engineScope = chatScope
             connection = created
+            // Publish the account only after the engine and file loader exist.
+            // Otherwise the first conversation can try to load a preview too early.
+            _account.value = AccountState.Present(
+                code = ContactCode(identity.id, ContactCode.relayName(relayUrl)),
+                relayUrl = row.relayUrl,
+                registered = row.registered,
+            )
             connectionWatcher = scope.launch {
                 created.state.collect { state ->
                     _relay.value = state

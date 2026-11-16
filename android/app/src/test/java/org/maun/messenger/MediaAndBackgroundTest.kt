@@ -56,11 +56,13 @@ class MediaAndBackgroundTest {
     }
 
     @Test
-    fun `incoming media auto-save and chat pattern default to on and toggle cleanly`() {
+    fun `incoming media auto-save defaults on and chat pattern defaults off`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().clear().commit()
 
         assertTrue(MediaSaver.saveIncomingMediaEnabled(context))
+        assertFalse(MediaSaver.chatPatternEnabled(context))
+        MediaSaver.setChatPatternEnabled(context, true)
         assertTrue(MediaSaver.chatPatternEnabled(context))
 
         MediaSaver.setSaveIncomingMediaEnabled(context, false)

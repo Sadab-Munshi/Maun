@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.io.File
 import java.util.Locale
+import kotlinx.coroutines.delay
 import org.maun.messenger.Attachment
 import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.voice.VoiceState
@@ -105,10 +106,19 @@ internal fun fileStep(file: Attachment, outgoing: Boolean, active: Boolean): Fil
 /** Whether this message renders as an edge-to-edge photo bubble with overlaid timestamp. */
 internal fun isPictureBubble(message: MessageEntity, file: Attachment, step: FileStep): Boolean {
     if (!file.isImage || file.isVoice) return false
-    val unsent = message.outgoing && file.key.isEmpty()
-    val here = step == FileStep.Open || (unsent && step != FileStep.Gone)
+    val here = step == FileStep.Open || (message.outgoing && step != FileStep.Gone)
     val arriving = !message.outgoing && (step == FileStep.Working || (step == FileStep.Fetch && file.size <= AUTO_FETCH_BYTES))
     return here || arriving
+}
+
+/** Covers the small gap between inserting an outgoing row and publishing its file. */
+internal suspend fun <T : Any> loadPictureWhenAvailable(outgoing: Boolean, load: suspend () -> T?): T? {
+    val attempts = if (outgoing) 21 else 1
+    repeat(attempts) { attempt ->
+        load()?.let { return it }
+        if (attempt + 1 < attempts) delay(100)
+    }
+    return null
 }
 
 internal fun fileLine(file: Attachment, message: MessageEntity, step: FileStep, fraction: Float?): String {
@@ -165,10 +175,17 @@ fun FileContent(
     }
 
     val showAsPicture = isPictureBubble(message, file, step)
-    val unsent = message.outgoing && file.key.isEmpty()
-    val here = file.isImage && (step == FileStep.Open || (unsent && step != FileStep.Gone))
-    val picture by produceState(files.cachedImage(message.seq, PREVIEW_PIXELS), message.seq, here) {
-        if (here && value == null) value = files.loadImage(message.seq, file, PREVIEW_PIXELS)
+    val here = file.isImage && (step == FileStep.Open || (message.outgoing && step != FileStep.Gone))
+    // A sent row can appear before its encrypted file is renamed into place.
+    // Retry briefly and also when transfer availability changes, rather than
+    // caching the first (possibly premature) null for the lifetime of the row.
+    val active = fraction != null
+    val picture by produceState(files.cachedImage(message.seq, PREVIEW_PIXELS), message.seq, here, file.state, file.key, active) {
+        if (here && value == null) {
+            value = loadPictureWhenAvailable(message.outgoing) {
+                files.loadImage(message.seq, file, PREVIEW_PIXELS)
+            }
+        }
     }
     if (showAsPicture) {
         val shown = picture

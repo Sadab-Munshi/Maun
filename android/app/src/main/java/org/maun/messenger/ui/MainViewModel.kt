@@ -67,6 +67,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val account = messenger.account
     val relay = messenger.relay
     val contacts = messenger.contacts
+    val chats = messenger.chats
     val blocked = messenger.blocked
     val waiting = messenger.waiting
     val pushProblem = messenger.pushProblem

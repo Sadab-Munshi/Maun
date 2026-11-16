@@ -31,7 +31,7 @@ object MediaSaver {
     }
 
     fun chatPatternEnabled(context: Context): Boolean =
-        context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE).getBoolean(KEY_CHAT_PATTERN, true)
+        context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE).getBoolean(KEY_CHAT_PATTERN, false)
 
     fun setChatPatternEnabled(context: Context, enabled: Boolean) {
         context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE).edit {

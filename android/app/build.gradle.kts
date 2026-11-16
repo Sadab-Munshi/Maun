@@ -26,16 +26,20 @@ android {
         applicationId = "org.maun.messenger"
         minSdk = 29 // Android 10: built-in Ogg/Opus recording, StrongBox API.
         targetSdk = 36
-        versionCode = 17
-        versionName = "0.14.0"
+        versionCode = 18
+        versionName = "0.14.1"
 
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
+    }
 
-        ndk {
-            // Phones (arm) plus the standard emulator (x86_64).
-            // Phones only. Leaving out x86_64 (emulators) keeps the APK under 100 MB
-            // now that the calling library is in it.
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+    // Native calling and encryption libraries are large. Distribute one APK
+    // per phone architecture instead of bundling both copies in every download.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = false
         }
     }
 
@@ -55,6 +59,12 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             signingConfig = signingConfigs.getByName("debug")
+            // The debug APK is what people download and install. Without this,
+            // code that is shipped but never used (libsignal's media and
+            // protobuf helpers, for instance) makes it about twice as large.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         release {
             // Shrinking and the signed release pipeline arrive in Milestone 6.
@@ -129,7 +139,6 @@ dependencies {
     implementation(libs.compose.ui)
     implementation(libs.compose.material3)
     implementation(libs.compose.ui.tooling.preview)
-    debugImplementation(libs.compose.ui.tooling)
 
     implementation(libs.coroutines.android)
     implementation(libs.okhttp)

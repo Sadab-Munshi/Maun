@@ -14,6 +14,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -78,8 +80,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -96,7 +96,6 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
@@ -309,27 +308,29 @@ fun ChatScreen(
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
                             ) {
                                 items(items, key = { it.key }, contentType = { it is DayItem }) { item ->
-                                    when (item) {
-                                        is DayItem -> Pill(dayLabel(item.day, today))
-                                        is MessageItem -> if (item.message.kind == MessageKind.NOTICE) {
-                                            Pill(item.message.text)
-                                        } else {
-                                            MessageRow(
-                                                item = item,
-                                                online = relay == RelayState.Online,
-                                                stuck = waiting != null,
-                                                onCopy = { copyMessage(context, it) },
-                                                onDelete = { deleting = it },
-                                                files = files,
-                                                onOpenFile = { seq, file ->
-                                                    when {
-                                                        file.isVoice -> files.onPlay(seq, file)
-                                                        file.isImage -> viewing = seq
-                                                        else -> save(seq, file)
-                                                    }
-                                                },
-                                                onSaveFile = save,
-                                            )
+                                    Box(modifier = Modifier.animateItem(fadeInSpec = tween(160), fadeOutSpec = tween(120))) {
+                                        when (item) {
+                                            is DayItem -> Pill(dayLabel(item.day, today))
+                                            is MessageItem -> if (item.message.kind == MessageKind.NOTICE) {
+                                                Pill(item.message.text)
+                                            } else {
+                                                MessageRow(
+                                                    item = item,
+                                                    online = relay == RelayState.Online,
+                                                    stuck = waiting != null,
+                                                    onCopy = { copyMessage(context, it) },
+                                                    onDelete = { deleting = it },
+                                                    files = files,
+                                                    onOpenFile = { seq, file ->
+                                                        when {
+                                                            file.isVoice -> files.onPlay(seq, file)
+                                                            file.isImage -> viewing = seq
+                                                            else -> save(seq, file)
+                                                        }
+                                                    },
+                                                    onSaveFile = save,
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -347,6 +348,14 @@ fun ChatScreen(
                                         }
                                     }
                                 }
+                            }
+                            Crossfade(
+                                targetState = loading,
+                                animationSpec = tween(180),
+                                modifier = Modifier.align(Alignment.Center),
+                                label = "conversation loading",
+                            ) { isLoading ->
+                                if (isLoading) Pill("Opening conversation…")
                             }
                             if (scrolledBack) {
                                 SmallFloatingActionButton(
@@ -1037,8 +1046,7 @@ private fun Notice(text: String) {
 
 /**
  * WhatsApp-style bottom composer:
- * `[😊  Message…   📎 📷]` inside a crisp white rounded pill, with the
- * circular green Mic / Send button to its right.
+ * A quiet, compact message field with attachments, camera, and a send/voice action.
  */
 @Composable
 private fun Composer(
@@ -1054,8 +1062,6 @@ private fun Composer(
     val chatColors = LocalChatColors.current
 
     val context = LocalContext.current
-    val focusRequester = remember { FocusRequester() }
-    val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val recorder = remember { VoiceRecorder(context) }
     DisposableEffect(Unit) { onDispose { recorder.cancel() } }
@@ -1148,37 +1154,22 @@ private fun Composer(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
-            // Crisp white rounded input pill: [😊  Message…   📎 📷]
+            // A simple message field; emoji remain available on the device keyboard.
             Surface(
                 color = chatColors.composerPill,
-                shape = RoundedCornerShape(26.dp),
-                shadowElevation = 1.5.dp,
+                shape = RoundedCornerShape(18.dp),
+                shadowElevation = 1.dp,
                 modifier = Modifier.weight(1f).heightIn(min = 48.dp),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.Bottom,
                 ) {
-                    IconButton(
-                        onClick = {
-                            focusRequester.requestFocus()
-                            keyboard?.show()
-                        },
-                        modifier = Modifier.size(42.dp),
-                    ) {
-                        Icon(
-                            imageVector = MaunIcons.Emoji,
-                            contentDescription = "Emoji and keyboard",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(22.dp),
-                        )
-                    }
-
                     Box(
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = 42.dp)
-                            .padding(vertical = 9.dp, horizontal = 2.dp),
+                            .padding(vertical = 9.dp, horizontal = 12.dp),
                         contentAlignment = Alignment.CenterStart,
                     ) {
                         if (draft.isEmpty()) {
@@ -1191,7 +1182,7 @@ private fun Composer(
                         BasicTextField(
                             value = draft,
                             onValueChange = { draft = it },
-                            modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
+                            modifier = Modifier.fillMaxWidth(),
                             textStyle = MaterialTheme.typography.bodyLarge.copy(
                                 color = MaterialTheme.colorScheme.onSurface,
                             ),

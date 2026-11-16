@@ -5,11 +5,16 @@ import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
-import kotlinx.coroutines.delay
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -33,9 +38,6 @@ import org.maun.messenger.BuildConfig
 import org.maun.messenger.Messenger
 import org.maun.messenger.crypto.SafetyNumber
 import org.maun.messenger.network.RelayState
-
-/** How long the app may take to open its storage before a spinner is shown. */
-private const val SPINNER_AFTER_MILLIS = 600L
 
 private const val HOME = "home"
 private const val MY_CODE = "my-code"
@@ -92,15 +94,15 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
 
     when (val current = account) {
         AccountState.Loading -> Surface(modifier = Modifier.fillMaxSize()) {
-            // Opening the storage takes a moment. A spinner that flashes by
-            // is worse than a plain screen; show one only if it drags on.
-            var slow by remember { mutableStateOf(false) }
-            LaunchedEffect(Unit) {
-                delay(SPINNER_AFTER_MILLIS)
-                slow = true
-            }
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                if (slow) CircularProgressIndicator()
+            Column(
+                modifier = Modifier.fillMaxSize().padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text("Maun", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+                Text("Opening your chats…", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp, bottom = 20.dp))
+                CircularProgressIndicator()
             }
         }
 
@@ -387,7 +389,10 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                         }
 
                         else -> {
-                            val lists by viewModel.home.collectAsStateWithLifecycle()
+                            // These snapshots are read before the account is published. Derive
+                            // the first frame directly, rather than briefly showing an empty home.
+                            val chats by viewModel.chats.collectAsStateWithLifecycle()
+                            val lists = remember(contacts, chats) { homeLists(contacts, chats) }
                             val delivery by viewModel.delivery.collectAsStateWithLifecycle()
                             val pushProblem by viewModel.pushProblem.collectAsStateWithLifecycle()
                             // Permissions and push apps change outside Maun; look again on every return.
