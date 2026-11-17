@@ -12,7 +12,6 @@ import org.maun.messenger.voice.VoiceState
 import android.graphics.Bitmap
 import android.net.Uri
 import org.maun.messenger.Attachment
-import org.maun.messenger.Avatars
 import android.content.Context
 import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
@@ -208,6 +207,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Hands the file of message [seq] to another app on this phone: the
+     * original name, the right kind, and read-only permission for a while.
+     * The file itself is not copied, so sharing twice makes no second file.
+     */
+    fun shareFile(seq: Long, file: Attachment) {
+        viewModelScope.launch {
+            val uri = messenger.fileUri(seq, file)
+            if (uri == null) {
+                attachProblem.value = "That file is not on this phone yet."
+                return@launch
+            }
+            val send = Intent(Intent.ACTION_SEND)
+                .setType(file.mime.ifBlank { "application/octet-stream" })
+                .putExtra(Intent.EXTRA_STREAM, uri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            send.clipData = ClipData.newRawUri(file.name, uri)
+            try {
+                getApplication<Application>().startActivity(
+                    Intent.createChooser(send, file.name).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } catch (_: ActivityNotFoundException) {
+                attachProblem.value = "No app on this phone can share ${file.name}."
+            } catch (_: SecurityException) {
+                attachProblem.value = "This phone would not let another app read that file."
+            }
+        }
+    }
+
     fun startFile(seq: Long) = messenger.startFile(seq)
 
     fun saveFile(seq: Long, file: Attachment) {
@@ -263,25 +291,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _avatarPending.value = messenger.avatarAwaitingUpload()
             _avatarRevision.update { it + 1 }
         }
-    }
-
-    /**
-     * Keeps a picture of a contact on this phone only, without telling them or
-     * the relay: a note to oneself, kept apart from the picture they chose.
-     */
-    fun setLocalAvatar(id: String, uri: Uri) {
-        viewModelScope.launch {
-            if (Avatars.saveLocal(getApplication(), id, uri)) {
-                _avatarRevision.update { it + 1 }
-            } else {
-                attachProblem.value = "That picture could not be read."
-            }
-        }
-    }
-
-    fun removeLocalAvatar(id: String) {
-        Avatars.removeLocal(getApplication(), id)
-        _avatarRevision.update { it + 1 }
     }
 
     suspend fun image(seq: Long, file: Attachment, maxPixels: Int): Bitmap? = messenger.image(seq, file, maxPixels)

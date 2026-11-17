@@ -4,6 +4,9 @@ import android.graphics.Bitmap
 import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -21,6 +24,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -29,13 +34,20 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -72,6 +84,8 @@ class FileActions(
     val onStart: (Long) -> Unit = {},
     /** Save the file of a message directly to Gallery or Downloads/Maun via MediaStore. */
     val onSave: (Long, Attachment) -> Unit = { _, _ -> },
+    /** Hand the file of a message to another app on this phone, read-only and for a while. */
+    val onShare: (Long, Attachment) -> Unit = { _, _ -> },
     /** The picture of a message, about so many pixels on its longer side. */
     val loadImage: suspend (Long, Attachment, Int) -> Bitmap? = { _, _, _ -> null },
     /** The same without waiting, when it has been shown since the app started. */
@@ -143,12 +157,9 @@ internal fun fileLine(file: Attachment, message: MessageEntity, step: FileStep, 
             if (file.key.isEmpty()) "$size · Sending $percent%" else "$size · Fetching $percent%"
         }
         FileStep.Fetch -> "$size · Tap to fetch"
-        FileStep.Open -> when {
-            file.isImage -> size
-            message.savedToGallery && file.isGalleryMedia -> "$size · Saved to Gallery"
-            message.savedToGallery -> "$size · Saved to Downloads/Maun"
-            else -> "$size · Tap to open"
-        }
+        // A file that is here says only what it is: a note about where a copy
+        // went is not part of the file, and the menu is where saving lives.
+        FileStep.Open -> size
         FileStep.Retry -> if (message.outgoing && file.key.isEmpty()) {
             "$size · Not sent. Tap to try again"
         } else {
@@ -292,17 +303,49 @@ fun FileContent(
                 color = quiet,
             )
         }
-        // Saving is asked for on purpose; opening a file is what a tap does. A
-        // file one sent is already here, and one already saved says so in the
-        // line above, so neither gets a button that would do nothing new.
-        if (fileNeedsSaving(message, file, step)) {
-            IconButton(onClick = { files.onSave(message.seq, file) }, modifier = Modifier.size(36.dp)) {
-                Icon(
-                    imageVector = MaunIcons.Download,
-                    contentDescription = "Save to this phone",
-                    tint = text.copy(alpha = 0.85f),
-                    modifier = Modifier.size(20.dp),
-                )
+        // One small button with the three things a file can be given to: the
+        // app that reads it, this phone, or someone else. It is the same on a
+        // file one sent and a file that arrived; a file that is already in
+        // Gallery or Downloads is only saved again when it is asked for.
+        if (step == FileStep.Open && !file.isVoice) {
+            var menu by remember { mutableStateOf(false) }
+            Box {
+                IconButton(onClick = { menu = true }, modifier = Modifier.size(34.dp)) {
+                    Icon(
+                        imageVector = MaunIcons.More,
+                        contentDescription = "Open, save or share ${file.name}",
+                        tint = text.copy(alpha = 0.8f),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Open") },
+                        leadingIcon = { Icon(MaunIcons.File, contentDescription = null) },
+                        onClick = {
+                            menu = false
+                            files.onOpen(message.seq, file)
+                        },
+                    )
+                    if (fileNeedsSaving(message, file, step)) {
+                        DropdownMenuItem(
+                            text = { Text("Save to device") },
+                            leadingIcon = { Icon(MaunIcons.Download, contentDescription = null) },
+                            onClick = {
+                                menu = false
+                                files.onSave(message.seq, file)
+                            },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text("Share") },
+                        leadingIcon = { Icon(MaunIcons.Share, contentDescription = null) },
+                        onClick = {
+                            menu = false
+                            files.onShare(message.seq, file)
+                        },
+                    )
+                }
             }
         }
     }
@@ -379,8 +422,25 @@ private fun VoiceContent(
  * however the picture is tapped, held or dragged.
  */
 @Composable
-fun ImageViewer(seq: Long, file: Attachment, files: FileActions, onSave: () -> Unit, onClose: () -> Unit) {
+fun ImageViewer(
+    seq: Long,
+    file: Attachment,
+    files: FileActions,
+    onSave: () -> Unit,
+    onClose: () -> Unit,
+    onShare: () -> Unit = {},
+) {
     val picture by produceState<Bitmap?>(null, seq) { value = files.loadImage(seq, file, FULL_PIXELS) }
+    // Pinch to look closer, two fingers to move about, and a double tap to put
+    // it back. Everything else about the picture is still only the picture:
+    // this is a window of its own, so the conversation underneath is deaf to
+    // the fingers on it.
+    var scale by remember(seq) { mutableFloatStateOf(1f) }
+    var moved by remember(seq) { mutableStateOf(Offset.Zero) }
+    val transform = rememberTransformableState { zoomChange, panChange, _ ->
+        scale = (scale * zoomChange).coerceIn(1f, 5f)
+        moved = if (scale > 1f) moved + panChange else Offset.Zero
+    }
     Dialog(
         onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
@@ -392,7 +452,27 @@ fun ImageViewer(seq: Long, file: Attachment, files: FileActions, onSave: () -> U
                     bitmap = shown.asImageBitmap(),
                     contentDescription = file.name,
                     contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = moved.x
+                            translationY = moved.y
+                        }
+                        .pointerInput(seq) {
+                            detectTapGestures(
+                                onDoubleTap = {
+                                    if (scale > 1f) {
+                                        scale = 1f
+                                        moved = Offset.Zero
+                                    } else {
+                                        scale = 2.5f
+                                    }
+                                },
+                            )
+                        }
+                        .transformable(transform),
                 )
             } else {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center), color = Color.White)
@@ -414,7 +494,12 @@ fun ImageViewer(seq: Long, file: Attachment, files: FileActions, onSave: () -> U
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                 )
-                IconButton(onClick = onSave) { Icon(MaunIcons.Download, contentDescription = "Save to Gallery", tint = Color.White) }
+                IconButton(onClick = onShare) {
+                    Icon(MaunIcons.Share, contentDescription = "Share this picture", tint = Color.White)
+                }
+                IconButton(onClick = onSave) {
+                    Icon(MaunIcons.Download, contentDescription = "Save to this phone", tint = Color.White)
+                }
             }
         }
     }

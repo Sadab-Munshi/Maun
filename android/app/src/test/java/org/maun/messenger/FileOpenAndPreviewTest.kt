@@ -198,6 +198,34 @@ class FileOpenAndPreviewTest {
     }
 
     @Test
+    fun `a file that is here says what it is and nothing about where a copy went`() {
+        val pdf = attachment("application/pdf", "Statement.pdf", 10)
+        fun message(saved: Boolean) = MessageEntity(
+            seq = 1,
+            peer = "ab".repeat(32),
+            id = "id",
+            outgoing = false,
+            kind = org.maun.messenger.data.MessageKind.FILE,
+            text = "",
+            at = 0,
+            unread = false,
+            savedToGallery = saved,
+        )
+        val open = org.maun.messenger.ui.FileStep.Open
+        val line = org.maun.messenger.ui.fileLine(pdf, message(saved = false), open, null)
+        assertEquals(org.maun.messenger.ui.formatSize(pdf.size), line)
+        // Auto-save on, the copy already in Downloads: still no note in the bubble.
+        val savedLine = org.maun.messenger.ui.fileLine(pdf, message(saved = true), open, null)
+        assertEquals(org.maun.messenger.ui.formatSize(pdf.size), savedLine)
+        assertFalse(line.contains("Saved"))
+        assertFalse(savedLine.contains("Saved"))
+        assertFalse(savedLine.contains("Tap to open"))
+        // What is not here yet still says what a tap will do.
+        val away = org.maun.messenger.ui.fileLine(pdf, message(false), org.maun.messenger.ui.FileStep.Fetch, null)
+        assertTrue(away.contains("Tap to fetch"))
+    }
+
+    @Test
     fun `documents are saved the same way pictures are`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val pdf = attachment("application/pdf", "Statement.pdf", 10)
