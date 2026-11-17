@@ -170,7 +170,7 @@ object Avatars {
         } catch (_: OutOfMemoryError) {
             null
         } ?: return@withContext false
-        write(context.applicationContext, file(context, id), id, picture)
+        write(context.applicationContext, file(context, id), id, picture, drawn = true)
     }
 
     /** Writes [picture] to [target] as a JPEG, in one step so that a half-written picture is never drawn. */

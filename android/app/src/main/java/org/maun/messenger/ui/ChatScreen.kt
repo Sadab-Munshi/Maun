@@ -796,10 +796,8 @@ private fun MessageRow(
     // the message rather than on every frame, and only for text: what a file is
     // called is not an address even when it looks like one.
     val context = LocalContext.current
-    val linkStyle = remember { SpanStyle(
-        color = MaterialTheme.colorScheme.primary,
-        textDecoration = TextDecoration.Underline,
-    ) }
+    val accent = MaterialTheme.colorScheme.primary
+    val linkStyle = remember(accent) { SpanStyle(color = accent, textDecoration = TextDecoration.Underline) }
     val linked = remember(message.text, readable, linkStyle) {
         if (!readable) AnnotatedString(message.text) else linkedText(
             text = message.text,
