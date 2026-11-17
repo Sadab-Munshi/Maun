@@ -40,11 +40,13 @@ through the relay's call servers, so neither phone learns the other's address.
 | Voice messages: recording and playing | `android/.../voice/VoiceRecorder.kt`, `android/.../voice/VoicePlayer.kt` |
 | Voice calls: setting up, sound, ringing, staying alive | `android/.../webrtc/CallManager.kt`, `CallAudio.kt`, `CallService.kt`, `backend/src/turn.ts` |
 | Safety number for checking a contact | `android/.../crypto/SafetyNumber.kt` |
+| Profile pictures: sealed on the phone, one per account on the relay, told to contacts in a message | `android/.../ProfilePictures.kt`, `android/.../network/AvatarApi.kt`, `backend/src/index.ts` |
 | Rate limits and mailbox caps | `backend/src/index.ts`, `backend/src/protocol.ts`, `backend/wrangler.toml` |
 | CI: tests the relay, runs the app's messaging code against it, builds the APK | `.github/workflows/` |
 
-What the relay stores: per account, the public half of the login key and the
-public pre-keys others need to start a conversation; per waiting message, the
+What the relay stores: per account, the public half of the login key, the
+public pre-keys others need to start a conversation, and — only if its owner
+chose one — a sealed profile picture under `avatar/<id>`; per waiting message, the
 encrypted bytes, the sender's ID and the arrival time, until the recipient's
 phone collects it or 30 days pass; and, if the phone left one, the address at
 which its push service takes wake-ups. It has no names, no phone numbers, no contact lists and

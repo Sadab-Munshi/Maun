@@ -1,5 +1,6 @@
 package org.maun.messenger
 
+import java.util.Base64
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -144,5 +145,37 @@ class PayloadTest {
         assertEquals(listOf("fine", "7"), decoded.delivered)
         assertEquals(Payload.MAX_RECEIPT_IDS, decoded.read.size)
         assertFalse(Payload.isMessageId("x".repeat(65)))
+    }
+
+    @Test
+    fun `a profile picture record travels with its version, key and size`() {
+        val picture = Payload.Avatar(
+            version = "0123456789abcdef",
+            key = Base64.getEncoder().encodeToString(ByteArray(32) { 3 }),
+            size = 40_000,
+        )
+        assertEquals(picture, Payload.decode(Payload.encode(picture)))
+
+        // The question "which picture do you have?", and the answer "none".
+        assertEquals(Payload.Avatar(Payload.AVATAR_ASK), Payload.decode(Payload.encode(Payload.Avatar(Payload.AVATAR_ASK))))
+        assertEquals(
+            Payload.Avatar(Payload.AVATAR_NONE),
+            Payload.decode(Payload.encode(Payload.Avatar(Payload.AVATAR_NONE))),
+        )
+    }
+
+    @Test
+    fun `a picture record that could not be used is unknown, not a picture`() {
+        val bad = listOf(
+            // Not a version the relay would ever give.
+            """{"v":1,"k":"avatar","ver":"nope","key":"AAAA","size":10}""",
+            // A picture with no key opens nothing.
+            """{"v":1,"k":"avatar","ver":"0123456789abcdef","size":10}""",
+            // Bigger than a picture can be, so it did not come this way.
+            """{"v":1,"k":"avatar","ver":"0123456789abcdef","key":"AAAA","size":900000}""",
+        )
+        bad.forEach { assertEquals(Payload.Unknown, Payload.decode(Payload.pad(it.toByteArray()))) }
+        assertTrue(Payload.isAvatarVersion("0123456789abcdef"))
+        assertFalse(Payload.isAvatarVersion("0123456789ABCDEF"))
     }
 }

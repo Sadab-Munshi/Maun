@@ -38,6 +38,18 @@ sealed interface Payload {
 
     data class Receipt(val delivered: List<String> = emptyList(), val read: List<String> = emptyList()) : Payload
 
+    /**
+     * A profile picture, said to somebody one talks to: its [version], the
+     * [key] that opens it (base64, a key of its own), and its [size] before
+     * sealing. The picture itself sits on the relay under the sender's ID,
+     * sealed, and only this key opens it; the key never leaves an encrypted
+     * message.
+     *
+     * An empty [version] is not a picture but a question: "what picture do
+     * you have?". [NONE] says the sender has taken their picture down.
+     */
+    data class Avatar(val version: String, val key: String = "", val size: Long = 0L) : Payload
+
     /** Something a newer version of Maun sent. It is dropped without complaint. */
     data object Unknown : Payload
 
@@ -51,6 +63,20 @@ sealed interface Payload {
         const val MAX_TEXT_BYTES = 4096
 
         const val MAX_RECEIPT_IDS = 50
+
+        /** Told to somebody who asks: this phone has no picture to show. */
+        const val AVATAR_NONE = "none"
+
+        /** The question "which picture do you have?" carries no version. */
+        const val AVATAR_ASK = ""
+
+        /** A picture's version: 16 random bytes in lower-case hex, made by the phone that owns it. */
+        private val AVATAR_VERSION = Regex("^[0-9a-f]{16}$")
+
+        /** The most a picture can be, as the relay takes it. */
+        private const val MAX_AVATAR_BYTES = 256L * 1024L
+
+        fun isAvatarVersion(value: String): Boolean = AVATAR_VERSION.matches(value)
 
         const val CALL_OFFER = "offer"
         const val CALL_ANSWER = "answer"
@@ -106,6 +132,11 @@ sealed interface Payload {
             when (payload) {
                 is Text -> json.put("k", "text").put("id", payload.id).put("at", payload.sentAt).put("text", payload.text)
                 is File -> payload.file.toWire(json.put("k", "file").put("id", payload.id).put("at", payload.sentAt))
+                is Avatar -> {
+                    json.put("k", "avatar").put("ver", payload.version)
+                    if (payload.key.isNotEmpty()) json.put("key", payload.key)
+                    if (payload.size > 0L) json.put("size", payload.size)
+                }
                 is Receipt -> {
                     json.put("k", "receipt")
                     if (payload.delivered.isNotEmpty()) json.put("delivered", JSONArray(payload.delivered))
@@ -159,6 +190,17 @@ sealed interface Payload {
                     Call(callId, type, sdp, candidate, json.optString("why").take(40).ifEmpty { null }, video = json.optBoolean("video"))
                 }
                 "receipt" -> Receipt(ids(json.optJSONArray("delivered")), ids(json.optJSONArray("read")))
+                "avatar" -> {
+                    val version = json.optString("ver")
+                    if (version != AVATAR_NONE && version != AVATAR_ASK && !isAvatarVersion(version)) return Unknown
+                    val key = json.optString("key")
+                    val size = json.optLong("size", 0L)
+                    // A picture with nothing to open, or one too large to have come this way, says nothing.
+                    if (version != AVATAR_NONE && version != AVATAR_ASK && (key.isEmpty() || size !in 1..MAX_AVATAR_BYTES)) {
+                        return Unknown
+                    }
+                    Avatar(version, key, size)
+                }
                 else -> Unknown
             }
         }

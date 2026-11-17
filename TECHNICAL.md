@@ -24,7 +24,14 @@ Based on our available infrastructure and experimental scope, the entire stack r
    - **Hard-deletes** stored payloads immediately upon receiving an `ACK` frame from the recipient.
 3. **Push Wake-Up Trigger:** Sends an empty HTTP wake-up ping to the recipient's UnifiedPush endpoint when a message arrives while offline.
 4. **Presigned R2 Upload Endpoint:** Generates short-lived upload/download URLs enforcing a strict **25 MB max file size**.
-5. **TURN Credential Endpoint:** Fetches short-lived ICE/TURN tokens from Cloudflare Realtime when a user initiates a call.
+5. **Profile Pictures (`/v1/avatars`):** One sealed picture per account,
+   stored in R2 under `avatar/<mailbox id>` with a version in its metadata.
+   `PUT` replaces it (256 KB at most), `GET /v1/avatars/<id>` hands it to any
+   logged-in account, `DELETE` removes it. Pictures are exempt from the
+   24-hour file sweep: only their owner removes them. The bytes are sealed by
+   the phone with a key of its own, and that key travels only inside
+   end-to-end encrypted messages, so the relay stores a face it cannot open.
+6. **TURN Credential Endpoint:** Fetches short-lived ICE/TURN tokens from Cloudflare Realtime when a user initiates a call.
 
 ### B. Android Client (`/android` — Kotlin)
 1. **Encryption Engine (`libsignal-client`):**
@@ -37,7 +44,15 @@ Based on our available infrastructure and experimental scope, the entire stack r
 3. **Network & Sync Layer:**
    - **OkHttp WebSocket Client** with automatic reconnection for foreground chat and WebRTC signaling (`OFFER`, `ANSWER`, `ICE`).
    - **UnifiedPush Receiver + WorkManager** to fetch and decrypt messages silently in the background.
-4. **Media & Calling:**
+4. **Profile Pictures:** The picture is shrunk (512 px) on the phone, sealed
+   with `FileCipher`, and put on the relay; contacts hear of a new version in
+   a `Payload.Avatar` message (`ver`, `key`, `size`), ask for one when a
+   contact is added (`ver` empty), and are told when it is taken down (`ver`
+   = `none`). A picture that cannot be uploaded waits for the next
+   connection. A photo kept for a contact on this phone only lives in a file
+   of its own and is never sent anywhere; the picture a contact chose can only
+   be replaced on their own phone.
+5. **Media & Calling:**
    - **Opus Audio Recorder/Player** for compact voice messages.
    - **WebRTC (`org.webrtc`)** configured with `iceTransportPolicy = RELAY` (using Cloudflare TURN) for private voice and video calls.
 

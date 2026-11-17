@@ -9,6 +9,7 @@ import org.maun.messenger.webrtc.CallManager
 import org.maun.messenger.webrtc.CallSignals
 import org.maun.messenger.webrtc.CallUi
 import org.maun.messenger.webrtc.RingService
+import org.maun.messenger.network.AvatarApi
 import org.maun.messenger.network.FileApi
 import org.maun.messenger.network.Usernames
 import org.maun.messenger.security.DeviceFingerprint
@@ -27,6 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -178,6 +180,14 @@ class Messenger(context: Context) {
 
     @Volatile
     private var files: FileTransfers? = null
+
+    @Volatile
+    private var pictures: ProfilePictures? = null
+
+    private val _avatarChanges = MutableStateFlow(0)
+
+    /** Bumped whenever a profile picture on this phone is new, so that avatars redraw. */
+    val avatarChanges: StateFlow<Int> = _avatarChanges.asStateFlow()
 
     private val _waiting = MutableStateFlow<Map<String, String>>(emptyMap())
 
@@ -396,6 +406,7 @@ class Messenger(context: Context) {
             onLoggedIn = ::markRegistered,
             onOnline = {
                 chat.onOnline()
+                scope.launch { pictures?.sync() }
                 val ready = chat.link?.ready
                 scope.launch { onLoggedInAs(db, chat, ready?.email, ready?.name) }
                 val relayKey = PushAddress.keyForPushApp(ready?.relayKey)
@@ -425,6 +436,26 @@ class Messenger(context: Context) {
             whenOnline = { withTimeoutOrNull(ONLINE_WAIT_MILLIS) { created.state.first { it == RelayState.Online } } },
         )
         files = transfers
+        val avatars = ProfilePictures(
+            context = appContext,
+            api = AvatarApi(
+                relayUrl = relayUrl,
+                selfId = identity.id,
+                token = { created.ready?.filesToken },
+                onBanned = { scope.launch { onBanned() } },
+            ),
+            meta = db.meta(),
+            contacts = { _contacts.value.map { it.id } },
+            ask = { peer -> chat.askAvatar(peer) },
+            send = { peer, picture -> chat.sendAvatar(peer, picture) },
+            whenOnline = { withTimeoutOrNull(ONLINE_WAIT_MILLIS) { created.state.first { it == RelayState.Online } } },
+            onChanged = { _avatarChanges.update { it + 1 } },
+        )
+        pictures = avatars
+        chat.myAvatar = { avatars.mine() }
+        chatScope.launch { avatars.load() }
+        chatScope.launch { avatars.sync() }
+        chatScope.launch { chat.avatars.collect { (peer, picture) -> avatars.onSignal(peer, picture) } }
         chatScope.launch { transfers.progress.collect { _fileProgress.value = it } }
         chatScope.launch { transfers.problem.collect { _fileProblem.value = it } }
         chatScope.launch { transfers.sweep() }
@@ -663,6 +694,28 @@ class Messenger(context: Context) {
                 if (wanted()) connection?.start()
             }
         }
+    }
+
+    // ---- Profile pictures -------------------------------------------------------
+
+    /**
+     * Keeps the picture at [uri] as this phone's own and tells its contacts,
+     * now or at the next connection. Returns why a picture could not be read.
+     */
+    suspend fun setAvatar(uri: Uri): String? =
+        (pictures ?: return "Maun is not ready yet. Try again in a moment.").publish(uri)
+
+    /** Takes this phone's picture down, here and from everyone who was shown it. */
+    suspend fun removeAvatar() {
+        pictures?.remove()
+    }
+
+    /** Whether this phone's picture is still waiting for a connection to be shared. */
+    fun avatarAwaitingUpload(): Boolean = pictures?.awaitingUpload == true
+
+    /** Asks for the pictures of every contact this phone has not been told about. */
+    fun syncAvatars() {
+        scope.launch { pictures?.sync() }
     }
 
     // ---- Files -----------------------------------------------------------------
@@ -907,6 +960,8 @@ class Messenger(context: Context) {
             database?.contacts()?.put(contact)
         }
         engine?.onContactAdded(id)
+        // A new contact is shown with their picture as soon as they answer.
+        engine?.askAvatar(id)
     }
 
     /** Changes what this phone calls a contact. Nobody else is told. */

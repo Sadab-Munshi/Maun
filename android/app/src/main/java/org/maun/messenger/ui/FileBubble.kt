@@ -2,7 +2,6 @@ package org.maun.messenger.ui
 
 import android.graphics.Bitmap
 import android.net.Uri
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -41,6 +40,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.delay
@@ -106,6 +107,15 @@ internal fun fileStep(file: Attachment, outgoing: Boolean, active: Boolean): Fil
     // Marked as under way, but nothing is running: the app was closed in the middle.
     else -> FileStep.Retry
 }
+
+/**
+ * Whether a file's bubble offers to save it. Only a file that arrived, is on
+ * this phone, is not a voice message, and is not already in Gallery or
+ * Downloads: there is nothing to save of one's own file, and nothing more to
+ * save of one that has been saved.
+ */
+internal fun fileNeedsSaving(message: MessageEntity, file: Attachment, step: FileStep): Boolean =
+    step == FileStep.Open && !message.outgoing && !message.savedToGallery && !file.isVoice
 
 /** Whether this message renders as an edge-to-edge photo bubble with overlaid timestamp. */
 internal fun isPictureBubble(message: MessageEntity, file: Attachment, step: FileStep): Boolean {
@@ -282,13 +292,15 @@ fun FileContent(
                 color = quiet,
             )
         }
-        // Saving is asked for on purpose; opening a file is what a tap does.
-        if (step == FileStep.Open) {
+        // Saving is asked for on purpose; opening a file is what a tap does. A
+        // file one sent is already here, and one already saved says so in the
+        // line above, so neither gets a button that would do nothing new.
+        if (fileNeedsSaving(message, file, step)) {
             IconButton(onClick = { files.onSave(message.seq, file) }, modifier = Modifier.size(36.dp)) {
                 Icon(
                     imageVector = MaunIcons.Download,
-                    contentDescription = if (message.savedToGallery) "Saved. Tap to save again" else "Save to this phone",
-                    tint = text.copy(alpha = if (message.savedToGallery) 0.55f else 0.85f),
+                    contentDescription = "Save to this phone",
+                    tint = text.copy(alpha = 0.85f),
                     modifier = Modifier.size(20.dp),
                 )
             }
@@ -357,41 +369,53 @@ private fun VoiceContent(
     }
 }
 
-/** A picture, as large as the screen allows, over everything else. */
+/**
+ * A picture, as large as the screen allows, over everything else.
+ *
+ * It is shown in a window of its own rather than laid over the conversation,
+ * which is what keeps the conversation from being touched: Android sends a
+ * touch to the topmost window and nowhere else, so no call button under the
+ * picture can be pressed, no message opened and nothing scrolled by accident,
+ * however the picture is tapped, held or dragged.
+ */
 @Composable
 fun ImageViewer(seq: Long, file: Attachment, files: FileActions, onSave: () -> Unit, onClose: () -> Unit) {
-    BackHandler(onBack = onClose)
     val picture by produceState<Bitmap?>(null, seq) { value = files.loadImage(seq, file, FULL_PIXELS) }
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        val shown = picture
-        if (shown != null) {
-            Image(
-                bitmap = shown.asImageBitmap(),
-                contentDescription = file.name,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize(),
-            )
-        } else {
-            CircularProgressIndicator(modifier = Modifier.align(Alignment.Center), color = Color.White)
-        }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.45f))
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onClose) { Icon(MaunIcons.Close, contentDescription = "Close", tint = Color.White) }
-            Text(
-                text = file.name,
-                color = Color.White,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-            )
-            IconButton(onClick = onSave) { Icon(MaunIcons.Download, contentDescription = "Save to Gallery", tint = Color.White) }
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            val shown = picture
+            if (shown != null) {
+                Image(
+                    bitmap = shown.asImageBitmap(),
+                    contentDescription = file.name,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center), color = Color.White)
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onClose) { Icon(MaunIcons.Close, contentDescription = "Close", tint = Color.White) }
+                Text(
+                    text = file.name,
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                )
+                IconButton(onClick = onSave) { Icon(MaunIcons.Download, contentDescription = "Save to Gallery", tint = Color.White) }
+            }
         }
     }
 }

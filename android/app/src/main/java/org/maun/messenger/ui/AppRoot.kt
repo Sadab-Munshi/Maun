@@ -35,7 +35,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import org.maun.messenger.AccountState
 import org.maun.messenger.AppLock
-import org.maun.messenger.Avatars
 import org.maun.messenger.BuildConfig
 import org.maun.messenger.Messenger
 import org.maun.messenger.crypto.SafetyNumber
@@ -97,6 +96,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
     }
 
     val avatarRevision by viewModel.avatarRevision.collectAsStateWithLifecycle()
+    val avatarPending by viewModel.avatarPending.collectAsStateWithLifecycle()
     CompositionLocalProvider(LocalAvatarRevision provides avatarRevision) {
     when (val current = account) {
         AccountState.Loading -> Surface(modifier = Modifier.fillMaxSize()) {
@@ -305,8 +305,9 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             relayName = current.code.relay,
                             username = username,
                             memberEmail = memberEmail,
-                            onPhoto = { uri -> viewModel.setAvatar(Avatars.SELF, uri) },
-                            onRemovePhoto = { viewModel.removeAvatar(Avatars.SELF) },
+                            onPhoto = { uri -> viewModel.setAvatar(uri) },
+                            onRemovePhoto = { viewModel.removeAvatar() },
+                            sharingPending = avatarPending,
                             onShowCode = { screen = MY_CODE },
                             onBack = goBack,
                         )
@@ -400,8 +401,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                     viewModel.removeContact(detailsOf.id)
                                     goHome()
                                 },
-                                onPhoto = { uri -> viewModel.setAvatar(detailsOf.id, uri) },
-                                onRemovePhoto = { viewModel.removeAvatar(detailsOf.id) },
+                                onPhoto = { uri -> viewModel.setLocalAvatar(detailsOf.id, uri) },
+                                onRemovePhoto = { viewModel.removeLocalAvatar(detailsOf.id) },
                                 onCall = { video -> viewModel.startCall(detailsOf.id, video) },
                                 onBlock = {
                                     viewModel.block(detailsOf.id)

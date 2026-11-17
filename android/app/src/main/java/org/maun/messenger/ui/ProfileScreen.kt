@@ -33,9 +33,13 @@ import org.maun.messenger.AppLock
 import org.maun.messenger.Avatars
 
 /**
- * This phone's own profile: the picture people here see for them, and the ID
- * others need to reach them. The picture stays on this phone; it is not sent
- * to the relay or to anyone in a conversation.
+ * This phone's own profile: the picture their contacts see for them, and the
+ * ID others need to reach them.
+ *
+ * The picture is one's own to change and nobody else's. It is shrunk here,
+ * sealed with a key of its own, kept on the relay under this ID, and given to
+ * contacts inside ordinary encrypted messages, so they see a new picture
+ * without being told anything by the relay.
  */
 @Composable
 fun ProfileScreen(
@@ -45,6 +49,8 @@ fun ProfileScreen(
     memberEmail: String?,
     onPhoto: (android.net.Uri) -> Unit,
     onRemovePhoto: () -> Unit,
+    /** The picture chosen here is kept, but has not reached the relay yet. */
+    sharingPending: Boolean = false,
     onShowCode: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -104,10 +110,15 @@ fun ProfileScreen(
                 }
             }
             Text(
-                text = "Your photo is kept on this phone only. It is never uploaded.",
+                text = when {
+                    sharingPending -> "Saved. It goes to the people you talk to as soon as Maun can reach the relay."
+                    hasPhoto -> "The people you talk to see this picture. It travels sealed, and only they can open it."
+                    else -> "You have no picture. The people you talk to see your initial."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 12.dp),
             )
         }
 
@@ -144,6 +155,7 @@ private fun ProfilePreview() {
             memberEmail = null,
             onPhoto = {},
             onRemovePhoto = {},
+            sharingPending = false,
             onShowCode = {},
             onBack = {},
         )

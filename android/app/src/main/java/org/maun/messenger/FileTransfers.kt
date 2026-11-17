@@ -12,6 +12,7 @@ import androidx.core.content.FileProvider
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
@@ -54,6 +55,9 @@ class FileTransfers(
     private val dir = File(appContext.filesDir, "media")
     private val plainDir = File(appContext.cacheDir, "media")
     private val cameraDir = File(appContext.cacheDir, "camera")
+
+    /** Copies named as their senders named them, one folder per message, for the apps that open them. */
+    private val openDir = File(appContext.cacheDir, "open")
 
     private val jobs = ConcurrentHashMap<Long, Job>()
     private val _progress = MutableStateFlow<Map<Long, Float>>(emptyMap())
@@ -471,13 +475,53 @@ class FileTransfers(
     /**
      * A `content://` address for the file of message [seq], for whichever app
      * on this phone reads that kind of file. Null when the file is not here.
+     *
+     * A viewer names what it opens after the file it was handed, so the copy
+     * given to it carries the file's own name: a PDF opens as `Report.pdf` and
+     * not as the `25.bin` Maun keeps it under. That copy is a hard link to the
+     * decrypted copy already on this phone, so the bytes exist once; nothing
+     * is fetched from the relay again, and nothing is stored twice.
      */
     suspend fun openTarget(seq: Long, file: Attachment): Uri? = withContext(Dispatchers.IO) {
         if (!stored(seq).exists() && !plain(seq).exists()) return@withContext null
         val ready = ensurePlainCache(seq, file.secretBytes()) ?: return@withContext null
+        val named = named(seq, ready, file.name) ?: ready
         try {
-            FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", ready)
+            FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", named)
         } catch (_: IllegalArgumentException) {
+            null
+        }
+    }
+
+    /**
+     * [source] under the name its sender gave it, in a folder of its own so two
+     * files called `report.pdf` never meet. Null when the name cannot be given.
+     */
+    private fun named(seq: Long, source: File, name: String): File? {
+        val clean = Attachment.cleanName(name).trim().takeIf { it.isNotEmpty() && it != "." && it != ".." } ?: "file"
+        val folder = File(openDir, seq.toString())
+        val target = File(folder, clean)
+        if (target.exists() && target.length() == source.length() && target.lastModified() != 0L) return target
+        folder.mkdirs()
+        // The file may have been renamed since: only the current name stays.
+        folder.listFiles()?.forEach { if (it.name != clean) it.delete() }
+        target.delete()
+        // A link, not a copy: the same bytes under a second name.
+        val linked = try {
+            Files.createLink(target.toPath(), source.toPath())
+            true
+        } catch (_: IOException) {
+            false
+        } catch (_: UnsupportedOperationException) {
+            false
+        }
+        if (linked) return target
+        // A file system that will not link. A copy keeps the name right, and the
+        // sweep below removes it with the rest.
+        return try {
+            source.inputStream().use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+            target
+        } catch (_: IOException) {
             null
         }
     }
@@ -542,6 +586,12 @@ class FileTransfers(
         cameraDir.listFiles()?.forEach { file ->
             if (file.lastModified() < old) file.delete()
         }
+        // The named copies are only links to what is already here, and go
+        // whenever the message they belong to is not one of the kept ones.
+        openDir.listFiles()?.forEach { folder ->
+            val seq = folder.name.toLongOrNull()
+            if (seq == null || seq !in kept) folder.deleteRecursively()
+        }
     }
 
     /** Stops every transfer and deletes every stored file. */
@@ -551,6 +601,7 @@ class FileTransfers(
         dir.listFiles()?.forEach { it.delete() }
         plainDir.listFiles()?.forEach { it.delete() }
         cameraDir.listFiles()?.forEach { it.delete() }
+        openDir.listFiles()?.forEach { it.deleteRecursively() }
     }
 
     private companion object {

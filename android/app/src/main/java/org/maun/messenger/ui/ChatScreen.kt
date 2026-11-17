@@ -917,8 +917,18 @@ private fun MessageRow(
                         )
                     }
                     if (file != null && fileStep == FileStep.Open && !file.isVoice) {
+                        // The word says what the action will do: a file that is
+                        // already in Gallery or Downloads is saved again, not saved.
                         DropdownMenuItem(
-                            text = { Text(if (file.isGalleryMedia) "Save to Gallery" else "Save") },
+                            text = {
+                                Text(
+                                    when {
+                                        message.savedToGallery -> "Save again"
+                                        file.isGalleryMedia -> "Save to Gallery"
+                                        else -> "Save to Downloads/Maun"
+                                    },
+                                )
+                            },
                             leadingIcon = { Icon(MaunIcons.Download, contentDescription = null) },
                             onClick = {
                                 menu = false

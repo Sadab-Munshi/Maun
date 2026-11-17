@@ -12,6 +12,8 @@ import org.maun.messenger.data.ChatSummary
 import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.data.MessageKind
 import org.maun.messenger.data.OutboxEntity
+import org.maun.messenger.data.MetaDao
+import org.maun.messenger.data.MetaEntry
 import org.maun.messenger.data.Transactor
 
 /**
@@ -30,6 +32,7 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
         val kyberUses: Set<String> = emptySet(),
         val lastMessageSeq: Long = 0,
         val lastOutboxSeq: Long = 0,
+        val meta: Map<String, String> = emptyMap(),
     )
 
     private val lock = ReentrantLock()
@@ -51,6 +54,15 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
             throw e
         } finally {
             depth--
+        }
+    }
+
+    /** The small key/value store beside the messages: registration, tokens, picture versions. */
+    fun meta(): MetaDao = object : MetaDao {
+        override suspend fun get(key: String): String? = lock.withLock { state.meta[key] }
+
+        override suspend fun put(entry: MetaEntry) = lock.withLock {
+            state = state.copy(meta = state.meta + (entry.key to entry.value))
         }
     }
 

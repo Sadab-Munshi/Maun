@@ -227,11 +227,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Which pictures exist, by person: read after a change to know what to draw. */
     val avatarRevision: StateFlow<Int> = _avatarRevision.asStateFlow()
 
-    /** Keeps the phone's own picture ([Avatars.SELF]) or a contact's. */
-    fun setAvatar(id: String, uri: Uri) {
+    /** Whether this phone's own picture is kept here but not yet shared with contacts. */
+    private val _avatarPending = MutableStateFlow(messenger.avatarAwaitingUpload())
+
+    val avatarPending: StateFlow<Boolean> = _avatarPending.asStateFlow()
+
+    init {
+        // A picture that arrived from a contact, or left for one, redraws the avatars.
         viewModelScope.launch {
-            val saved = Avatars.save(getApplication(), id, uri)
-            if (saved) {
+            messenger.avatarChanges.collect {
+                _avatarPending.value = messenger.avatarAwaitingUpload()
+                _avatarRevision.update { revision -> revision + 1 }
+            }
+        }
+    }
+
+    /**
+     * Keeps [uri] as this phone's own picture and shares it with contacts. The
+     * picture is shown here at once; it reaches the relay as soon as there is
+     * a connection, so no one is asked to wait for one.
+     */
+    fun setAvatar(uri: Uri) {
+        viewModelScope.launch {
+            val why = messenger.setAvatar(uri)
+            if (why != null) attachProblem.value = why
+            _avatarPending.value = messenger.avatarAwaitingUpload()
+            _avatarRevision.update { it + 1 }
+        }
+    }
+
+    /** Takes this phone's picture down, here and for the people it was shown to. */
+    fun removeAvatar() {
+        viewModelScope.launch {
+            messenger.removeAvatar()
+            _avatarPending.value = messenger.avatarAwaitingUpload()
+            _avatarRevision.update { it + 1 }
+        }
+    }
+
+    /**
+     * Keeps a picture of a contact on this phone only, without telling them or
+     * the relay: a note to oneself, kept apart from the picture they chose.
+     */
+    fun setLocalAvatar(id: String, uri: Uri) {
+        viewModelScope.launch {
+            if (Avatars.saveLocal(getApplication(), id, uri)) {
                 _avatarRevision.update { it + 1 }
             } else {
                 attachProblem.value = "That picture could not be read."
@@ -239,8 +279,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun removeAvatar(id: String) {
-        Avatars.remove(getApplication(), id)
+    fun removeLocalAvatar(id: String) {
+        Avatars.removeLocal(getApplication(), id)
         _avatarRevision.update { it + 1 }
     }
 

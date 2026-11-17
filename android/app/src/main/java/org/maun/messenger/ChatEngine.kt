@@ -90,6 +90,23 @@ class ChatEngine(
     /** A contact's ID changed, from the first to the second: they set Maun up again. */
     val moved: SharedFlow<Pair<String, String>> = _moved.asSharedFlow()
 
+    private val _avatars = MutableSharedFlow<Pair<String, Payload.Avatar>>(extraBufferCapacity = 16)
+
+    /**
+     * A contact has said something about their picture: that it is now this,
+     * that they have none, or that they would like to know which one this
+     * phone has. Kept by [ProfilePictures], not here: the engine only passes
+     * it on, because the picture itself is not a message.
+     */
+    val avatars: SharedFlow<Pair<String, Payload.Avatar>> = _avatars.asSharedFlow()
+
+    /**
+     * What this phone should answer when a contact asks which picture they
+     * have. Null (or nothing) while this phone has no picture to share.
+     */
+    @Volatile
+    var myAvatar: (() -> Payload.Avatar?)? = null
+
     /** Senders being looked up right now. */
     private val meeting = ConcurrentHashMap.newKeySet<String>()
 
@@ -627,6 +644,21 @@ class ChatEngine(
                         payload.delivered.forEach { dao.raiseStatus(from, it, MessageStatus.DELIVERED) }
                         payload.read.forEach { dao.raiseStatus(from, it, MessageStatus.READ) }
                         false
+                    }
+                    is Payload.Avatar -> {
+                        // Only people one has added hear about a picture, or are told about one.
+                        if (!dao.isContact(from)) return@inTransaction false
+                        if (payload.version == Payload.AVATAR_ASK) {
+                            val mine = myAvatar?.invoke() ?: Payload.Avatar(Payload.AVATAR_NONE)
+                            dao.insertOutbox(
+                                OutboxEntity(peer = from, messageId = null, payload = Payload.encode(mine)),
+                            )
+                            // Something to send, so the outbox is gone over at once.
+                            true
+                        } else {
+                            _avatars.tryEmit(from to payload)
+                            false
+                        }
                     }
                     is Payload.Call -> {
                         // Only people one has added can make the phone ring.

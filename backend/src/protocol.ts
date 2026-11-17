@@ -121,6 +121,26 @@ export const FILE_TTL_MS = 24 * 60 * 60 * 1000;
 /** What one account may upload in a day. */
 export const FILE_DAILY_BYTES = 250_000_000;
 export const FILE_DAILY_COUNT = 200;
+/**
+ * Profile pictures are kept under this prefix in the same bucket as files, one
+ * object per account, and are never swept: a picture stays until the person
+ * who owns it replaces or removes it. The object is the encrypted picture the
+ * phone made; its key travels only inside end-to-end encrypted messages, so
+ * the relay cannot see a face it stores.
+ */
+export const AVATAR_PREFIX = "avatar/";
+/** The most a profile picture may be: a face, shrunk to 512 pixels, and sealed. */
+export const MAX_AVATAR_BYTES = 256 * 1024;
+/** The name of the object that holds one account's picture. */
+export function avatarKey(mailboxId: string): string {
+  return `${AVATAR_PREFIX}${mailboxId}`;
+}
+/** A picture's version: 16 random bytes in lower-case hex, new with every upload. */
+const AVATAR_VERSION = /^[0-9a-f]{16}$/;
+export function isAvatarVersion(value: string): boolean {
+  return AVATAR_VERSION.test(value);
+}
+
 /** The key of a stored file: 32 random bytes in lower-case hex. */
 const FILE_KEY = /^[0-9a-f]{64}$/;
 export function isFileKey(value: string): boolean {

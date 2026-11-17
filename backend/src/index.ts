@@ -2,7 +2,16 @@ import { handleAuth } from "./auth";
 import { memberConfig, sweepMembers } from "./members";
 import { askTurn, turnConfig } from "./turn";
 import { type FileAnswer, type Mailbox, tooManyRequests } from "./mailbox";
-import { FILE_TTL_MS, MAX_FILE_BYTES, PROTOCOL_VERSION, isFileKey, isMailboxId } from "./protocol";
+import {
+  AVATAR_PREFIX,
+  FILE_TTL_MS,
+  MAX_AVATAR_BYTES,
+  MAX_FILE_BYTES,
+  PROTOCOL_VERSION,
+  avatarKey,
+  isFileKey,
+  isMailboxId,
+} from "./protocol";
 
 export { Mailbox } from "./mailbox";
 
@@ -61,6 +70,13 @@ export default {
     // The email login and the administrator's page of a member-only relay.
     const auth = await handleAuth(request, env, url);
     if (auth) return auth;
+
+    if (url.pathname === "/v1/avatars") {
+      if (request.method === "PUT") return putAvatar(request, env);
+      if (request.method === "DELETE") return deleteAvatar(request, env);
+    }
+    const avatar = /^\/v1\/avatars\/([^/]+)$/.exec(url.pathname);
+    if (request.method === "GET" && avatar) return getAvatar(request, env, avatar[1] ?? "");
 
     if (request.method === "POST" && url.pathname === "/v1/files") return upload(request, env);
     const file = /^\/v1\/files\/([^/]+)$/.exec(url.pathname);
@@ -163,6 +179,83 @@ async function download(request: Request, env: Env, key: string): Promise<Respon
   });
 }
 
+// ---- Profile pictures ------------------------------------------------------------
+//
+// One picture per account, kept under `avatar/<mailbox id>` and replaced in
+// place. Like a file, it arrives already encrypted, and its key travels only
+// inside end-to-end encrypted messages between people who have each other as
+// contacts; the relay stores, and can read, nothing but ciphertext. It is not
+// a message and never expires on its own, so the hourly sweep leaves it be:
+// the only thing that removes a picture is its owner.
+
+/** Stores, or replaces, the picture of the account in the credential. */
+async function putAvatar(request: Request, env: Env): Promise<Response> {
+  const declared = Number(request.headers.get("Content-Length") ?? "");
+  if (!Number.isSafeInteger(declared) || declared <= 0 || !request.body) {
+    return Response.json({ error: "length_required" }, { status: 411 });
+  }
+  if (declared > MAX_AVATAR_BYTES) {
+    return Response.json({ error: "too_large", max: MAX_AVATAR_BYTES }, { status: 413 });
+  }
+  // A picture does not count against the day's allowance for files: it is
+  // small, it replaces itself, and it is not part of a conversation.
+  const answer = await allowed(request, env, 0);
+  if (answer !== "ok") return refusal(answer);
+  const who = credentials(request);
+  if (!who) return refusal("denied");
+
+  const ver = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const key = avatarKey(who.mailboxId);
+  let stored: R2Object | null;
+  try {
+    const exact = new FixedLengthStream(declared);
+    const copied = request.body.pipeTo(exact.writable);
+    [stored] = await Promise.all([
+      env.FILES.put(key, exact.readable, { customMetadata: { ver } }),
+      copied,
+    ]);
+  } catch {
+    await env.FILES.delete(key).catch(() => {});
+    return Response.json({ error: "incomplete" }, { status: 400 });
+  }
+  if (!stored || stored.size > MAX_AVATAR_BYTES) {
+    await env.FILES.delete(key).catch(() => {});
+    return Response.json({ error: "too_large", max: MAX_AVATAR_BYTES }, { status: 413 });
+  }
+  return Response.json({ ver, size: stored.size }, { status: 201 });
+}
+
+/**
+ * Hands out the encrypted picture of [id] to any account that can log in. A
+ * picture is useless without the key from an encrypted message, and only
+ * people one has as contacts are ever given one.
+ */
+async function getAvatar(request: Request, env: Env, id: string): Promise<Response> {
+  if (!isMailboxId(id)) return Response.json({ error: "no_avatar" }, { status: 404 });
+  const answer = await allowed(request, env, 0);
+  if (answer !== "ok") return refusal(answer);
+  const object = await env.FILES.get(avatarKey(id));
+  if (!object) return Response.json({ error: "no_avatar" }, { status: 404 });
+  return new Response(object.body, {
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": String(object.size),
+      "Cache-Control": "no-store",
+      "X-Maun-Avatar-Version": object.customMetadata?.ver ?? "",
+    },
+  });
+}
+
+/** Removes the picture of the account in the credential. Doing so twice is not an error. */
+async function deleteAvatar(request: Request, env: Env): Promise<Response> {
+  const answer = await allowed(request, env, 0);
+  if (answer !== "ok") return refusal(answer);
+  const who = credentials(request);
+  if (!who) return refusal("denied");
+  await env.FILES.delete(avatarKey(who.mailboxId));
+  return new Response(null, { status: 204 });
+}
+
 /** Deletes every stored file that is a day old. Returns how many went. */
 export async function deleteOldFiles(env: Env, now: number): Promise<number> {
   let deleted = 0;
@@ -170,7 +263,10 @@ export async function deleteOldFiles(env: Env, now: number): Promise<number> {
   // At most 20,000 names a run; the next hour takes up what is left.
   for (let page = 0; page < 20; page++) {
     const listing = await env.FILES.list({ limit: 1000, ...(cursor ? { cursor } : {}) });
-    const old = listing.objects.filter((object) => now - object.uploaded.getTime() >= FILE_TTL_MS).map((object) => object.key);
+    // A profile picture is not a file of a conversation: it has no day after which it goes.
+    const old = listing.objects
+      .filter((object) => !object.key.startsWith(AVATAR_PREFIX) && now - object.uploaded.getTime() >= FILE_TTL_MS)
+      .map((object) => object.key);
     if (old.length > 0) {
       await env.FILES.delete(old);
       deleted += old.length;

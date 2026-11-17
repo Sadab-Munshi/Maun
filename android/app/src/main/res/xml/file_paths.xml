@@ -4,4 +4,7 @@
     <cache-path name="camera" path="camera/" />
     <!-- Files decrypted again for the app that shows them (a PDF reader, a player). -->
     <cache-path name="media" path="media/" />
+    <!-- The same files, named as their senders named them, so a viewer shows
+         "Report.pdf" rather than the number Maun keeps them under. -->
+    <cache-path name="open" path="open/" />
 </paths>
