@@ -580,6 +580,19 @@ class ChatEngine(
         if (replies) kick()
     }
 
+    /** Queues a profile-picture message for [peer] and starts sending at once. */
+    suspend fun sendAvatar(peer: String, picture: Payload.Avatar) {
+        withContext(io) {
+            tx.inTransaction {
+                dao.insertOutbox(OutboxEntity(peer = peer, messageId = null, payload = Payload.encode(picture)))
+            }
+        }
+        kick()
+    }
+
+    /** Asks [peer] which picture they have, so that a new contact is shown with one. */
+    suspend fun askAvatar(peer: String) = sendAvatar(peer, Payload.Avatar(Payload.AVATAR_ASK))
+
     /**
      * Deletes one message from this phone. If it had not left yet, it never
      * will; if it had, the other person keeps their copy.

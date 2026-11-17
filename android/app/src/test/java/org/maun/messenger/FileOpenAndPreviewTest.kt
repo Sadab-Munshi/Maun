@@ -21,6 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.maun.messenger.crypto.FileCipher
+import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.crypto.Identity
 import org.maun.messenger.crypto.SignalSessions
 import org.maun.messenger.network.FileApi
