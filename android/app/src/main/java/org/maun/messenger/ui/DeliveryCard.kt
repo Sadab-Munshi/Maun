@@ -20,7 +20,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,7 +61,6 @@ fun DeliveryCard(
     problem: String?,
     onChoosePushApp: (String) -> Unit,
     onGooglePush: (Boolean) -> Unit,
-    onStayConnected: (Boolean) -> Unit,
     onChanged: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -102,7 +100,6 @@ fun DeliveryCard(
                     if (ui.pushApp != null) {
                         Note("This phone does not need it: ${ui.pushApp} can wake Maun instead.")
                     }
-                    TextButton(onClick = { onStayConnected(false) }) { Text("Stop staying connected") }
                 }
 
                 ui.pushApp != null && ui.google -> {
@@ -112,7 +109,6 @@ fun DeliveryCard(
                             "never who wrote or what the message says.",
                     )
                     if (problem != null) Note(problem, warning = true)
-                    TextButton(onClick = { onGooglePush(false) }) { Text("Do not use Google") }
                 }
 
                 ui.pushApp != null -> {
@@ -154,7 +150,7 @@ fun DeliveryCard(
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !refused) {
                             askToNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
                         } else {
-                            context.open(notificationSettings(context))
+                            context.openAppNotificationSettings()
                         }
                     },
                 ) { Text("Allow notifications") }
@@ -162,6 +158,36 @@ fun DeliveryCard(
                 Note("A locked screen is only told that a message arrived. What an unlocked one shows is set below.")
             }
         }
+    }
+}
+
+/**
+ * Settings' one entry about notifications: whether Maun may put one up at all,
+ * and the way to this phone's own page for them. What wakes Maun, and whether
+ * it keeps anything running, is none of the user's business any more: the app
+ * works it out by itself.
+ */
+@Composable
+fun NotificationsSection(ui: DeliveryUi, onChanged: () -> Unit) {
+    val context = LocalContext.current
+    var refused by rememberSaveable { mutableStateOf(false) }
+    val askToNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) refused = true
+        onChanged()
+    }
+    if (!ui.notificationsAllowed) {
+        Note("Maun is not allowed to show notifications, so it cannot tell you about new messages.", warning = true)
+        OutlinedButton(
+            onClick = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !refused) {
+                    askToNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    context.openAppNotificationSettings()
+                }
+            },
+        ) { Text("Allow notifications") }
+    } else {
+        Note("New messages and calls are announced as they arrive, also while Maun is closed.")
     }
 }
 
@@ -174,8 +200,8 @@ private fun Note(text: String, warning: Boolean = false) {
     )
 }
 
-private fun notificationSettings(context: Context): Intent =
-    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+internal fun Context.openAppNotificationSettings() =
+    open(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
 
 // Asking to be left running is what a messenger without a push service has to
 // do, and the user turned "Stay connected" on themselves.
@@ -183,7 +209,7 @@ private fun notificationSettings(context: Context): Intent =
 private fun batterySettings(context: Context): Intent =
     Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}"))
 
-private fun Context.open(intent: Intent) {
+internal fun Context.open(intent: Intent) {
     try {
         startActivity(intent)
     } catch (_: ActivityNotFoundException) {
@@ -196,10 +222,10 @@ private fun Context.open(intent: Intent) {
 private fun DeliveryPreview() {
     MaunTheme {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(16.dp)) {
-            DeliveryCard(DeliveryUi(pushApp = "Google's push service", google = true), null, {}, {}, {}, {})
-            DeliveryCard(DeliveryUi(pushApp = "Sunup"), null, {}, {}, {}, {})
-            DeliveryCard(DeliveryUi(notificationsAllowed = false, googleOffered = true), null, {}, {}, {}, {})
-            DeliveryCard(DeliveryUi(stayConnected = true, unrestricted = false), null, {}, {}, {}, {})
+            DeliveryCard(DeliveryUi(pushApp = "Google's push service", google = true), null, {}, {}, {})
+            DeliveryCard(DeliveryUi(pushApp = "Sunup"), null, {}, {}, {})
+            DeliveryCard(DeliveryUi(notificationsAllowed = false, googleOffered = true), null, {}, {}, {})
+            DeliveryCard(DeliveryUi(stayConnected = true, unrestricted = false), null, {}, {}, {})
         }
     }
 }

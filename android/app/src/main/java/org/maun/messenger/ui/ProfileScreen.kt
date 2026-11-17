@@ -12,11 +12,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,9 +57,12 @@ fun ProfileScreen(
     verified: Boolean = false,
     onShowCode: () -> Unit,
     onBack: () -> Unit,
+    /** Signs this phone out without touching anything that is on it: see [Messenger.logOut]. */
+    onLogOut: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var hasPhoto by remember(code) { mutableStateOf(Avatars.hasShared(context, Avatars.SELF)) }
+    var confirmingLogOut by remember { mutableStateOf(false) }
 
     val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         AppLock.externalFlow = false
@@ -150,6 +155,42 @@ fun ProfileScreen(
             Spacer(modifier = Modifier.width(8.dp))
             Text("Show my code")
         }
+
+        Spacer(modifier = Modifier.size(16.dp))
+
+        SectionTitle("Account")
+        OutlinedButton(
+            onClick = { confirmingLogOut = true },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Log out") }
+        Text(
+            text = "Signs this phone out. Your chats, pictures and ID stay on it, and logging " +
+                "in again on this phone brings back the same account. This is not Clear data, " +
+                "and it does not delete your account.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    if (confirmingLogOut) {
+        AlertDialog(
+            onDismissRequest = { confirmingLogOut = false },
+            title = { Text("Log out of Maun?") },
+            text = {
+                Text(
+                    "Maun stops connecting and stops being woken for new messages until you log " +
+                        "in again. Your chats, your pictures, your settings and your Maun ID stay " +
+                        "on this phone, and nothing is deleted from the relay.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmingLogOut = false
+                    onLogOut()
+                }) { Text("Log out") }
+            },
+            dismissButton = { TextButton(onClick = { confirmingLogOut = false }) { Text("Stay") } },
+        )
     }
 }
 

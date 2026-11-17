@@ -91,6 +91,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** The relay's owner has shut this member out. */
     val banned = messenger.banned
 
+    /** This phone has been signed out. The chats and the ID are still here. */
+    val signedOut = messenger.signedOut
+
+    /** Signing out, WhatsApp's way: keep everything, stop connecting, stop being woken. */
+    fun logOut() {
+        viewModelScope.launch { messenger.logOut() }
+    }
+
+    /** Signing back in on this phone: same ID, same chats, same pictures. */
+    fun logIn() {
+        viewModelScope.launch { messenger.resumeSession() }
+    }
+
     /** Shown once right after first-time login so permissions work out of the box. */
     val needsPermissionSetup = messenger.needsPermissionSetup
 

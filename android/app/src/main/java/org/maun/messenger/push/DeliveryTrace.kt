@@ -30,7 +30,7 @@ object DeliveryTrace {
     const val CALL = "call"
     const val FETCH_START = "fetch-start"
     const val FETCH_DONE = "fetch-done"
-    const val FETCH_LATE = "fetch-late"
+    const val FETCH_AGAIN = "fetch-again"
     const val SHOWN = "shown"
 
     /**

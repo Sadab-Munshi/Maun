@@ -50,7 +50,9 @@ import org.maun.messenger.ui.MaunTheme
 import org.maun.messenger.ui.PermissionSetupState
 import org.maun.messenger.ui.PermissionsScreen
 import org.maun.messenger.ui.PrivacyUi
+import org.maun.messenger.ui.ProfileScreen
 import org.maun.messenger.ui.SettingsScreen
+import org.maun.messenger.ui.SignedOutScreen
 import org.maun.messenger.ui.SoundChoices
 import org.maun.messenger.SoundSettings
 import org.robolectric.RobolectricTestRunner
@@ -105,7 +107,6 @@ class ScreensTest {
             pushProblem = null,
             onChoosePushApp = {},
             onGooglePush = {},
-            onStayConnected = {},
             onDeliveryChanged = {},
             onShowMyCode = {},
             onAddContact = {},
@@ -167,13 +168,9 @@ class ScreensTest {
             relayName = "maun.example.workers.dev",
             relay = RelayState.Online,
             delivery = DeliveryUi(pushApp = "Google's push service", google = true),
-            pushProblem = null,
             privacy = PrivacyUi(appLock = true),
             blockedCount = 2,
-            onChoosePushApp = {},
-            onGooglePush = {},
-            onStayConnected = {},
-            onDeliveryChanged = {},
+            onNotificationsChanged = {},
             onAppLock = {},
             onBlockScreenshots = {},
             onOpenBlocked = {},
@@ -227,7 +224,6 @@ class ScreensTest {
             pushProblem = null,
             onChoosePushApp = {},
             onGooglePush = {},
-            onStayConnected = {},
             onDeliveryChanged = {},
             onShowMyCode = {},
             onAddContact = {},
@@ -505,6 +501,32 @@ class ScreensTest {
                 incoming = SoundSettings.INCOMING_SYSTEM,
             ),
         )
+    }
+
+    @Composable
+    private fun Profile(hasPhoto: Boolean = false) {
+        ProfileScreen(
+            code = asha.id,
+            relayName = "maun.example.workers.dev",
+            username = "asha",
+            memberEmail = "asha@example.com",
+            onPhoto = {},
+            onRemovePhoto = {},
+            sharingPending = !hasPhoto,
+            onShowCode = {},
+            onBack = {},
+            onLogOut = {},
+        )
+    }
+
+    @Test
+    // Tall enough for the whole page, including Log out, in one picture.
+    @Config(qualifiers = "w360dp-h1500dp-xhdpi")
+    fun profile() = shoot("profile") { Profile() }
+
+    @Test
+    fun signedOut() = shoot("signed-out") {
+        SignedOutScreen(username = "asha", relayName = "maun.example.workers.dev", onLogIn = {})
     }
 
     @Test

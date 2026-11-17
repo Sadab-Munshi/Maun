@@ -1,7 +1,6 @@
 package org.maun.messenger.push
 
 import android.content.Context
-import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -13,6 +12,7 @@ import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import java.util.concurrent.TimeUnit
 import org.maun.messenger.MaunApp
 
@@ -25,11 +25,18 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
 
     override suspend fun doWork(): Result {
         DeliveryTrace.stepped(applicationContext, DeliveryTrace.FETCH_START)
+        val attempt = inputData.getInt(KEY_ATTEMPT, 0)
         val caughtUp = (applicationContext as MaunApp).messenger.fetch()
-        DeliveryTrace.stepped(applicationContext, DeliveryTrace.FETCH_DONE, "caughtUp=$caughtUp attempt=$runAttemptCount")
-        // What could not be fetched in time stays on the relay; try a few times, then
-        // leave it to the next wake-up.
-        return if (caughtUp || runAttemptCount >= MAX_ATTEMPTS) Result.success() else Result.retry()
+        DeliveryTrace.stepped(applicationContext, DeliveryTrace.FETCH_DONE, "caughtUp=$caughtUp attempt=$attempt")
+        // What could not be fetched in time stays on the relay. It is tried
+        // again straight away rather than through WorkManager's retry, which
+        // would put a backoff between the attempts that a wake-up arriving in
+        // the meantime would have to wait behind.
+        if (!caughtUp && attempt + 1 < MAX_ATTEMPTS) {
+            schedule(applicationContext, attempt + 1)
+            DeliveryTrace.stepped(applicationContext, DeliveryTrace.FETCH_AGAIN, "attempt=${attempt + 1}")
+        }
+        return Result.success()
     }
 
     /** Android 11 and older run urgent work as a foreground service, which needs a notification. */
@@ -39,8 +46,8 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
     companion object {
         private const val NOW = "fetch"
         private const val HOURLY = "fetch-hourly"
+        private const val KEY_ATTEMPT = "attempt"
         private const val MAX_ATTEMPTS = 3
-        private const val MIN_BACKOFF_SECONDS = 5L
 
         private val online = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
 
@@ -48,20 +55,30 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
          * Fetches as soon as Android allows, which is at once unless the app
          * has used up its allowance for urgent work.
          *
-         * A wake-up replaces whatever fetch is waiting rather than queueing
-         * behind it: a fetch that is being retried may be a minute away, and
-         * the messages that woke the phone now are in the same queue the retry
-         * would fetch. Replacing it also keeps the wait from growing with each
-         * message that arrives in the meantime.
+         * A wake-up is appended to whatever fetch is already queued or
+         * running, never put in its place: cancelling a fetch halfway would
+         * throw away the decryption and acknowledgements of a whole batch of
+         * messages, and the next wake-up would start it all again. Appending
+         * means the fetch that is running finishes, and the new one runs the
+         * moment it does. A fetch that is added while another is running has
+         * nothing to do but come back for the rest, so the queue cannot grow
+         * without bound: the relay wakes a phone at most once every five
+         * seconds.
          */
-        fun schedule(context: Context) {
+        fun schedule(context: Context, attempt: Int = 0) {
             val request = OneTimeWorkRequestBuilder<FetchWorker>()
                 .setConstraints(online)
+                .setInputData(workDataOf(KEY_ATTEMPT to attempt))
                 .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                // A retry is worth waiting a few seconds for, not half a minute.
-                .setBackoffCriteria(BackoffPolicy.LINEAR, MIN_BACKOFF_SECONDS, TimeUnit.SECONDS)
                 .build()
-            WorkManager.getInstance(context).enqueueUniqueWork(NOW, ExistingWorkPolicy.REPLACE, request)
+            WorkManager.getInstance(context).enqueueUniqueWork(NOW, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+        }
+
+        /** Stops every fetch, queued or running, and the hourly one: this phone is signed out. */
+        fun cancel(context: Context) {
+            val work = WorkManager.getInstance(context)
+            work.cancelUniqueWork(NOW)
+            work.cancelUniqueWork(HOURLY)
         }
 
         /** Safe to call every time the app starts: an existing schedule is kept. */

@@ -160,6 +160,15 @@ class Messenger(context: Context) {
     /** The relay's owner has shut this member out. Nothing connects while this is set. */
     val banned: StateFlow<Boolean> = _banned.asStateFlow()
 
+    private val _signedOut = MutableStateFlow(false)
+
+    /**
+     * Someone signed this phone out. Nothing connects, nothing wakes it, and
+     * no notification is put up; the ID, the keys, the chats, the pictures
+     * and the settings stay where they are. See [logOut] and [resumeSession].
+     */
+    val signedOut: StateFlow<Boolean> = _signedOut.asStateFlow()
+
     private val _fileProgress = MutableStateFlow<Map<Long, Float>>(emptyMap())
 
     /** File transfers under way, by message: how much is done, from 0 to 1. */
@@ -397,6 +406,7 @@ class Messenger(context: Context) {
             )
         }
         accessToken = savedToken
+        _signedOut.value = withContext(Dispatchers.IO) { db.meta().get(KEY_SIGNED_OUT) == "1" }
         _memberEmail.value = savedEmail
         _banned.value = wasBanned
         _username.value = withContext(Dispatchers.IO) { db.meta().get(KEY_USERNAME)?.ifEmpty { null } }
@@ -556,7 +566,8 @@ class Messenger(context: Context) {
 
     // ---- When to be connected --------------------------------------------------
 
-    private fun wanted() = !_banned.value && (inForeground || fetches > 0 || stayingConnected || calls.busy)
+    private fun wanted() =
+        wantsConnection(_banned.value, _signedOut.value, inForeground, fetches, stayingConnected, calls.busy)
 
     // ---- Member-only relays ----------------------------------------------------
 
@@ -866,7 +877,9 @@ class Messenger(context: Context) {
 
     suspend fun fetch(timeoutMillis: Long = FETCH_TIMEOUT_MILLIS): Boolean {
         val current = account.first { it !is AccountState.Loading }
-        if (current !is AccountState.Present || !current.registered || _banned.value || _awaiting.value) return true
+        if (current !is AccountState.Present || !current.registered || _banned.value || _awaiting.value ||
+            _signedOut.value
+        ) return true
         synchronized(this) {
             fetches++
             connectOrDrop()
@@ -902,6 +915,12 @@ class Messenger(context: Context) {
             account.first { it !is AccountState.Loading }
             val db = database ?: return@launch
             val text = address?.serialize().orEmpty()
+            // Signed out, the relay is not told about this phone at all. The
+            // address is kept for the day it signs back in: see resumeSession.
+            if (_signedOut.value) {
+                withContext(Dispatchers.IO) { db.meta().put(MetaEntry(KEY_PUSH_HELD, text)) }
+                return@launch
+            }
             val changed = withContext(Dispatchers.IO) {
                 if (db.meta().get(KEY_PUSH_WANTED).orEmpty() == text) {
                     false
@@ -949,6 +968,73 @@ class Messenger(context: Context) {
         if (!inForeground) return@synchronized
         connection?.stop()
         connection?.start()
+    }
+
+    /**
+     * Log out, WhatsApp's way: signing this phone out, not wiping it.
+     *
+     * The session and the live connection end, the relay is told to stop
+     * waking this phone, and nothing is shown until it signs back in. The ID,
+     * the keys, the chats, the pictures and the settings stay exactly where
+     * they are, so [resumeSession] on the same install comes back to the same
+     * account with its pending messages.
+     *
+     * This is not "Clear data" and not account deletion: neither the relay's
+     * records nor the pictures on it are touched.
+     */
+    suspend fun logOut() {
+        val db = database ?: return
+        if (_signedOut.value) return
+        // A call in progress belongs to the account that is leaving.
+        if (calls.busy) runCatching { calls.hangUp() }
+        _signedOut.value = true
+        withContext(Dispatchers.IO) {
+            db.meta().put(MetaEntry(KEY_SIGNED_OUT, "1"))
+            // The wake-up address is put aside rather than forgotten, so that
+            // signing back in does not have to wait for the push app again.
+            db.meta().put(MetaEntry(KEY_PUSH_HELD, db.meta().get(KEY_PUSH_WANTED).orEmpty()))
+            db.meta().put(MetaEntry(KEY_PUSH_WANTED, ""))
+        }
+        // Still connected at this moment: the relay is told to stop waking
+        // this phone before the connection goes. If it cannot be told, the
+        // wake-ups it sends in the meantime are answered and ignored.
+        withTimeoutOrNull(WITHDRAW_PUSH_WAIT_MILLIS) { engine?.withdrawPush() }
+        setAccessToken(null)
+        synchronized(this) {
+            pendingStop?.cancel()
+            pendingStop = null
+            connection?.stop()
+        }
+        FetchWorker.cancel(appContext)
+        RingService.stop(appContext)
+        notifications.clearIncomingCall()
+        notifications.clearMessages()
+        announced = false
+        setAwaiting(false)
+    }
+
+    /**
+     * Signing back in on this phone. The ID, the keys, the chats and the
+     * pictures are already here, so this only clears the signed-out mark and
+     * lets the phone connect again, offering its wake-up address once more.
+     * On a member-only relay the relay then asks for the email login; on an
+     * open one there is nothing more to prove.
+     */
+    suspend fun resumeSession() {
+        val db = database ?: return
+        if (!_signedOut.value) return
+        _signedOut.value = false
+        withContext(Dispatchers.IO) {
+            db.meta().put(MetaEntry(KEY_SIGNED_OUT, ""))
+            val held = db.meta().get(KEY_PUSH_HELD).orEmpty()
+            if (held.isNotEmpty()) db.meta().put(MetaEntry(KEY_PUSH_WANTED, held))
+            db.meta().put(MetaEntry(KEY_PUSH_HELD, ""))
+        }
+        FetchWorker.scheduleHourly(appContext)
+        synchronized(this) {
+            connection?.stop()
+            connection?.start()
+        }
     }
 
     /** Round trip through the logged-in connection, in milliseconds. */
@@ -1093,17 +1179,34 @@ class Messenger(context: Context) {
         /** How many messages a conversation loads at first, and each time the reader reaches the oldest. */
         const val MESSAGE_PAGE = 100
 
+        /**
+         * Whether this phone has a reason to hold a connection to the relay.
+         *
+         * Being signed out is the one thing that overrides everything else: not
+         * the app being on screen, not a fetch in progress, not a call.
+         */
+        internal fun wantsConnection(
+            banned: Boolean,
+            signedOut: Boolean,
+            inForeground: Boolean,
+            fetches: Int,
+            stayingConnected: Boolean,
+            callBusy: Boolean,
+        ): Boolean = !banned && !signedOut && (inForeground || fetches > 0 || stayingConnected || callBusy)
+
         private const val SETTINGS_PREFS = "settings"
         private const val KEY_PERMISSIONS_SETUP_PENDING = "permissions_setup_pending"
         private const val KEY_PERMISSIONS_SETUP_DONE = "permissions_setup_done"
         private const val KEY_REGISTRATION_ID = "signal_registration_id"
         private const val KEY_PUSH_WANTED = "push_wanted"
+        private const val KEY_PUSH_HELD = "push_held"
         private const val KEY_PUSH_UPLOADED = "push_uploaded"
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_MEMBER_EMAIL = "member_email"
         private const val KEY_BANNED = "banned"
         private const val KEY_USERNAME = "username"
         private const val KEY_AWAITING = "awaiting_approval"
+        private const val KEY_SIGNED_OUT = "signed_out"
         private const val TICKET_SHOWN_WAIT_MILLIS = 3_000L
         /** Five minutes of speech are well under a megabyte; nothing bigger is played from memory. */
         private const val MAX_VOICE_BYTES = 4_000_000L
@@ -1111,6 +1214,9 @@ class Messenger(context: Context) {
         private const val DAY_MILLIS = 24 * 60 * 60 * 1000L
         private const val ONLINE_WAIT_MILLIS = 20_000L
         private const val BACKGROUND_LINGER_MILLIS = 10_000L
+
+        /** Long enough to tell the relay to stop waking this phone before the connection goes. */
+        private const val WITHDRAW_PUSH_WAIT_MILLIS = 4_000L
 
         /** Long enough for a few hundred waiting messages on a slow connection, or for a call to ring out. */
         private const val FETCH_TIMEOUT_MILLIS = 60_000L

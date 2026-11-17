@@ -2,6 +2,8 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CONNECTED_GRACE_MS,
+  WAKE_RETRY_WAITS_CALL_MS,
+  WAKE_RETRY_WAITS_MS,
   PUSH_CONTACT,
   PUSH_DAILY_CAP,
   PUSH_PAYLOAD,
@@ -113,6 +115,20 @@ async function pushRow(id: string): Promise<Record<string, unknown> | undefined>
   return runInDurableObject(mailbox(id), (_instance, state) =>
     state.storage.sql.exec("SELECT url, last, pending, day, sent FROM push WHERE id = 1").toArray()[0],
   );
+}
+
+/** The appointment to look for a woken phone again, if there is one. */
+async function retryRow(id: string): Promise<Record<string, unknown> | undefined> {
+  return runInDurableObject(mailbox(id), (_instance, state) =>
+    state.storage.sql.exec("SELECT at, count, urgent FROM wake_retry WHERE id = 1").toArray()[0],
+  );
+}
+
+/** Runs the mailbox's alarm, as Cloudflare would when its moment comes. */
+async function runAlarm(id: string): Promise<void> {
+  await runInDurableObject(mailbox(id), async (instance: { alarm(): Promise<void> }) => {
+    await instance.alarm();
+  });
 }
 
 async function editPush(id: string, sql: string, ...args: unknown[]): Promise<void> {
@@ -323,6 +339,80 @@ describe("waking a phone", () => {
     await hangUp(a);
     expect(await wakeCount(0)).toBe(0);
   });
+
+  it("wakes the phone again when it does not come, then stops", async () => {
+    // The push service answering is not the phone answering: an accepted
+    // wake-up can be one Google or the phone never acted on.
+    const alice = await registered();
+    const bob = await withPush();
+    const a = await online(alice);
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(1)).toBe(1);
+
+    // Each retry is due 20 s, 60 s and 180 s after the one before it, which
+    // is longer than the relay's own guard against repeating itself.
+    for (let i = 0; i < WAKE_RETRY_WAITS_MS.length; i++) {
+      await vi.waitFor(async () => expect(await retryRow(bob.id)).toBeDefined());
+      await editPush(bob.id, "UPDATE wake_retry SET at = ?", Date.now() - 1);
+      await editPush(bob.id, "UPDATE push SET last = last - ?", PUSH_REPEAT_MS + 1000);
+      await runAlarm(bob.id);
+      expect(await wakeCount(i + 2)).toBe(i + 2);
+    }
+    // And then it is left alone: the phone's own reconnects take over.
+    await vi.waitFor(async () => expect(await retryRow(bob.id)).toBeUndefined());
+    await runAlarm(bob.id);
+    expect(await wakeCount(WAKE_RETRY_WAITS_MS.length + 1)).toBe(WAKE_RETRY_WAITS_MS.length + 1);
+    await hangUp(a);
+  }, 30_000);
+
+  it("stops waking a phone that came before the next try", async () => {
+    const alice = await registered();
+    let bob = await withPush();
+    const a = await online(alice);
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(1)).toBe(1);
+
+    // Bob's phone comes by itself, and takes the message.
+    const b = await online(bob);
+    const msg = await b.nextJson();
+    b.sendJson({ t: "ack", seq: msg.seq });
+    b.sendJson({ t: "echo", id: "settle", body: "" });
+    expect(await b.nextJson()).toMatchObject({ t: "echo" });
+    await hangUp(b);
+    expect(await retryRow(bob.id)).toBeUndefined();
+
+    await editPush(bob.id, "UPDATE push SET last = last - ?", PUSH_REPEAT_MS + 1000);
+    await runAlarm(bob.id);
+    expect(await wakeCount(1)).toBe(1);
+    await hangUp(a);
+  }, 30_000);
+
+  it("looks for a ringing call sooner, and gives up sooner", async () => {
+    const alice = await registered();
+    const bob = await withPush();
+    const a = await online(alice);
+    // A ringing call is sent urgently; the relay treats it as one in every way.
+    const call = JSON.stringify({ callId: "c1", type: "offer", sdp: "v=0", video: false });
+    const id = requestId();
+    a.sendJson({ t: "send", id, to: bob.id, kind: 2, body: toBase64(new TextEncoder().encode(call)), urgent: true });
+    expect(await a.nextJson()).toMatchObject({ t: "stored" });
+    expect(await wakeCount(1)).toBe(1);
+
+    await vi.waitFor(async () => expect(await retryRow(bob.id)).toBeDefined());
+    const row = await retryRow(bob.id);
+    // A call is looked for in 8 seconds, not 20, and only twice.
+    expect(row!.at as number).toBeLessThanOrEqual(Date.now() + WAKE_RETRY_WAITS_CALL_MS[0]!);
+    expect(row!.urgent).toBe(1);
+
+    for (let i = 0; i < WAKE_RETRY_WAITS_CALL_MS.length; i++) {
+      await editPush(bob.id, "UPDATE wake_retry SET at = ?", Date.now() - 1);
+      await editPush(bob.id, "UPDATE push SET last = last - ?", PUSH_REPEAT_MS + 1000);
+      await runAlarm(bob.id);
+      expect(await wakeCount(i + 2)).toBe(i + 2);
+    }
+    await vi.waitFor(async () => expect(await retryRow(bob.id)).toBeUndefined());
+    await hangUp(a);
+  }, 30_000);
 
   it("stays quiet for someone who left no address", async () => {
     const alice = await registered();

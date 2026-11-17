@@ -119,6 +119,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
         else -> {
             val registered = current is AccountState.Present && current.registered
             val banned by viewModel.banned.collectAsStateWithLifecycle()
+            val signedOut by viewModel.signedOut.collectAsStateWithLifecycle()
             val awaiting by viewModel.awaitingApproval.collectAsStateWithLifecycle()
             val needsPermissionSetup by viewModel.needsPermissionSetup.collectAsStateWithLifecycle()
             val username by viewModel.username.collectAsStateWithLifecycle()
@@ -146,6 +147,14 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                 // someone it has shut out, or does not know yet.
                 current is AccountState.Present && banned ->
                     BannedScreen(relayName = current.code.relay, onCheckAgain = viewModel::checkBanAgain)
+
+                // Signed out on this phone: nothing else is reachable until it signs in.
+                current is AccountState.Present && signedOut ->
+                    SignedOutScreen(
+                        username = username,
+                        relayName = current.code.relay,
+                        onLogIn = viewModel::logIn,
+                    )
 
                 current is AccountState.Present && awaiting -> PendingScreen(
                     relayName = current.code.relay,
@@ -268,16 +277,12 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 relayName = current.code.relay,
                                 relay = relay,
                                 delivery = delivery,
-                                pushProblem = pushProblem,
                                 privacy = privacy,
                                 blockedCount = blocked.size,
                                 sounds = soundChoices,
                                 memberEmail = memberEmail,
                                 username = username,
-                                onChoosePushApp = viewModel::choosePushApp,
-                                onGooglePush = viewModel::setGooglePush,
-                                onStayConnected = viewModel::setStayConnected,
-                                onDeliveryChanged = viewModel::refreshDelivery,
+                                onNotificationsChanged = viewModel::refreshDelivery,
                                 onAppLock = { on ->
                                     if (activity != null) AppLock.setEnabled(activity, on, viewModel::refreshPrivacy)
                                 },
@@ -327,6 +332,11 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             sharingPending = avatarPending,
                             verified = ownVerified,
                             onShowCode = { screen = MY_CODE },
+                            onLogOut = {
+                                // Nothing to go back to: the signed-out screen takes over.
+                                screen = HOME
+                                viewModel.logOut()
+                            },
                             onBack = goBack,
                         )
 
@@ -457,7 +467,6 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 pushProblem = pushProblem,
                                 onChoosePushApp = viewModel::choosePushApp,
                                 onGooglePush = viewModel::setGooglePush,
-                                onStayConnected = viewModel::setStayConnected,
                                 onDeliveryChanged = viewModel::refreshDelivery,
                                 onShowMyCode = { screen = MY_CODE },
                                 onAddContact = { screen = ADD_CONTACT },

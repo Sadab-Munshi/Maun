@@ -466,6 +466,13 @@ class ChatEngine(
         scope.launch { quietly { syncPush() } }
     }
 
+    /**
+     * Tells the relay to stop waking this phone, and returns once it has said
+     * so (or at once if it cannot be reached). Called when signing out: a
+     * phone that is not signed in has no reason to be woken.
+     */
+    suspend fun withdrawPush(): Boolean = syncPush()
+
     // ---- Called by the app ---------------------------------------------------
 
     /** Queues [text] for [peer], who must be a contact. Returns as soon as it is saved. */

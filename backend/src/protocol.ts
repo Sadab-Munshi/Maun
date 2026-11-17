@@ -107,6 +107,16 @@ export const PUSH_CONTACT = "https://github.com/Sadab-Munshi/Maun";
 export const PUSH_SETTLE_MS = 10 * 60 * 1000;
 export const PUSH_SETTLE_WAITS_MS = [5_000, 10_000, 15_000];
 /**
+ * How long after a wake-up the phone is looked for before it is woken again.
+ * A push service that answers "accepted" has not delivered anything, so a
+ * wake-up that the phone did not answer is tried again, twice, and then left
+ * to the phone's own reconnects. A ringing call cannot wait that long: it is
+ * retried within its own TTL and no further.
+ */
+export const WAKE_RETRY_WAITS_MS = [20_000, 60_000, 180_000];
+/** The same for a call, whose wake-up is of no use once it has stopped ringing. */
+export const WAKE_RETRY_WAITS_CALL_MS = [8_000, 20_000];
+/**
  * A phone that is connected is not woken, because the message goes straight
  * down its connection. But a connection can be dead without either end knowing
  * yet: a phone that changed network, or that Android froze, leaves a socket

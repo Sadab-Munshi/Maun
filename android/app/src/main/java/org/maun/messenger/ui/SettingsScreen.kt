@@ -25,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
@@ -80,19 +81,16 @@ fun SettingsScreen(
     relayName: String,
     relay: RelayState,
     delivery: DeliveryUi,
-    pushProblem: String?,
     privacy: PrivacyUi,
     blockedCount: Int,
     sounds: SoundChoices = SoundChoices(),
     memberEmail: String? = null,
     username: String? = null,
-    onChoosePushApp: (String) -> Unit,
-    onGooglePush: (Boolean) -> Unit,
-    onStayConnected: (Boolean) -> Unit,
-    onDeliveryChanged: () -> Unit,
     onAppLock: (Boolean) -> Unit,
     onBlockScreenshots: (Boolean) -> Unit,
     onNotifyText: (Boolean) -> Unit = {},
+    /** Re-reads whether Maun may notify, after the phone's own settings were changed. */
+    onNotificationsChanged: () -> Unit = {},
     onBattery: () -> Unit = {},
     onLockScreenCalls: () -> Unit = {},
     onTelecomCalls: (Boolean) -> Unit = {},
@@ -109,22 +107,35 @@ fun SettingsScreen(
     var choosingSent by remember { mutableStateOf(false) }
     var choosingIncoming by remember { mutableStateOf(false) }
 
+    val context = LocalContext.current
+
     ScreenFrame(title = "Settings", onBack = onBack) {
         SectionTitle("Profile", modifier = Modifier.padding(bottom = 4.dp))
         ProfileRow(onClick = onOpenProfile)
 
-        DeliveryCard(delivery, pushProblem, onChoosePushApp, onGooglePush, onStayConnected, onDeliveryChanged)
-
         Column {
-            SectionTitle("Calls and arriving on time", modifier = Modifier.padding(bottom = 4.dp))
+            SectionTitle("Notifications", modifier = Modifier.padding(bottom = 4.dp))
+            NotificationsSection(delivery, onChanged = onNotificationsChanged)
             SwitchRow(
                 icon = MaunIcons.Bell,
-                title = "Stay connected",
-                text = "Only needed if push notifications are blocked on your device; shows a permanent notification.",
-                checked = delivery.stayConnected,
+                title = "Show messages in notifications",
+                text = "A notification names who wrote and shows the message. Off, it only says that a " +
+                    "message arrived. A locked screen never shows either.",
+                checked = privacy.notifyText,
                 enabled = true,
-                onChange = onStayConnected,
+                onChange = onNotifyText,
             )
+            LinkRow(
+                icon = MaunIcons.Settings,
+                title = "This phone's notification settings",
+                text = "Sounds, vibration, pop-ups and what Maun may show on a locked screen, " +
+                    "as Android keeps them.",
+                onClick = { context.openAppNotificationSettings() },
+            )
+        }
+
+        Column {
+            SectionTitle("Calls", modifier = Modifier.padding(bottom = 4.dp))
             if (privacy.lockScreenCallsBlocked) {
                 LinkRow(
                     icon = MaunIcons.Call,
@@ -197,15 +208,6 @@ fun SettingsScreen(
 
         Column {
             SectionTitle("Privacy", modifier = Modifier.padding(bottom = 4.dp))
-            SwitchRow(
-                icon = MaunIcons.Bell,
-                title = "Show messages in notifications",
-                text = "A notification names who wrote and shows the message. Off, it only says that a " +
-                    "message arrived. A locked screen never shows either.",
-                checked = privacy.notifyText,
-                enabled = true,
-                onChange = onNotifyText,
-            )
             SwitchRow(
                 icon = MaunIcons.Lock,
                 title = "App lock",
@@ -502,13 +504,9 @@ private fun SettingsPreview() {
             relayName = "maun.example.workers.dev",
             relay = RelayState.Online,
             delivery = DeliveryUi(pushApp = "Google's push service", google = true),
-            pushProblem = null,
             privacy = PrivacyUi(appLock = true),
             blockedCount = 2,
-            onChoosePushApp = {},
-            onGooglePush = {},
-            onStayConnected = {},
-            onDeliveryChanged = {},
+            onNotificationsChanged = {},
             onAppLock = {},
             onBlockScreenshots = {},
             onOpenBlocked = {},

@@ -59,7 +59,6 @@ fun HomeScreen(
     pushProblem: String?,
     onChoosePushApp: (String) -> Unit,
     onGooglePush: (Boolean) -> Unit,
-    onStayConnected: (Boolean) -> Unit,
     onDeliveryChanged: () -> Unit,
     onShowMyCode: () -> Unit,
     onAddContact: () -> Unit,
@@ -116,7 +115,6 @@ fun HomeScreen(
                                     pushProblem,
                                     onChoosePushApp,
                                     onGooglePush,
-                                    onStayConnected,
                                     onDeliveryChanged,
                                 )
                             }
@@ -308,7 +306,6 @@ private fun HomePreview() {
             pushProblem = null,
             onChoosePushApp = {},
             onGooglePush = {},
-            onStayConnected = {},
             onDeliveryChanged = {},
             onShowMyCode = {},
             onAddContact = {},
@@ -330,7 +327,6 @@ private fun EmptyHomePreview() {
             pushProblem = null,
             onChoosePushApp = {},
             onGooglePush = {},
-            onStayConnected = {},
             onDeliveryChanged = {},
             onShowMyCode = {},
             onAddContact = {},

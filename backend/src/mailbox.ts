@@ -38,6 +38,8 @@ import {
   PUSH_SETTLE_WAITS_MS,
   PUSH_TTL_SECONDS,
   PUSH_UNFINISHED,
+  WAKE_RETRY_WAITS_CALL_MS,
+  WAKE_RETRY_WAITS_MS,
   QUEUE_CAP,
   QUEUE_CAP_PER_SENDER,
   QUEUE_TTL_MS,
@@ -214,6 +216,8 @@ export class Mailbox extends DurableObject<Env> {
       const vapid = await this.vapidKeys();
       // The phone is here: whatever wake-up was on its way has done its job.
       sql.exec("UPDATE push SET pending = 0 WHERE id = 1 AND pending = 1");
+      // The phone is here: there is nothing left to wake it for.
+      sql.exec("DELETE FROM wake_retry");
       // An ID that was given up and is in use again takes messages again.
       sql.exec("DELETE FROM retired");
       this.standing = { ok: true, at: Date.now() };
@@ -449,6 +453,7 @@ export class Mailbox extends DurableObject<Env> {
 
       case "drop_push":
         sql.exec("DELETE FROM push WHERE id = 1");
+        sql.exec("DELETE FROM wake_retry");
         sql.exec("DELETE FROM push_since");
         sql.exec("DELETE FROM push_result");
         send(ws, { t: "saved", id: frame.id, otks: this.oneTimeKeyCount() });
@@ -597,7 +602,7 @@ export class Mailbox extends DurableObject<Env> {
     size.bySender.set(from, (size.bySender.get(from) ?? 0) + 1);
 
     if (!this.expiryArmed) {
-      if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(now + QUEUE_TTL_MS);
+      await this.armAlarm(now + QUEUE_TTL_MS);
       this.expiryArmed = true;
     }
     for (const ws of this.ctx.getWebSockets()) this.pump(ws);
@@ -609,7 +614,7 @@ export class Mailbox extends DurableObject<Env> {
       // its connection. That connection may be dead all the same, with neither
       // end knowing yet. So the queue is looked at once more shortly, and if
       // this message is still in it, the phone was not really listening.
-      this.ctx.waitUntil(this.wakeIfNotTaken(seq));
+      this.ctx.waitUntil(this.wakeIfNotTaken(seq, urgent));
     }
     return "stored";
   }
@@ -646,7 +651,7 @@ export class Mailbox extends DurableObject<Env> {
     this.ensureTables();
     const sql = this.ctx.storage.sql;
     sql.exec("INSERT OR REPLACE INTO retired (id, at) VALUES (1, ?)", Date.now());
-    for (const table of ["queue", "keys", "otks", "push", "push_since", "push_result"]) sql.exec(`DELETE FROM ${table}`);
+    for (const table of ["queue", "keys", "otks", "push", "push_since", "push_result", "wake_retry"]) sql.exec(`DELETE FROM ${table}`);
     this.queueSize = null;
     this.standing = null;
     for (const ws of this.ctx.getWebSockets()) closeQuietly(ws, CLOSE_ACCESS_REQUIRED, "access_required");
@@ -687,18 +692,20 @@ export class Mailbox extends DurableObject<Env> {
    * if the message is still waiting. Nothing happens when the phone took it,
    * which is what a live connection does within a fraction of a second.
    */
-  private async wakeIfNotTaken(seq: number): Promise<void> {
+  private async wakeIfNotTaken(seq: number, urgent: boolean): Promise<void> {
     await scheduler.wait(CONNECTED_GRACE_MS);
     const waiting = this.ctx.storage.sql.exec("SELECT 1 FROM queue WHERE seq = ? LIMIT 1", seq).toArray();
     if (waiting.length === 0) return;
-    this.wake(Date.now());
+    // A call that is ringing gets the same urgent treatment here: it has only
+    // the length of its own TTL to reach the phone.
+    this.wake(Date.now(), urgent);
   }
 
   /**
    * Sends a wake-up to the phone's push address, if it left one and has not
    * just been sent one. Returns at once; the request runs in the background.
    */
-  private wake(now: number, urgent = false): void {
+  private wake(now: number, urgent = false, armRetry = true): void {
     const sql = this.ctx.storage.sql;
     const row = sql.exec("SELECT url, key, auth, last, pending, day, sent FROM push WHERE id = 1").toArray()[0];
     if (!row) return;
@@ -712,6 +719,69 @@ export class Mailbox extends DurableObject<Env> {
     sql.exec("UPDATE push SET last = ?, pending = 1, day = ?, sent = ? WHERE id = 1", now, today, sentToday + 1);
     sql.exec("INSERT OR REPLACE INTO push_result (id, status) VALUES (1, ?)", PUSH_UNFINISHED);
     this.ctx.waitUntil(this.deliverWake(row.url as string, bytes(row.key), bytes(row.auth), urgent));
+    // The push service answering is not the phone answering. The phone is
+    // looked for again in a moment, and woken again if it has not come.
+    if (armRetry) this.ctx.waitUntil(this.armWakeRetry(now, urgent, 0));
+  }
+
+  /**
+   * Sets the moment at which the phone is looked for again, and wakes it once
+   * more if it has not come by then. Nothing is armed once the phone has been
+   * woken as often as [WAKE_RETRY_WAITS_MS] allows.
+   */
+  private async armWakeRetry(now: number, urgent: boolean, count: number): Promise<void> {
+    const sql = this.ctx.storage.sql;
+    const waits = urgent ? WAKE_RETRY_WAITS_CALL_MS : WAKE_RETRY_WAITS_MS;
+    const wait = waits[count];
+    if (wait === undefined) {
+      sql.exec("DELETE FROM wake_retry");
+      return;
+    }
+    sql.exec("INSERT OR REPLACE INTO wake_retry (id, at, count, urgent) VALUES (1, ?, ?, ?)", now + wait, count, urgent ? 1 : 0);
+    await this.armAlarm(now + wait);
+  }
+
+  /** Asks to be called at [at], unless something sooner is already asked for. */
+  private async armAlarm(at: number): Promise<void> {
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > at) await this.ctx.storage.setAlarm(at);
+  }
+
+  /**
+   * The moment has come to look for a phone that was woken. If it is still
+   * away and there is still something waiting, it is woken again — at the next
+   * of its own intervals, not at the first one over and over.
+   */
+  private async retryWake(): Promise<void> {
+    const sql = this.ctx.storage.sql;
+    const row = sql.exec("SELECT at, count, urgent FROM wake_retry WHERE id = 1").toArray()[0];
+    if (!row) return;
+    const now = Date.now();
+    const at = row.at as number;
+    if (at > now) {
+      // Not yet: keep the appointment.
+      await this.armAlarm(at);
+      return;
+    }
+    const urgent = row.urgent === 1;
+    const waiting = Number(sql.exec("SELECT COUNT(*) AS n FROM queue").toArray()[0]?.n ?? 0);
+    const hasAddress = sql.exec("SELECT 1 FROM push WHERE id = 1").toArray().length > 0;
+    if (waiting === 0 || !hasAddress || this.connected()) {
+      // The phone came, nothing is waiting, or there is nowhere to send a
+      // wake-up: there is nothing left to look for.
+      sql.exec("DELETE FROM wake_retry");
+      return;
+    }
+    const count = row.count as number;
+    const waits = urgent ? WAKE_RETRY_WAITS_CALL_MS : WAKE_RETRY_WAITS_MS;
+    if (count + 1 >= waits.length) {
+      sql.exec("DELETE FROM wake_retry");
+    } else {
+      sql.exec("UPDATE wake_retry SET at = ?, count = ? WHERE id = 1", now + waits[count + 1]!, count + 1);
+      await this.armAlarm(now + waits[count + 1]!);
+    }
+    // The chain has already been moved on above, so this one only sends.
+    this.wake(now, urgent, false);
   }
 
   private async deliverWake(url: string, key: Uint8Array, auth: Uint8Array, call = false): Promise<void> {
@@ -825,9 +895,12 @@ export class Mailbox extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     sql.exec("DELETE FROM queue WHERE at <= ?", Date.now() - QUEUE_TTL_MS);
     this.queueSize = null;
+    // A phone that was woken and has not come is woken again.
+    await this.retryWake();
+    // Whatever is still waiting keeps its own appointment to be forgotten.
     const oldest = sql.exec("SELECT MIN(at) AS at FROM queue").toArray()[0]?.at;
     if (typeof oldest === "number") {
-      await this.ctx.storage.setAlarm(oldest + QUEUE_TTL_MS);
+      await this.armAlarm(oldest + QUEUE_TTL_MS);
       this.expiryArmed = true;
     }
   }
@@ -912,6 +985,11 @@ export class Mailbox extends DurableObject<Env> {
     // One row: what the push service answered to the last wake-up. An HTTP
     // status, 0 when it could not be reached, PUSH_UNFINISHED while in flight.
     sql.exec("CREATE TABLE IF NOT EXISTS push_result (id INTEGER PRIMARY KEY CHECK (id = 1), status INTEGER NOT NULL)");
+    // One row: the moment the phone that was woken is looked for again, how
+    // many times it has been woken, and whether what is waiting is a call.
+    sql.exec(
+      "CREATE TABLE IF NOT EXISTS wake_retry (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL, count INTEGER NOT NULL, urgent INTEGER NOT NULL)",
+    );
     // One row: the token for the file routes, and the day's uploads.
     sql.exec(
       `CREATE TABLE IF NOT EXISTS files (

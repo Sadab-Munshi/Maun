@@ -47,13 +47,13 @@ class DeliveryTraceTest {
     @Test
     fun `the names of the steps say what happened and nothing more`() {
         assertEquals(
-            listOf("wake", "call", "fetch-start", "fetch-done", "fetch-late", "shown"),
+            listOf("wake", "call", "fetch-start", "fetch-done", "fetch-again", "shown"),
             listOf(
                 DeliveryTrace.WAKE,
                 DeliveryTrace.CALL,
                 DeliveryTrace.FETCH_START,
                 DeliveryTrace.FETCH_DONE,
-                DeliveryTrace.FETCH_LATE,
+                DeliveryTrace.FETCH_AGAIN,
                 DeliveryTrace.SHOWN,
             ),
         )
