@@ -11,6 +11,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.maun.messenger.SoundSettings
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * A notification channel's sound is fixed the moment Android makes it, and the
@@ -19,6 +20,8 @@ import org.robolectric.RobolectricTestRunner
  * settings. Maun therefore keeps one channel per choice and makes each once.
  */
 @RunWith(RobolectricTestRunner::class)
+// A plain Application: the real one starts background work that needs a phone.
+@Config(application = android.app.Application::class)
 class NotificationsChannelsTest {
 
     private val context: Context get() = ApplicationProvider.getApplicationContext()

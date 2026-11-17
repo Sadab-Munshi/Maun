@@ -6,6 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * The two sound choices are kept in the app's own settings file, so they have
@@ -13,6 +14,8 @@ import org.robolectric.RobolectricTestRunner
  * changed file) must fall back to something the app can actually play.
  */
 @RunWith(RobolectricTestRunner::class)
+// A plain Application: the real one starts background work that needs a phone.
+@Config(application = android.app.Application::class)
 class SoundSettingsTest {
 
     private val context: Context get() = ApplicationProvider.getApplicationContext()
