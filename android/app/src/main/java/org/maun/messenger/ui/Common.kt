@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
@@ -77,8 +78,10 @@ import org.maun.messenger.crypto.QrCodec
 fun VerifiedBadge(verified: Boolean, modifier: Modifier = Modifier) {
     if (!verified) return
     var explaining by remember { mutableStateOf(false) }
-    Icon(
-        imageVector = MaunIcons.Verified,
+    // Image, not Icon: an Icon would paint the whole shape in one colour and
+    // take the green and the white away.
+    Image(
+        painter = rememberVectorPainter(MaunIcons.Verified),
         contentDescription = "Verified account",
         modifier = modifier
             .size(16.dp)
@@ -88,7 +91,13 @@ fun VerifiedBadge(verified: Boolean, modifier: Modifier = Modifier) {
     if (explaining) {
         AlertDialog(
             onDismissRequest = { explaining = false },
-            icon = { Icon(MaunIcons.Verified, contentDescription = null, modifier = Modifier.size(28.dp)) },
+            icon = {
+                Image(
+                    painter = rememberVectorPainter(MaunIcons.Verified),
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp),
+                )
+            },
             title = { Text("Verified by Maun") },
             text = {
                 Text(
