@@ -127,8 +127,8 @@ class ScreensTest {
             messages = listOf(
                 message(9, true, "Leaving now", 1 * minute, MessageStatus.PENDING),
                 message(8, true, "See you at six", 2 * minute, MessageStatus.SENT),
-                message(7, true, "Yes! I booked the table by the window, the one you liked last time.", 3 * minute, MessageStatus.DELIVERED),
-                message(6, false, "Are we still on for today?", 5 * minute),
+                message(7, true, "Yes! I booked the table by the window, the one you liked last time. The menu is at https://maun.example.org/menu?table=12 if you want to look.", 3 * minute, MessageStatus.DELIVERED),
+                message(6, false, "Are we still on for today? https://example.org/a and https://example.org/b", 5 * minute),
                 message(5, false, "Good morning", 6 * minute),
                 message(4, true, "Sleep well", day + 10 * minute),
                 message(3, false, "", day + 12 * minute, kind = MessageKind.UNREADABLE),
