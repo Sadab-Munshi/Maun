@@ -7,7 +7,7 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 
-## Status: app 0.16.0 (files, voice messages, voice and video calls, profile pictures, and an optional member-only mode with usernames)
+## Status: app 0.17.0 (files, voice messages, voice and video calls, profile pictures, tappable links, and an optional member-only mode with usernames)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
 messages while the app is closed. The app can be locked behind the phone's
