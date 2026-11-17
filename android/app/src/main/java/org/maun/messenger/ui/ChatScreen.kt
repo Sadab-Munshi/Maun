@@ -1777,7 +1777,7 @@ private fun ChatPreview() {
             hasOlder = false,
             waiting = null,
             relay = RelayState.Online,
-            onSend = {},
+            onSend = { _, _ -> },
             onSeen = {},
             onLoadOlder = {},
             onDelete = {},
