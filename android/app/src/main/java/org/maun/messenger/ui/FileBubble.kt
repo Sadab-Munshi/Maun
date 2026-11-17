@@ -32,6 +32,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -64,7 +65,15 @@ import org.maun.messenger.voice.VoiceState
 /**
  * What a conversation needs in order to show and move files. The defaults do
  * nothing, for previews and for screens drawn without the app behind them.
+ *
+ * [equals] says what a row would draw differently, so Compose can leave a row
+ * alone when nothing it shows has changed. The callbacks are left out on
+ * purpose: they are made again on every recomposition of the screen, and
+ * comparing them — by identity — would make every row in a long conversation
+ * redraw itself for the mere act of being recomposed above, which is what made
+ * scrolling back through old messages heavy.
  */
+@Immutable
 class FileActions(
     /** Transfers under way, by message: how much is done, from 0 to 1. */
     val progress: Map<Long, Float> = emptyMap(),
@@ -96,7 +105,15 @@ class FileActions(
     val onPlay: (Long, Attachment) -> Unit = { _, _ -> },
     /** The voice message that is loaded for playing, if any. */
     val voice: VoiceState? = null,
-)
+) {
+    override fun equals(other: Any?): Boolean = other is FileActions &&
+        other.progress == progress &&
+        other.problem == problem &&
+        other.notice == notice &&
+        other.voice == voice
+
+    override fun hashCode(): Int = listOf(progress, problem, notice, voice).hashCode()
+}
 
 /** Pictures and short videos up to this size are fetched as soon as their message is on screen. */
 internal const val AUTO_FETCH_BYTES = 5_000_000L

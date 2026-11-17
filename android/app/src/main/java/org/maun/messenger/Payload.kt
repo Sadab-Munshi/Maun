@@ -81,9 +81,13 @@ sealed interface Payload {
          * list is fixed so that a reaction is a mark, not free text, and so
          * that an older Maun can tell whether it knows the character.
          */
-        val REACTIONS = listOf("\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83D\uDC4D", "\uD83D\uDE4F")
+        val REACTIONS = listOf("\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE22", "\uD83D\uDE4F")
 
-        /** Fuller list, for the sheet behind the bar's "+". */
+        /**
+         * Everything this version accepts from a message. The bar offers the
+         * five in [REACTIONS]; the rest are here so that a phone that was sent
+         * one by a newer Maun can still show it rather than drop it.
+         */
         val MORE_REACTIONS = REACTIONS + listOf(
             "\uD83D\uDC4F", "\uD83D\uDD25", "\uD83C\uDF89", "\uD83D\uDE0D", "\uD83D\uDE0E", "\uD83D\uDC4C",
             "\u270C\uFE0F", "\uD83E\uDD1D", "\uD83D\uDE4C", "\uD83D\uDCAF", "\uD83D\uDCA9", "\uD83E\uDD14",

@@ -549,7 +549,7 @@ private fun toggle(selection: Set<Long>, seq: Long): Set<Long> =
  * one or for many. Nothing here acts twice: Delete asks once, for all of them.
  */
 @Composable
-private fun SelectionBar(
+internal fun SelectionBar(
     picked: List<MessageEntity>,
     reactions: Reactions?,
     onReact: (String) -> Unit,
@@ -559,43 +559,34 @@ private fun SelectionBar(
     onClose: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
-    var more by rememberSaveable { mutableStateOf(false) }
     val one = picked.singleOrNull()
     val text = one != null && one.kind == MessageKind.TEXT
     val file = one != null && one.kind == MessageKind.FILE
     Surface(color = colors.surfaceContainerHigh, tonalElevation = 2.dp) {
         Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars).padding(horizontal = 10.dp, vertical = 8.dp)) {
             if (one != null) {
+                // Five, no more, each the same width: a row that fits any phone
+                // without a second page of emoji to open.
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    val shown = if (more) Payload.MORE_REACTIONS else Payload.REACTIONS
-                    shown.forEach { emoji ->
+                    Payload.REACTIONS.forEach { emoji ->
                         val mine = reactions?.mine == emoji
-                        TextButton(
-                            onClick = { onReact(emoji) },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(0.dp),
-                        ) {
-                            Text(
-                                text = emoji,
-                                fontSize = 22.sp,
-                                modifier = if (mine) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .then(
                                     // The one this phone chose stands out.
-                                    Modifier.background(colors.primary.copy(alpha = 0.18f), CircleShape).padding(2.dp)
-                                } else {
-                                    Modifier.padding(2.dp)
-                                },
-                            )
+                                    if (mine) Modifier.background(colors.primary.copy(alpha = 0.20f)) else Modifier,
+                                )
+                                .clickable(onClickLabel = "React $emoji") { onReact(emoji) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(text = emoji, fontSize = 22.sp)
                         }
-                    }
-                    TextButton(onClick = { more = !more }, modifier = Modifier.weight(0.8f), contentPadding = PaddingValues(0.dp)) {
-                        Icon(
-                            imageVector = if (more) MaunIcons.Check else MaunIcons.More,
-                            contentDescription = if (more) "That is enough emoji" else "More emoji",
-                        )
                     }
                 }
             }
@@ -649,9 +640,12 @@ private fun ChatWallpaper(
     }
     val density = LocalDensity.current
     val tile = remember(patternTint, density) { patternTile(patternTint, density) }
+    // One shader for the wallpaper's whole life: making a new one inside the
+    // draw call meant allocating it again on every frame that had to be drawn.
+    val brush = remember(tile) { ShaderBrush(ImageShader(tile, TileMode.Repeated, TileMode.Repeated)) }
     Box(modifier = modifier.background(baseColor)) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            drawRect(brush = ShaderBrush(ImageShader(tile, TileMode.Repeated, TileMode.Repeated)))
+            drawRect(brush = brush)
         }
     }
 }

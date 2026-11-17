@@ -112,7 +112,7 @@ data class DayItem(val day: LocalDate, val above: Long) : ChatItem {
  * yesterday and delivered today stands under yesterday's date, after today's.
  */
 fun chatItems(newestFirst: List<MessageEntity>, zone: ZoneId): List<ChatItem> {
-    val days = newestFirst.map { dayOf(it.at, zone) }
+    val days = newestFirst.map { cachedDay(it.at, zone) }
     fun sameRun(a: Int, b: Int): Boolean {
         val one = newestFirst[a]
         val other = newestFirst[b]
@@ -128,7 +128,7 @@ fun chatItems(newestFirst: List<MessageEntity>, zone: ZoneId): List<ChatItem> {
             startsRun = !hasOlder || !sameRun(i, i + 1),
             endsRun = i == 0 || !sameRun(i, i - 1),
             // Parsed once here rather than on every frame the bubble is drawn.
-            file = if (message.kind == MessageKind.FILE) Attachment.fromLocal(message.text) else null,
+            file = if (message.kind == MessageKind.FILE) rememberedFile(message.text) else null,
         )
         if (!hasOlder || days[i + 1] != days[i]) items += DayItem(days[i], newestFirst[i].seq)
     }
@@ -137,11 +137,53 @@ fun chatItems(newestFirst: List<MessageEntity>, zone: ZoneId): List<ChatItem> {
 
 fun dayOf(atMillis: Long, zone: ZoneId): LocalDate = Instant.ofEpochMilli(atMillis).atZone(zone).toLocalDate()
 
+// The date of a message, and the record of a file, kept from one rebuild of a
+// conversation to the next. Opening or growing a long conversation builds its
+// items again on every change, and turning each of a thousand messages into a
+// ZonedDateTime — or parsing the same file record again — is what made
+// scrolling back through old messages heavy. Both are bounded: an old entry
+// falls out rather than the table growing with the conversation.
+private const val DAYS_KEPT = 4096
+private const val FILES_KEPT = 256
+
+private var dayZone: ZoneId? = null
+private val days = object : LinkedHashMap<Long, LocalDate>(512, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, LocalDate>) = size > DAYS_KEPT
+}
+
+private val files = object : LinkedHashMap<String, Attachment?>(64, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Attachment?>) = size > FILES_KEPT
+}
+
+private fun cachedDay(at: Long, zone: ZoneId): LocalDate {
+    if (dayZone != zone) {
+        days.clear()
+        dayZone = zone
+    }
+    return days[at] ?: dayOf(at, zone).also { days[at] = it }
+}
+
+internal fun rememberedFile(local: String): Attachment? = files[local] ?: Attachment.fromLocal(local).also { files[local] = it }
+
 /** "Today", "Yesterday", or the date the way the phone's language writes it. */
 fun dayLabel(day: LocalDate, today: LocalDate, locale: Locale = Locale.getDefault()): String = when (day) {
     today -> "Today"
     today.minusDays(1) -> "Yesterday"
-    else -> DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(locale).format(day)
+    else -> mediumDate(locale).format(day)
+}
+
+// One formatter per language, made once: a conversation asks for this every
+// time a day separator is drawn, and building a formatter each time was churn.
+private var mediumLocale: Locale? = null
+private var mediumFormatter: DateTimeFormatter? = null
+
+private fun mediumDate(locale: Locale): DateTimeFormatter {
+    val made = mediumFormatter
+    if (made != null && mediumLocale == locale) return made
+    return DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(locale).also {
+        mediumLocale = locale
+        mediumFormatter = it
+    }
 }
 
 // ---- People --------------------------------------------------------------------

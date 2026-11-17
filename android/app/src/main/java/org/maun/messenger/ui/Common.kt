@@ -64,6 +64,7 @@ import androidx.compose.ui.unit.sp
 import java.text.DateFormat
 import java.time.ZoneId
 import java.util.Date
+import java.util.Locale
 import kotlin.math.floor
 import org.maun.messenger.crypto.QrCodec
 
@@ -282,7 +283,45 @@ fun formatWhen(atMillis: Long, nowMillis: Long = System.currentTimeMillis()): St
 }
 
 /** The time of day alone. In a conversation the date stands on its own line above. */
-fun formatTime(atMillis: Long): String = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(atMillis))
+fun formatTime(atMillis: Long): String = shortTime().format(Date(atMillis))
+
+// Made once per language rather than once per bubble: a conversation redraws
+// its bubbles constantly, and building a formatter — with its locale lookup —
+// each time was pure churn. Composition and the screens call this on the main
+// thread only, so one instance per language is enough.
+private var timeLocale: Locale? = null
+private var timeFormatter: DateFormat? = null
+private var dateLocale: Locale? = null
+private var dateFormatter: DateFormat? = null
+
+private fun shortTime(): DateFormat {
+    val locale = Locale.getDefault()
+    synchronized(::formatTime) {
+        val made = timeFormatter
+        if (made != null && timeLocale == locale) return made
+        return DateFormat.getTimeInstance(DateFormat.SHORT, locale).also {
+            timeLocale = locale
+            timeFormatter = it
+        }
+    }
+}
+
+/** The short date, made once per language. */
+fun shortDate(atMillis: Long): String {
+    val locale = Locale.getDefault()
+    val formatter = synchronized(::formatTime) {
+        val made = dateFormatter
+        if (made != null && dateLocale == locale) {
+            made
+        } else {
+            DateFormat.getDateInstance(DateFormat.SHORT, locale).also {
+                dateLocale = locale
+                dateFormatter = it
+            }
+        }
+    }
+    return formatter.format(Date(atMillis))
+}
 
 /** For the list of chats, where there is little room: the time today, "Yesterday", or a short date. */
 fun formatListTime(atMillis: Long, nowMillis: Long = System.currentTimeMillis()): String {
@@ -292,7 +331,7 @@ fun formatListTime(atMillis: Long, nowMillis: Long = System.currentTimeMillis())
     return when (day) {
         today -> formatTime(atMillis)
         today.minusDays(1) -> "Yesterday"
-        else -> DateFormat.getDateInstance(DateFormat.SHORT).format(Date(atMillis))
+        else -> shortDate(atMillis)
     }
 }
 

@@ -53,6 +53,7 @@ import org.maun.messenger.ui.PermissionsScreen
 import org.maun.messenger.ui.PrivacyUi
 import org.maun.messenger.Messenger
 import org.maun.messenger.ui.ProfileScreen
+import org.maun.messenger.ui.SelectionBar
 import org.maun.messenger.ui.SettingsScreen
 import org.maun.messenger.ui.SignedOutScreen
 import org.maun.messenger.ui.SoundChoices
@@ -402,6 +403,26 @@ class ScreensTest {
     }
 
     // What is on a message, under it: this phone's emoji first, then theirs.
+    // The bar a long press puts in the composer's place: five emoji, no more,
+    // and one question's worth of actions. Shown on its own here because it
+    // lives in the conversation's own state.
+    @Test
+    fun selectionBar() = shoot("selection-bar") {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
+                SelectionBar(
+                    picked = listOf(message(6, false, "Are we still on for today?", 5 * minute)),
+                    reactions = Reactions(mine = "\uD83D\uDC4D"),
+                    onReact = {},
+                    onCopy = {},
+                    onSave = {},
+                    onDelete = {},
+                    onClose = {},
+                )
+            }
+        }
+    }
+
     @Test
     fun chatWithReactions() = shoot("chat-reactions") {
         Chat(

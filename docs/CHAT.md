@@ -7,9 +7,11 @@ Delete, one message at a time. That popup is gone. A long press now starts a
 selection, and the composer's place at the bottom of the screen becomes the
 bar that does something with it:
 
-* **The emoji bar**, when exactly one message is selected: ❤️ 😂 😮 😢 👍 🙏 and
-  a button for a longer list. The emoji this phone already put on the message
-  is marked, and tapping it again takes it off.
+* **The emoji bar**, when exactly one message is selected: 👍 ❤️ 😂 😢 🙏 — five,
+  no more, so the row fits any phone without a second page of emoji to open.
+  The emoji this phone already put on the message is marked, and tapping it
+  again takes it off. (The wire still accepts the wider set an earlier build
+  could send, and shows it; nothing here offers it.)
 * **Copy**, in time order, oldest first, for every text message selected — one
   message or ten, in the order they were written rather than the order the list
   shows them.
@@ -51,6 +53,27 @@ describing something that is not there.
 The database is version 6. The migration from 5 is Room's own: one new table and
 one new column (`outbox.wakes`, which says that an entry with no message of its
 own — a reaction — should still wake the other phone, unlike a receipt).
+
+## Scrolling (Round 10)
+
+Three things were making a long conversation heavy, and all three are fixed:
+
+* **Rows could never be skipped.** `FileActions` carried every callback the
+  file and voice bubbles need. It was rebuilt on every recomposition of the
+  screen, and being part of every row's parameters it made every visible row
+  redraw itself for the mere fact that the screen above it recomposed. It is
+  now `@Immutable` with `equals` over what a row actually draws — the transfers
+  under way, the two messages to be said once, and the voice state — so a row
+  that has nothing new to show is left alone.
+* **Item building churned.** Every change to a conversation rebuilt its items
+  and, with them, a `ZonedDateTime` per message and a parse of every file
+  record. Both are now kept in small bounded caches, so scrolling through a
+  thousand messages does not allocate a date for each of them again.
+* **Smaller things.** The wallpaper's shader is made once instead of on every
+  draw, and the time and date formatters are made once per language instead of
+  once per bubble.
+
+What is still not measured on a device is in `docs/PERFORMANCE.md`.
 
 ## What is not built yet
 
