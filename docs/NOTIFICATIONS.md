@@ -61,14 +61,21 @@ by a test that fails without the change.
    converse *says nothing more once the phone on the connection has taken the
    message*.
 
-2. **A wake-up could queue behind a retrying fetch.**
-   `FetchWorker.schedule()` used `ExistingWorkPolicy.APPEND_OR_REPLACE`, so a
-   wake-up that arrived while an earlier fetch was in backoff waited for that
-   backoff to expire first (WorkManager's default is exponential, starting at
-   30 s). Two messages in a row could therefore be a minute apart.
-   → Fixed: the new fetch *replaces* the waiting one, and the backoff is linear
-   from 5 s. The relay already limits wake-ups for one phone to one per 5 s
-   (`PUSH_REPEAT_MS`), so a burst cannot churn the queue.
+2. **A wake-up could queue behind a retrying fetch, and later could cancel one.**
+   Two rounds of trouble in the same place. First, a wake-up that arrived while
+   an earlier fetch was in WorkManager's backoff waited for the backoff (30 s
+   by default, growing), so two messages in a row could be a minute apart.
+   The first fix made the new fetch *replace* the waiting one — which fixed the
+   wait but introduced a worse failure: a wake-up arriving mid-fetch **cancelled
+   the fetch in progress**, throwing away the decryption and acknowledgement of
+   half a batch, so the phones re-did it from the start.
+   → Fixed (this round): the worker no longer uses WorkManager's retry at all.
+   A fetch that could not finish appends its own next attempt as it ends
+   (`schedule(context, attempt + 1)`, `ExistingWorkPolicy.APPEND_OR_REPLACE`),
+   so there is no backoff to wait behind; and a wake-up *appends* to whatever
+   is queued or running instead of replacing it, so nothing in flight is ever
+   cancelled. The relay still limits wake-ups for one phone to one per 5 s
+   (`PUSH_REPEAT_MS`), which bounds how many fetches can pile up.
 
 3. **The first announcement after a cold start could be swallowed.**
    `UnreadTracker` took its baseline from the first thing it was shown, and
@@ -80,9 +87,29 @@ by a test that fails without the change.
    → Fixed: the baseline is taken in `load()`, from the database, before
    anything can arrive.
 
-4. **Nothing measured the part of the delay the relay cannot see.**
-   The mailbox records the push service's HTTP status (`push_result`, shown as
-   `pushStatus` in Settings) and the phone learns it at the next login. Nothing
+4. **A phone that was pushed but did not come was never pushed again.**
+   The relay allowed one outstanding wake-up (`pending`) and then waited for
+   the phone. If the push service accepted it but the phone never connected —
+   a dozing device, a distributor that dropped the message, a fetch that failed
+   — nothing tried again until *the next message*, or until the queue's 7-day
+   expiry. That is the shape of "the message sat at one tick until I opened the
+   app": the phone had been told once, silently failed, and was never told
+   again.
+   → Fixed: every wake-up now arms a short retry chain on the relay's own
+   alarm: **+20 s, +60 s, +180 s** for a message (`WAKE_RETRY_WAITS_MS`), and
+   **+8 s, +20 s** for a call (`WAKE_RETRY_WAITS_CALL_MS`), because a call's
+   wake-up dies with its 30 s TTL. A retry is skipped, and the chain dropped,
+   when the queue is empty, when there is no address, or when the phone is
+   connected; taking the messages deletes the retry row. The alarm is only ever
+   moved *sooner* (`armAlarm`), so the queue-expiry appointment and the retry
+   appointment coexist instead of overwriting each other.
+   Tests: *wakes the phone again when it does not come, then stops*, *stops
+   waking a phone that came before the next try*, *looks for a ringing call
+   sooner, and gives up sooner*.
+
+5. **Nothing measured the part of the delay the relay cannot see.**
+   The mailbox records the push service's HTTP status (`push_result`) and the
+   phone learns it at the next login. Nothing
    recorded when the wake-up *arrived*, when the fetch ran, or when the
    notification was shown.
    → Fixed: `DeliveryTrace` — a random eight-character event name per wake-up,
@@ -106,7 +133,7 @@ trace above can settle them on a real phone.
   is meant to wake the device; an app whose battery use Android has restricted,
   or one in a low standby bucket, can have high-priority messages held for a
   maintenance window — which is the shape of "about five minutes, sometimes".
-  `DeliveryUi.unrestricted` already warns about this in Settings. The trace's
+  `DeliveryUi.unrestricted` still drives the warning on the home screen. The trace's
   first timestamp is *after* Google's part, so a missing or late `wake` line
   puts the delay on Google or the OEM, and a slow `fetch-*` puts it in the app.
 * **`Urgency: high` for every wake-up.** Google asks that high priority be kept
@@ -117,8 +144,8 @@ trace above can settle them on a real phone.
   Google; nothing in this repository can change that, and lowering the urgency
   of message wake-ups would make Doze delays *worse*, so it was not done.
 * **OEM background killers** (Xiaomi, Oppo, Vivo, Samsung and others) can drop
-  the wake-up or freeze the app afterwards. Settings already links to the
-  phone's own allow-lists; the trace makes an OEM problem visible.
+  the wake-up or freeze the app afterwards. Settings still links to the phone's
+  own notification page; the trace makes an OEM problem visible.
 * **Force-stop.** When the user force-stops an app, Android removes it from the
   push allow-list until it is opened again. No design can work around this;
   UnifiedPush apps have the same limitation.
@@ -137,7 +164,10 @@ trace above can settle them on a real phone.
 * **No polling was added.** No battery-optimisation bypass is requested by the
   app; the only background schedule is the existing hourly catch-up worker.
 * **"Stay connected"** stays off by default and remains a fallback, not a
-  requirement.
+  requirement. It is no longer offered in Settings (Round 8: the technical
+  push/background controls came out, and a plain Notifications section went in
+  their place); the fallback still exists inside the app for phones where
+  nothing can wake Maun.
 
 ## Other devices
 
