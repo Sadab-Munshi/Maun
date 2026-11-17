@@ -1169,7 +1169,10 @@ private fun MessageRow(
                             }
                         }
 
-                        readable -> {
+                        readable -> Column {
+                            // The quote stands above the answer rather than
+                            // under it: the bubble's slot draws one over the
+                            // other, so both need a column of their own.
                             if (quoted != null) InBubbleQuote(quoted = quoted, outgoing = outgoing)
                             InlineMessageBubble(
                                 text = linked,
