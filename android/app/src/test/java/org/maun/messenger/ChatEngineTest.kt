@@ -70,21 +70,37 @@ class ChatEngineTest {
         @Volatile
         var pushUploaded: PushAddress? = null
 
-        val engine = ChatEngine(
+        private val push = object : PushState {
+            override suspend fun wanted() = pushWanted
+            override suspend fun uploaded() = pushUploaded
+            override suspend fun setUploaded(address: PushAddress?) {
+                pushUploaded = address
+            }
+        }
+
+        /** Made anew by [restart]: the app going away and coming back. */
+        var engine = newEngine()
+
+        private fun newEngine() = ChatEngine(
             selfId = id,
             signal = SignalSessions(identity, SignalSessions.newRegistrationId(), db),
             dao = db,
             tx = db,
             scope = scope,
             retryMillis = 300,
-            push = object : PushState {
-                override suspend fun wanted() = pushWanted
-                override suspend fun uploaded() = pushUploaded
-                override suspend fun setUploaded(address: PushAddress?) {
-                    pushUploaded = address
-                }
-            },
+            push = push,
         )
+
+        /**
+         * The app was killed and opened again: a new engine over the same
+         * storage, with nothing in its memory. The old one is left without a
+         * connection, the way a dead one would be.
+         */
+        fun restart() {
+            engine.link = null
+            engine = newEngine()
+        }
+
         private val device = SoftwareDeviceSigner()
         private var registered = false
         private var connection: RelayConnection? = null
@@ -397,13 +413,42 @@ class ChatEngineTest {
         pause()
         assertTrue(alice.chat(bob).all { it.status == MessageStatus.PENDING })
         assertEquals(3, alice.db.outboxSize())
+        // The number the phone waits on to ask Android for a connection.
+        assertEquals(3, alice.engine.unsent.value)
 
         alice.online()
         eventually("sent") { alice.chat(bob).all { it.status == MessageStatus.SENT } }
+        eventually("nothing left to send") { alice.engine.unsent.value == 0 }
         alice.offline()
 
         bob.online()
         eventually("arrived") { bob.chat(alice).size == 3 }
+        assertEquals(listOf("< one", "< two", "< three"), bob.texts(alice))
+    }
+
+    @Test
+    fun `what is waiting to go outlives the app being closed, and leaves without it being opened`() {
+        val bob = Phone().registeredAndOffline()
+        val alice = Phone().knows(bob)
+        bob.knows(alice)
+
+        listOf("one", "two", "three").forEach { alice.send(bob, it) }
+        pause()
+        assertEquals(3, alice.engine.unsent.value)
+
+        // The app is killed before there is a network, and opened again later.
+        alice.restart()
+        eventually("the outbox is counted again from storage") { alice.engine.unsent.value == 3 }
+        assertEquals(3, alice.db.outboxSize())
+
+        // A connection made by the background work alone, the app closed.
+        alice.online()
+        eventually("nothing left to send") { alice.engine.unsent.value == 0 }
+        alice.offline()
+
+        bob.online()
+        eventually("arrived") { bob.chat(alice).size == 3 }
+        // Once each: the queue is emptied as it goes, not replayed.
         assertEquals(listOf("< one", "< two", "< three"), bob.texts(alice))
     }
 

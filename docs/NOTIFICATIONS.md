@@ -180,6 +180,28 @@ trace above can settle them on a real phone.
   their place); the fallback still exists inside the app for phones where
   nothing can wake Maun.
 
+## Messages that cannot leave yet (Round 10)
+
+An outgoing message is saved with everything else and then handed to the
+connection. It used to be that a message written while the phone had no network
+waited for the *next* connection — which, with the app closed and no wake-up
+coming (nobody writes to you to cause one), could be the hourly catch-up worker
+an hour later, or the app being opened.
+
+Now the outbox is counted from storage (`ChatEngine.unsent`, read at start-up
+and after every pass), and a count above zero while the app is not on screen
+asks Android for the one fetch that is already used for wake-ups. That request
+carries a network constraint, so it runs the moment the phone has a network,
+with the app closed, and it survives the process being killed because Android
+keeps it. The worker tries again (20 s, then 40 s) while anything is still
+unsent, and the hourly worker remains the last resort.
+
+Nothing is sent twice: the queue is emptied row by row as the relay confirms
+each one, the sealed bytes of a row are kept so a retry sends the same message
+with the same ID, and the receiving phone ignores a message ID it already has
+(unique index on peer, direction and ID; covered by
+`the same delivery twice is saved once`).
+
 ## Other devices
 
 * **Phones without Google Play services (HMS-only).** Huawei's Push Kit needs a
@@ -209,6 +231,7 @@ For each case, `adb logcat -s MaunDelivery` gives the four steps; compare the
 | Process killed (`adb shell am kill`) | `wake` cold-starts the process; `shown` follows |
 | Force-stop | nothing until the app is opened — Android's rule, documented |
 | Offline, then reconnect | phone logs in, mailbox pumps, one notification for the batch |
+| Written offline, app then closed (Round 10) | the hourly worker or the one asked for at the moment the message was queued connects, the outbox empties, and the message arrives once — no need to open the app |
 | Token refresh (new endpoint) | relay's `push` row replaced at next login; one wake-up per message still |
 | Many messages at once | one notification, counted; at most one wake-up per 5 s |
 | Incoming call | `step=call`; ring within the 30 s TTL, or nothing |

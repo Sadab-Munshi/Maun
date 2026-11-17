@@ -80,6 +80,16 @@ class ChatEngine(
     /** For each person whose messages are stuck: why, in words for the screen. */
     val waiting: StateFlow<Map<String, String>> = _waiting.asStateFlow()
 
+    private val _unsent = MutableStateFlow(0)
+
+    /**
+     * How many things are saved and waiting to go to the relay: messages
+     * written, receipts owed. Kept in storage, not in memory, so it means the
+     * same thing after the app has been closed and opened again; anything
+     * above zero is a reason for the phone to be woken when it has a network.
+     */
+    val unsent: StateFlow<Int> = _unsent.asStateFlow()
+
     private val _pushProblem = MutableStateFlow<String?>(null)
 
     /** Why the relay cannot wake this phone, in words for the screen. Null when it can, or need not. */
@@ -140,6 +150,8 @@ class ChatEngine(
     private var relayHasPush = false
 
     init {
+        // What a previous run left in the outbox counts from the first moment.
+        scope.launch { quietly { noteUnsent() } }
         scope.launch {
             for (wakeUp in wakeUps) {
                 val asked = outboxRuns.value
@@ -151,10 +163,17 @@ class ChatEngine(
                     // A storage error. The entries are still there for the next attempt.
                     retryLater()
                 }
+                // A pass that was cut short still says how much is left.
+                quietly { noteUnsent() }
                 // Anything asked for while this pass ran gets a pass of its own.
                 outboxRuns.compareAndSet(asked, 0)
             }
         }
+    }
+
+    /** Notes how much is waiting to go, for whoever keeps the phone trying. */
+    private suspend fun noteUnsent() {
+        _unsent.value = withContext(io) { dao.outboxSize() }
     }
 
     /** Asks for a pass over the outbox. */
@@ -523,6 +542,7 @@ class ChatEngine(
                 dao.insertOutbox(OutboxEntity(peer = peer, messageId = id, payload = Payload.encode(Payload.Text(id, at, trimmed))))
             }
         }
+        noteUnsent()
         kick()
     }
 
@@ -564,7 +584,10 @@ class ChatEngine(
                 true
             }
         }
-        if (queued) kick()
+        if (queued) {
+            noteUnsent()
+            kick()
+        }
     }
 
     /** The file record of message [seq], or null when there is no such message or it has no file. */
@@ -591,6 +614,7 @@ class ChatEngine(
                 dao.deleteAllMessages()
             }
         }
+        noteUnsent()
     }
 
     /**
@@ -823,6 +847,7 @@ class ChatEngine(
             }
         }
         _waiting.value = held
+        noteUnsent()
         if (held.isNotEmpty()) retryLater()
     }
 

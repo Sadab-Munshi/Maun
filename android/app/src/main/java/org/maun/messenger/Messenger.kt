@@ -223,6 +223,19 @@ class Messenger(context: Context) {
     /** For each person whose messages are stuck: why, in words for the screen. */
     val waiting: StateFlow<Map<String, String>> = _waiting.asStateFlow()
 
+    private val _unsent = MutableStateFlow(0)
+
+    /**
+     * How much is saved and waiting to go to the relay. Anything above zero
+     * while the app is not on screen is a reason to ask Android to wake this
+     * phone as soon as it has a network, so that a message written without one
+     * leaves on its own instead of waiting for the app to be opened.
+     */
+    val unsent: StateFlow<Int> = _unsent.asStateFlow()
+
+    /** What is waiting to go, for the worker that runs while the app is closed. */
+    fun unsentNow(): Int = _unsent.value
+
     private val _pushProblem = MutableStateFlow<String?>(null)
 
     /** Why this phone cannot be woken for new messages, in words for the screen. Null when all is well. */
@@ -440,6 +453,15 @@ class Messenger(context: Context) {
             },
         )
         chatScope.launch { chat.waiting.collect { _waiting.value = it } }
+        chatScope.launch {
+            chat.unsent.collect { pending ->
+                _unsent.value = pending
+                // Written without a connection and then left alone: Android is
+                // asked to bring this phone back when there is a network, so
+                // the message leaves without the app being opened again.
+                if (pending > 0 && !inForeground) FetchWorker.schedule(appContext)
+            }
+        }
         chatScope.launch { chat.pushProblem.collect { _pushProblem.value = it } }
         chatScope.launch { chat.moved.collect { _moved.emit(it) } }
         val created = RelayConnection(
@@ -575,6 +597,8 @@ class Messenger(context: Context) {
         files = null
         _relay.value = RelayState.Offline
         _waiting.value = emptyMap()
+        // Nothing is waiting to go once there is nothing to send it with.
+        _unsent.value = 0
     }
 
     // ---- When to be connected --------------------------------------------------
@@ -1028,9 +1052,15 @@ class Messenger(context: Context) {
      * The app left the screen. The connection lingers briefly, so turning the
      * phone or answering a permission prompt does not reconnect.
      */
-    fun onBackground() = synchronized(this) {
-        inForeground = false
-        connectOrDrop(linger = true)
+    fun onBackground() {
+        val pending = synchronized(this) {
+            inForeground = false
+            connectOrDrop(linger = true)
+            _unsent.value
+        }
+        // Leaving the screen with something unsent: the connection is about to
+        // go, so a wake-up is asked for rather than waited for.
+        if (pending > 0) scope.launch { FetchWorker.schedule(appContext) }
     }
 
     /** "Stay connected" was switched on or off: [ConnectedService][org.maun.messenger.push.ConnectedService] started or stopped. */

@@ -26,15 +26,24 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
     override suspend fun doWork(): Result {
         DeliveryTrace.stepped(applicationContext, DeliveryTrace.FETCH_START)
         val attempt = inputData.getInt(KEY_ATTEMPT, 0)
-        val caughtUp = (applicationContext as MaunApp).messenger.fetch()
+        val messenger = (applicationContext as MaunApp).messenger
+        val caughtUp = messenger.fetch()
         DeliveryTrace.stepped(applicationContext, DeliveryTrace.FETCH_DONE, "caughtUp=$caughtUp attempt=$attempt")
-        // What could not be fetched in time stays on the relay. It is tried
-        // again straight away rather than through WorkManager's retry, which
-        // would put a backoff between the attempts that a wake-up arriving in
-        // the meantime would have to wait behind.
-        if (!caughtUp && attempt + 1 < MAX_ATTEMPTS) {
-            schedule(applicationContext, attempt + 1)
-            DeliveryTrace.stepped(applicationContext, DeliveryTrace.FETCH_AGAIN, "attempt=${attempt + 1}")
+        // What could not be fetched in time stays on the relay, and what could
+        // not be sent stays in the outbox. Either is tried again rather than
+        // through WorkManager's retry, which would put a backoff between the
+        // attempts that a wake-up arriving in the meantime would have to wait
+        // behind. The wait between tries grows, so a phone on a bad network is
+        // not woken every few seconds, and the hourly fetch is still there for
+        // whatever is left after the last try.
+        val unsent = messenger.unsentNow()
+        if ((!caughtUp || unsent > 0) && attempt + 1 < MAX_ATTEMPTS) {
+            schedule(applicationContext, attempt + 1, delayMillis = RETRY_WAIT_MILLIS * (attempt + 1))
+            DeliveryTrace.stepped(
+                applicationContext,
+                DeliveryTrace.FETCH_AGAIN,
+                "attempt=${attempt + 1} unsent=$unsent",
+            )
         }
         return Result.success()
     }
@@ -48,6 +57,9 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         private const val HOURLY = "fetch-hourly"
         private const val KEY_ATTEMPT = "attempt"
         private const val MAX_ATTEMPTS = 3
+
+        /** How long the first repeat waits, before the second: grown by the attempt number. */
+        private const val RETRY_WAIT_MILLIS = 20_000L
 
         private val online = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
 
@@ -65,11 +77,21 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
          * without bound: the relay wakes a phone at most once every five
          * seconds.
          */
-        fun schedule(context: Context, attempt: Int = 0) {
+        fun schedule(context: Context, attempt: Int = 0, delayMillis: Long = 0L) {
             val request = OneTimeWorkRequestBuilder<FetchWorker>()
                 .setConstraints(online)
                 .setInputData(workDataOf(KEY_ATTEMPT to attempt))
-                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                .apply {
+                    if (delayMillis > 0) {
+                        // A repeat that is waiting for its moment: it must not
+                        // hold the phone awake, and urgent work may not be
+                        // given a delay at all.
+                        setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
+                    } else {
+                        // A wake-up or the app asking: wanted now.
+                        setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                    }
+                }
                 .build()
             WorkManager.getInstance(context).enqueueUniqueWork(NOW, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
         }
