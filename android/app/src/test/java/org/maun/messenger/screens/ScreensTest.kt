@@ -483,6 +483,11 @@ class ScreensTest {
     fun settingsDark() = shoot("settings-dark") { Settings() }
 
     @Test
+    // A taller screen so that the whole page, including Message sounds, is in one picture.
+    @Config(qualifiers = "w360dp-h1500dp-xhdpi")
+    fun settingsOnATallScreen() = shoot("settings-tall") { Settings() }
+
+    @Test
     fun settingsSoundsSilent() = shoot("settings-sounds-silent") {
         Settings(
             sounds = SoundChoices(
