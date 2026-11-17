@@ -137,8 +137,8 @@ fun DeliveryCard(
                 else -> {
                     Note(
                         "Messages arrive when you open Maun, and Maun looks for them about once an hour. " +
-                            "This phone has no push service. Install a push app such as Sunup and open Maun again, " +
-                            "or turn on Stay connected below if push notifications are blocked on your device.",
+                            "This phone has no push service. Install a push app such as Sunup for Android and " +
+                            "open Maun again, and messages will be announced as they arrive.",
                     )
                 }
             }
@@ -204,7 +204,7 @@ internal fun Context.openAppNotificationSettings() =
     open(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
 
 // Asking to be left running is what a messenger without a push service has to
-// do, and the user turned "Stay connected" on themselves.
+// do, and the app only asks while it is keeping the connection open itself.
 @SuppressLint("BatteryLife")
 private fun batterySettings(context: Context): Intent =
     Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}"))
