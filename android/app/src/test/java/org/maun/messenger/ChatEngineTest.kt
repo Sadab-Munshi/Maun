@@ -503,8 +503,10 @@ class ChatEngineTest {
 
     @Test
     fun `an answer says which message it answers, and the quote needs nothing sent`() {
+        // Both phones have to be on the relay before either can be written to:
+        // a message to an address with no keys waits, as it should.
         val bob = Phone().registeredAndOffline()
-        val alice = Phone().knows(bob)
+        val alice = Phone().registeredAndOffline().knows(bob)
         bob.knows(alice)
 
         bob.send(alice, "are we still on for six?")
