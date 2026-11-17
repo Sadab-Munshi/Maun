@@ -255,7 +255,7 @@ class ProfilePictures(
         return Payload.Avatar(version, key, json.optLong("size", 0L))
     }
 
-    private companion object {
+    internal companion object {
         const val KEY_SELF = "avatar:self"
 
         /** The picture on this phone is newer than the one on the relay, and is still to go. */

@@ -23,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,6 +37,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import org.maun.messenger.AppLock
+import kotlinx.coroutines.launch
 import org.maun.messenger.Avatars
 import org.maun.messenger.Messenger
 import org.maun.messenger.crypto.Recovery
@@ -76,12 +78,13 @@ fun ProfileScreen(
     var settingRecovery by remember { mutableStateOf(false) }
     var confirmingRecoveryOff by remember { mutableStateOf(false) }
     var recoveryRemoving by remember { mutableStateOf(false) }
+    var recoveryProblem by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
     LaunchedEffect(recoveryRemoving) {
         if (!recoveryRemoving) return@LaunchedEffect
         recoveryProblem = onDisableRecovery()
         recoveryRemoving = false
     }
-    var recoveryProblem by remember { mutableStateOf<String?>(null) }
 
     val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         AppLock.externalFlow = false
@@ -220,7 +223,8 @@ fun ProfileScreen(
                 onCancel = { settingRecovery = false },
                 onConfirm = { passphrase ->
                     settingRecovery = false
-                    recoveryProblem = onEnableRecovery(passphrase)
+                    recoveryProblem = null
+                    scope.launch { recoveryProblem = onEnableRecovery(passphrase) }
                 },
             )
         }
