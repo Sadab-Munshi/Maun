@@ -67,6 +67,11 @@ data class MessageEntity(
     val at: Long,
     /** Outgoing only: a [MessageStatus]. */
     val status: Int = MessageStatus.PENDING,
+    /**
+     * The ID of the message this one answers, when it answers one. Only the
+     * ID travels; the quote is drawn from this phone's own copy.
+     */
+    @ColumnInfo(name = "reply_to") val replyTo: String? = null,
     /** Incoming only: not yet shown on screen. */
     val unread: Boolean = false,
     /** Incoming only: a [ReceiptLevel]. */

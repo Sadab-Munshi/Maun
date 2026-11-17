@@ -98,6 +98,26 @@ class PayloadTest {
     }
 
     @Test
+    fun `a reply carries the ID it answers, and an older message without one still arrives`() {
+        val id = "3f2c9a1e-0000-4000-8000-00000000000f"
+        val quoted = "3f2c9a1e-0000-4000-8000-000000000010"
+        val reply = Payload.Text(id, 1_794_700_000_000, "yes, six it is", quoted)
+        assertEquals(reply, Payload.decode(Payload.encode(reply)))
+
+        // A message sent before replies existed: no "re", and it is a message.
+        val plain = Payload.Text(id, 1_794_700_000_000, "just this")
+        assertEquals(plain, Payload.decode(Payload.encode(plain)))
+
+        // An answer to something whose ID makes no sense is still a message,
+        // arriving without the quote above it.
+        val json = org.json.JSONObject()
+            .put("v", 1).put("k", "text").put("id", id).put("at", 5L)
+            .put("text", "hello").put("re", "not an id")
+        val read = Payload.decode(Payload.pad(json.toString().toByteArray(Charsets.UTF_8)))
+        assertEquals(Payload.Text(id, 5L, "hello", null), read)
+    }
+
+    @Test
     fun `a reaction survives the round trip, and only known emoji travel`() {
         val id = "3f2c9a1e-0000-4000-8000-00000000000e"
         val on = Payload.Reaction(id, Payload.REACTIONS.first(), 1_794_700_000_000)

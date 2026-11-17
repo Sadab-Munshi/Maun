@@ -120,14 +120,33 @@ class ScreensTest {
         )
     }
 
-    private fun message(seq: Long, outgoing: Boolean, text: String, ago: Long, status: Int = MessageStatus.READ, kind: Int = MessageKind.TEXT) =
-        MessageEntity(seq = seq, peer = asha.id, id = "m$seq", outgoing = outgoing, kind = kind, text = text, at = now - ago, status = status)
+    private fun message(
+        seq: Long,
+        outgoing: Boolean,
+        text: String,
+        ago: Long,
+        status: Int = MessageStatus.READ,
+        kind: Int = MessageKind.TEXT,
+        replyTo: String? = null,
+    ) = MessageEntity(
+        seq = seq,
+        peer = asha.id,
+        id = "m$seq",
+        outgoing = outgoing,
+        kind = kind,
+        text = text,
+        at = now - ago,
+        status = status,
+        replyTo = replyTo,
+    )
 
     @Composable
     private fun Chat(
         contactName: String? = asha.name,
         waiting: String? = null,
         reactions: Map<String, Reactions> = emptyMap(),
+        /** The newest message answers the one before it. */
+        replying: Boolean = false,
     ) {
         ChatScreen(
             peerId = asha.id,
@@ -137,7 +156,8 @@ class ScreensTest {
             peerVerified = true,
             reactions = reactions,
             // Newest first.
-            messages = listOf(
+            messages = listOfNotNull(
+                if (replying) message(10, true, "Six it is, see you there", 0, MessageStatus.SENT, replyTo = "m6") else null,
                 message(9, true, "Leaving now", 1 * minute, MessageStatus.PENDING),
                 message(8, true, "See you at six", 2 * minute, MessageStatus.SENT),
                 message(7, true, "Yes! I booked the table by the window, the one you liked last time. The menu is at https://maun.example.org/menu?table=12 if you want to look.", 3 * minute, MessageStatus.DELIVERED),
@@ -151,7 +171,7 @@ class ScreensTest {
             hasOlder = false,
             waiting = waiting,
             relay = RelayState.Online,
-            onSend = {},
+            onSend = { _, _ -> },
             onSeen = {},
             onLoadOlder = {},
             onDelete = {},
@@ -296,7 +316,7 @@ class ScreensTest {
             waiting = null,
             relay = RelayState.Online,
             files = FileActions(progress = mapOf(7L to 0.62f), loadImage = { seq, _, _ -> if (seq == 1L) photo else null }),
-            onSend = {},
+            onSend = { _, _ -> },
             onSeen = {},
             onLoadOlder = {},
             onDelete = {},
@@ -325,7 +345,7 @@ class ScreensTest {
             hasOlder = false,
             waiting = null,
             relay = RelayState.Online,
-            onSend = {},
+            onSend = { _, _ -> },
             onSeen = {},
             onLoadOlder = {},
             onDelete = {},
@@ -355,7 +375,7 @@ class ScreensTest {
             waiting = null,
             relay = RelayState.Online,
             files = FileActions(progress = mapOf(5L to 0.4f), voice = VoiceState(seq = 3, playing = true, positionMillis = 15_000, durationMillis = 42_000)),
-            onSend = {},
+            onSend = { _, _ -> },
             onSeen = {},
             onLoadOlder = {},
             onDelete = {},
@@ -422,6 +442,11 @@ class ScreensTest {
             }
         }
     }
+
+    // A message that answers an earlier one: the quote comes from this phone's
+    // own copy, so nothing extra is sent to draw it.
+    @Test
+    fun chatReplying() = shoot("chat-reply") { Chat(replying = true) }
 
     @Test
     fun chatWithReactions() = shoot("chat-reactions") {

@@ -646,10 +646,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun sendText(peer: String, text: String) {
+    fun sendText(peer: String, text: String, replyTo: String? = null) {
         viewModelScope.launch {
             try {
-                messenger.sendText(peer, text)
+                messenger.sendText(peer, text, replyTo)
                 // Handed to the sending queue: one sound, once. Nothing that
                 // comes back later (a receipt, a retry, a message read from
                 // storage) makes a sound of its own.

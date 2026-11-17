@@ -1376,9 +1376,9 @@ class Messenger(context: Context) {
         files?.sweep()
     }
 
-    /** Queues a message. It leaves as soon as there is a connection. */
-    suspend fun sendText(peer: String, text: String) {
-        engine?.sendText(peer, text)
+    /** Queues a message, answering [replyTo] when given. It leaves as soon as there is a connection. */
+    suspend fun sendText(peer: String, text: String, replyTo: String? = null) {
+        engine?.sendText(peer, text, replyTo)
     }
 
     /** The conversation with [peer] is on screen. */

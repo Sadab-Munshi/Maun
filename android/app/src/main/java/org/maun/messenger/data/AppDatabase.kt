@@ -112,7 +112,7 @@ interface ContactDao {
         PreKeyEntity::class,
         KyberUseEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
     // Room writes these migrations itself from the committed schema files, so
     // they cannot disagree with them.
@@ -121,6 +121,7 @@ interface ContactDao {
         AutoMigration(from = 3, to = 4),
         AutoMigration(from = 4, to = 5),
         AutoMigration(from = 5, to = 6),
+        AutoMigration(from = 6, to = 7),
     ],
 )
 abstract class AppDatabase : RoomDatabase(), Transactor {

@@ -170,7 +170,8 @@ class ChatEngineTest {
             return this
         }
 
-        fun send(to: Phone, text: String) = runBlocking { engine.sendText(to.id, text) }
+        fun send(to: Phone, text: String, replyTo: String? = null) =
+            runBlocking { engine.sendText(to.id, text, replyTo) }
 
         fun react(to: Phone, messageId: String, emoji: String) = runBlocking { engine.react(to.id, messageId, emoji) }
 
@@ -498,6 +499,35 @@ class ChatEngineTest {
 
         alice.online()
         eventually("the reaction is gone") { alice.db.reactionsOf(bob.id, id).isEmpty() }
+    }
+
+    @Test
+    fun `an answer says which message it answers, and the quote needs nothing sent`() {
+        val bob = Phone().registeredAndOffline()
+        val alice = Phone().knows(bob)
+        bob.knows(alice)
+
+        bob.send(alice, "are we still on for six?")
+        bob.online()
+        eventually("sent") { bob.chat(alice).all { it.status == MessageStatus.SENT } }
+        bob.offline()
+
+        alice.online()
+        eventually("arrived") { alice.chat(bob).any { it.text.startsWith("are we still") } }
+        val asked = alice.chat(bob).single { it.text.startsWith("are we still") }
+
+        alice.send(bob, "yes, six it is", replyTo = asked.id)
+        eventually("sent") {
+            alice.chat(bob).any { it.outgoing && it.replyTo == asked.id && it.status == MessageStatus.SENT }
+        }
+        alice.offline()
+
+        bob.online()
+        eventually("the answer arrived") { bob.chat(alice).any { !it.outgoing && it.text == "yes, six it is" } }
+        val answer = bob.chat(alice).single { it.text == "yes, six it is" }
+        // Only the ID travelled; each phone draws the quote from its own copy.
+        assertEquals(asked.id, answer.replyTo)
+        assertEquals("are we still on for six?", bob.chat(alice).single { it.id == answer.replyTo }.text)
     }
 
     @Test

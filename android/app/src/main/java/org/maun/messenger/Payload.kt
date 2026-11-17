@@ -10,8 +10,18 @@ import org.json.JSONObject
  */
 sealed interface Payload {
 
-    /** [id] is chosen by the sender and names the message in later receipts. */
-    data class Text(val id: String, val sentAt: Long, val text: String) : Payload
+    /**
+     * [id] is chosen by the sender and names the message in later receipts.
+     * [replyTo] is the ID of an earlier message of the conversation this one
+     * answers, when it answers one: the quoted part is drawn from the reader's
+     * own copy, so a reply carries no more than that ID.
+     */
+    data class Text(
+        val id: String,
+        val sentAt: Long,
+        val text: String,
+        val replyTo: String? = null,
+    ) : Payload
 
     /** IDs of the receiver's messages that have arrived on, or been read on, the sender's phone. */
     /** A file: where its encrypted form is on the relay, and the key that opens it. */
@@ -158,7 +168,10 @@ sealed interface Payload {
         fun encode(payload: Payload): ByteArray {
             val json = JSONObject().put("v", VERSION)
             when (payload) {
-                is Text -> json.put("k", "text").put("id", payload.id).put("at", payload.sentAt).put("text", payload.text)
+                is Text -> {
+                    json.put("k", "text").put("id", payload.id).put("at", payload.sentAt).put("text", payload.text)
+                    payload.replyTo?.let { json.put("re", it) }
+                }
                 is File -> payload.file.toWire(json.put("k", "file").put("id", payload.id).put("at", payload.sentAt))
                 is Avatar -> {
                     json.put("k", "avatar").put("ver", payload.version)
@@ -197,7 +210,10 @@ sealed interface Payload {
                     val id = json.optString("id")
                     val text = json.optString("text")
                     if (!isMessageId(id) || text.isEmpty() || !json.has("at")) return Unknown
-                    Text(id, json.optLong("at"), text)
+                    // A reply to something whose ID makes no sense is still a
+                    // message: it arrives, without the quote above it.
+                    val replyTo = json.optString("re").takeIf { isMessageId(it) }
+                    Text(id, json.optLong("at"), text, replyTo)
                 }
                 "file" -> {
                     val id = json.optString("id")

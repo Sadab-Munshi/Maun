@@ -12,9 +12,15 @@ bar that does something with it:
   The emoji this phone already put on the message is marked, and tapping it
   again takes it off. (The wire still accepts the wider set an earlier build
   could send, and shows it; nothing here offers it.)
+* **Reply** to the one selected message: a strip above the field says what is
+  being answered, and the answer stands under a quote of it. Only the answered
+  message's ID travels; the quoted words are drawn from each phone's own copy of
+  the conversation, so a reply says no more than a message does.
 * **Copy**, in time order, oldest first, for every text message selected — one
   message or ten, in the order they were written rather than the order the list
   shows them.
+* **Share** for a selected file: the same read-only, short-lived content URI the
+  file bubble already hands to another app, so nothing is copied or re-saved.
 * **Save**, when the single selected message is a file: the same one-tap save to
   Gallery or Downloads/Maun as before.
 * **Delete**, once for the whole selection, with one question that says how many
@@ -50,6 +56,15 @@ Deleting a message deletes the reactions on it, forgetting or blocking someone
 deletes theirs, and clearing every message clears the table: nothing is left
 describing something that is not there.
 
+## Replies (Round 10)
+
+`messages.reply_to` holds the ID of the message an answer answers, nothing more
+(database version 7, Room's own migration from 6). A reply whose quoted message
+this phone never received still arrives and simply stands on its own; a quote
+whose ID is not a message ID is dropped at the payload, and the text arrives
+without it. Deleting the quoted message leaves the answer without a quote rather
+than removing the answer.
+
 The database is version 6. The migration from 5 is Room's own: one new table and
 one new column (`outbox.wakes`, which says that an entry with no message of its
 own — a reaction — should still wake the other phone, unlike a receipt).
@@ -77,5 +92,5 @@ What is still not measured on a device is in `docs/PERFORMANCE.md`.
 
 ## What is not built yet
 
-Reply, forward and share from the selection bar, and opening a conversation at a
-particular message. They are the next steps of the same plan.
+Forwarding to another conversation, and opening a conversation at a particular
+message (from a notification). They are the next steps of the same plan.

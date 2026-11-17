@@ -531,7 +531,7 @@ class ChatEngine(
     // ---- Called by the app ---------------------------------------------------
 
     /** Queues [text] for [peer], who must be a contact. Returns as soon as it is saved. */
-    suspend fun sendText(peer: String, text: String) {
+    suspend fun sendText(peer: String, text: String, replyTo: String? = null) {
         val trimmed = text.trim()
         require(trimmed.isNotEmpty()) { "nothing to send" }
         require(trimmed.toByteArray(Charsets.UTF_8).size <= Payload.MAX_TEXT_BYTES) { "message too long" }
@@ -540,10 +540,26 @@ class ChatEngine(
         withContext(io) {
             tx.inTransaction {
                 check(dao.isContact(peer)) { "not a contact" }
+                // Only a message this phone has can be answered.
+                val answering = replyTo?.takeIf { it.isNotEmpty() && dao.seqOf(peer, it) != null }
                 dao.insertMessage(
-                    MessageEntity(peer = peer, id = id, outgoing = true, text = trimmed, at = at, status = MessageStatus.PENDING),
+                    MessageEntity(
+                        peer = peer,
+                        id = id,
+                        outgoing = true,
+                        text = trimmed,
+                        at = at,
+                        status = MessageStatus.PENDING,
+                        replyTo = answering,
+                    ),
                 )
-                dao.insertOutbox(OutboxEntity(peer = peer, messageId = id, payload = Payload.encode(Payload.Text(id, at, trimmed))))
+                dao.insertOutbox(
+                    OutboxEntity(
+                        peer = peer,
+                        messageId = id,
+                        payload = Payload.encode(Payload.Text(id, at, trimmed, answering)),
+                    ),
+                )
             }
         }
         noteUnsent()
@@ -779,7 +795,8 @@ class ChatEngine(
             tx.inTransaction {
                 if (dao.isBlocked(from)) return@inTransaction false
                 when (val payload = Payload.decode(signal.decrypt(from, kind, body))) {
-                    is Payload.Text -> saveIncoming(from, payload.id, payload.sentAt, MessageKind.TEXT, payload.text)
+                    is Payload.Text ->
+                        saveIncoming(from, payload.id, payload.sentAt, MessageKind.TEXT, payload.text, payload.replyTo)
                     is Payload.File ->
                         saveIncoming(from, payload.id, payload.sentAt, MessageKind.FILE, payload.file.toLocal())
                     is Payload.Receipt -> {
@@ -826,7 +843,14 @@ class ChatEngine(
         }
     }
 
-    private fun saveIncoming(from: String, id: String, sentAt: Long, kind: Int, text: String): Boolean {
+    private fun saveIncoming(
+        from: String,
+        id: String,
+        sentAt: Long,
+        kind: Int,
+        text: String,
+        replyTo: String? = null,
+    ): Boolean {
         val contact = dao.isContact(from)
         val inserted = dao.insertMessage(
             MessageEntity(
@@ -839,6 +863,9 @@ class ChatEngine(
                 at = minOf(sentAt, now()),
                 unread = true,
                 receipt = if (contact) ReceiptLevel.DELIVERED else ReceiptLevel.NONE,
+                // The quote is drawn from this phone's own copy; an answer to
+                // something that never arrived simply stands on its own.
+                replyTo = replyTo?.takeIf { dao.seqOf(from, it) != null },
             ),
         ) != -1L
         if (!inserted || !contact) return false

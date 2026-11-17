@@ -165,7 +165,8 @@ fun ChatScreen(
     hasOlder: Boolean,
     waiting: String?,
     relay: RelayState,
-    onSend: (String) -> Unit,
+    /** Sends the text, answering the message whose ID is given when there is one. */
+    onSend: (text: String, replyTo: String?) -> Unit,
     onSeen: () -> Unit,
     files: FileActions = FileActions(),
     /** The messages have not been read from storage yet; say nothing about them until they have. */
@@ -203,6 +204,10 @@ fun ChatScreen(
     // What was long-pressed, or tapped while something is: the bar below does
     // for one message or for many what the old popup did for one.
     var selection by remember(peerId) { mutableStateOf<Set<Long>>(emptySet()) }
+    // The message the composer is answering, until it is sent or put down.
+    var replying by remember(peerId) { mutableStateOf<MessageEntity?>(null) }
+    // The quotes are drawn from this phone's own copy of the conversation.
+    val byId = remember(messages) { messages.associateBy { it.id } }
     var showAttachSheet by rememberSaveable { mutableStateOf(false) }
 
     val currentMessages by rememberUpdatedState(messages)
@@ -353,6 +358,7 @@ fun ChatScreen(
                                                     selected = item.message.seq in selection,
                                                     selectionActive = selection.isNotEmpty(),
                                                     reactions = reactions[item.message.id],
+                                                    quoted = item.message.replyTo?.let { byId[it] },
                                                     onTap = { selection = toggle(selection, item.message.seq) },
                                                     onLongPress = {
                                                         // A notice is not a message: nothing to do with it.
@@ -413,7 +419,12 @@ fun ChatScreen(
                             if (selection.isEmpty()) {
                                 Composer(
                                     peerId = peerId,
-                                    onSend = onSend,
+                                    replyingTo = replying,
+                                    onCancelReply = { replying = null },
+                                    onSend = { text ->
+                                        onSend(text, replying?.id)
+                                        replying = null
+                                    },
                                     onAttach = { showAttachSheet = true },
                                     onCamera = triggerCamera,
                                     onVoice = files.onVoice,
@@ -443,6 +454,17 @@ fun ChatScreen(
                                             Attachment.fromLocal(message.text)?.takeIf { message.kind == MessageKind.FILE }
                                         }
                                         if (one != null && file != null) files.onSave(one.seq, file)
+                                        selection = emptySet()
+                                    },
+                                    onReply = {
+                                        replying = one
+                                        selection = emptySet()
+                                    },
+                                    onShare = {
+                                        val file = one?.let { message ->
+                                            Attachment.fromLocal(message.text)?.takeIf { message.kind == MessageKind.FILE }
+                                        }
+                                        if (one != null && file != null) files.onShare(one.seq, file)
                                         selection = emptySet()
                                     },
                                     onDelete = { deleting = picked },
@@ -539,6 +561,95 @@ fun ChatScreen(
     }
 }
 
+/** One line that stands for a message when it is quoted: what it says, or what it is. */
+private fun quotePreview(message: MessageEntity): String = when (message.kind) {
+    MessageKind.FILE -> Attachment.fromLocal(message.text)?.let { file ->
+        when {
+            file.isVoice -> "Voice message"
+            file.isImage -> "Photo"
+            else -> file.name
+        }
+    } ?: "File"
+    MessageKind.UNREADABLE -> "A message that could not be decrypted"
+    else -> message.text.replace('\n', ' ').ifBlank { "Message" }
+}
+
+/**
+ * The quote inside a bubble: who it was, and the first line of it, over the
+ * text that answers it. The words come from this phone's own copy of the
+ * conversation, so nothing extra travelled to make it appear.
+ */
+@Composable
+private fun InBubbleQuote(quoted: MessageEntity, outgoing: Boolean) {
+    val chatColors = LocalChatColors.current
+    val accent = if (outgoing) chatColors.outgoingMeta else chatColors.incomingMeta
+    Row(
+        modifier = Modifier
+            .padding(start = 9.dp, end = 9.dp, top = 6.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(accent.copy(alpha = 0.10f)),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(30.dp)
+                .background(accent, RoundedCornerShape(2.dp)),
+        )
+        Column(modifier = Modifier.padding(start = 8.dp, top = 3.dp, bottom = 3.dp)) {
+            Text(
+                text = if (quoted.outgoing) "You" else "Them",
+                style = MaterialTheme.typography.labelSmall,
+                color = accent,
+            )
+            Text(
+                text = quotePreview(quoted),
+                style = MaterialTheme.typography.bodySmall,
+                color = accent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/** The strip above the field that says what the next message will answer. */
+@Composable
+private fun QuotedStrip(quoted: MessageEntity, onCancel: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        color = colors.surfaceContainerHigh,
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, bottom = 6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .height(38.dp)
+                    .background(colors.primary, RoundedCornerShape(2.dp)),
+            )
+            Column(modifier = Modifier.weight(1f).padding(start = 10.dp, top = 6.dp, bottom = 6.dp)) {
+                Text(
+                    text = if (quoted.outgoing) "You" else "Reply",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = colors.primary,
+                )
+                Text(
+                    text = quotePreview(quoted),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(onClick = onCancel) {
+                Icon(MaunIcons.Close, contentDescription = "Stop replying")
+            }
+        }
+    }
+}
+
 /** Adds or removes one message from the selection. */
 private fun toggle(selection: Set<Long>, seq: Long): Set<Long> =
     if (seq in selection) selection - seq else selection + seq
@@ -557,6 +668,10 @@ internal fun SelectionBar(
     onSave: () -> Unit,
     onDelete: () -> Unit,
     onClose: () -> Unit,
+    /** Answer the one selected message. */
+    onReply: () -> Unit = {},
+    /** Hand the selected file to another app on this phone, read-only. */
+    onShare: () -> Unit = {},
 ) {
     val colors = MaterialTheme.colorScheme
     val one = picked.singleOrNull()
@@ -599,11 +714,15 @@ internal fun SelectionBar(
                     style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier.weight(1f),
                 )
+                if (one != null) {
+                    TextButton(onClick = onReply) { Text("Reply") }
+                }
                 if (text) {
                     TextButton(onClick = onCopy) { Text("Copy") }
                 }
                 if (file) {
                     TextButton(onClick = onSave) { Text("Save") }
+                    TextButton(onClick = onShare) { Text("Share") }
                 }
                 TextButton(onClick = onDelete) {
                     Text("Delete", color = colors.error)
@@ -894,6 +1013,8 @@ private fun MessageRow(
     selectionActive: Boolean = false,
     /** The emoji on it, from each side. */
     reactions: Reactions? = null,
+    /** The message this one answers, when this phone still has it. */
+    quoted: MessageEntity? = null,
     onTap: () -> Unit = {},
     onLongPress: () -> Unit = {},
     files: FileActions = FileActions(),
@@ -1049,6 +1170,7 @@ private fun MessageRow(
                         }
 
                         readable -> {
+                            if (quoted != null) InBubbleQuote(quoted = quoted, outgoing = outgoing)
                             InlineMessageBubble(
                                 text = linked,
                                 textColor = text,
@@ -1250,6 +1372,9 @@ private fun Composer(
     onAttach: () -> Unit,
     onCamera: () -> Unit,
     onVoice: (File, Long) -> Unit,
+    /** The message this text will answer, if any. */
+    replyingTo: MessageEntity? = null,
+    onCancelReply: () -> Unit = {},
 ) {
     var draft by rememberSaveable(peerId) { mutableStateOf("") }
     val bytes = draft.trim().toByteArray(Charsets.UTF_8).size
@@ -1329,6 +1454,11 @@ private fun Composer(
     }
 
     Column(modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 8.dp)) {
+        // What is being answered, above the field and in the way of nothing:
+        // a tap on the × puts it down and the text stays as it was.
+        if (replyingTo != null) {
+            QuotedStrip(quoted = replyingTo, onCancel = onCancelReply)
+        }
         val note = if (tooLong) "Too long for one message. Shorten it or send it in parts." else hint
         if (note != null) {
             Surface(
