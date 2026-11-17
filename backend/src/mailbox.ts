@@ -13,6 +13,7 @@ import { admit, findMember, memberConfig, memberOf, notifyAdmin, recordDevice, v
 import { TURN_DAILY_CAP, TURN_TTL_SECONDS, iceServers, turnConfig } from "./turn";
 import {
   CLOSE_ACCESS_REQUIRED,
+  CONNECTED_GRACE_MS,
   CLOSE_AUTH_FAILED,
   CLOSE_AUTH_TIMEOUT,
   CLOSE_BANNED,
@@ -600,7 +601,16 @@ export class Mailbox extends DurableObject<Env> {
       this.expiryArmed = true;
     }
     for (const ws of this.ctx.getWebSockets()) this.pump(ws);
-    if (!quiet && !this.connected()) this.wake(now, urgent);
+    if (quiet) return "stored";
+    if (!this.connected()) {
+      this.wake(now, urgent);
+    } else {
+      // A phone that is connected is not woken; the message has just gone down
+      // its connection. That connection may be dead all the same, with neither
+      // end knowing yet. So the queue is looked at once more shortly, and if
+      // this message is still in it, the phone was not really listening.
+      this.ctx.waitUntil(this.wakeIfNotTaken(seq));
+    }
     return "stored";
   }
 
@@ -670,6 +680,18 @@ export class Mailbox extends DurableObject<Env> {
       if (ws !== except && getState(ws)?.s === "ready") return true;
     }
     return false;
+  }
+
+  /**
+   * Waits a moment after handing [seq] to a connection, then wakes the phone
+   * if the message is still waiting. Nothing happens when the phone took it,
+   * which is what a live connection does within a fraction of a second.
+   */
+  private async wakeIfNotTaken(seq: number): Promise<void> {
+    await scheduler.wait(CONNECTED_GRACE_MS);
+    const waiting = this.ctx.storage.sql.exec("SELECT 1 FROM queue WHERE seq = ? LIMIT 1", seq).toArray();
+    if (waiting.length === 0) return;
+    this.wake(Date.now());
   }
 
   /**

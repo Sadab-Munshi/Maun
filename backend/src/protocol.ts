@@ -106,6 +106,15 @@ export const PUSH_CONTACT = "https://github.com/Sadab-Munshi/Maun";
  */
 export const PUSH_SETTLE_MS = 10 * 60 * 1000;
 export const PUSH_SETTLE_WAITS_MS = [5_000, 10_000, 15_000];
+/**
+ * A phone that is connected is not woken, because the message goes straight
+ * down its connection. But a connection can be dead without either end knowing
+ * yet: a phone that changed network, or that Android froze, leaves a socket
+ * that still looks ready here. So this long after handing a message over, the
+ * queue is looked at again: if the message is still waiting, the connection was
+ * not really there, and the phone is woken as it would have been.
+ */
+export const CONNECTED_GRACE_MS = 4_000;
 /** Recorded as the outcome of a wake-up that has been started and has not finished. */
 export const PUSH_UNFINISHED = -1;
 

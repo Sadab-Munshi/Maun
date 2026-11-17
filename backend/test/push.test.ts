@@ -1,6 +1,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CONNECTED_GRACE_MS,
   PUSH_CONTACT,
   PUSH_DAILY_CAP,
   PUSH_PAYLOAD,
@@ -271,6 +272,41 @@ describe("waking a phone", () => {
     expect(await wakeCount(2)).toBe(2);
     await hangUp(a);
   });
+
+  it("wakes a phone whose connection looks alive but has gone quiet", async () => {
+    // Android can freeze an app, and a phone can change network, leaving a
+    // socket this relay still sees as ready. The message goes down that socket
+    // and is never acknowledged. Without a wake-up it would wait for the next
+    // message, or for the phone to come by itself.
+    const alice = await registered();
+    const bob = await withPush();
+    const a = await online(alice);
+    const b = await online(bob);
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await b.nextJson()).toMatchObject({ t: "msg" });
+    // Bob's phone never acknowledges it, and never goes away.
+    await vi.waitFor(() => expect(wakes.length).toBe(1), { timeout: CONNECTED_GRACE_MS + 4000 });
+    expect(wakes[0]!.url).toBe(bob.url);
+    await hangUp(b);
+    await hangUp(a);
+  }, 20_000);
+
+  it("says nothing more once the phone on the connection has taken the message", async () => {
+    const alice = await registered();
+    const bob = await withPush();
+    const a = await online(alice);
+    const b = await online(bob);
+    await sendMessage(a, bob.id, randomBytes(8));
+    const msg = await b.nextJson();
+    b.sendJson({ t: "ack", seq: msg.seq });
+    b.sendJson({ t: "echo", id: "settle", body: "" });
+    expect(await b.nextJson()).toMatchObject({ t: "echo" });
+    // Long enough for the second look at the queue to have happened.
+    await new Promise((resolve) => setTimeout(resolve, CONNECTED_GRACE_MS + 1000));
+    expect(wakes.length).toBe(0);
+    await hangUp(b);
+    await hangUp(a);
+  }, 20_000);
 
   it("stays quiet while the phone is connected", async () => {
     const alice = await registered();

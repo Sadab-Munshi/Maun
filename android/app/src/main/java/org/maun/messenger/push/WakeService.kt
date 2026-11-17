@@ -50,7 +50,13 @@ class WakeService : PushService() {
         // right after an urgent wake-up Android allows the service that keeps
         // Maun up while the call is fetched and rings. For a message, nothing
         // of Maun stays running beyond the fetch.
-        if (String(message.content, Charsets.UTF_8) == WAKE_CALL) RingService.prepare(this)
+        val kind = if (String(message.content, Charsets.UTF_8) == WAKE_CALL) {
+            RingService.prepare(this)
+            DeliveryTrace.CALL
+        } else {
+            DeliveryTrace.WAKE
+        }
+        DeliveryTrace.began(this, kind)
         // Start at once: every second counts for a call that is ringing. The
         // scheduled job does the same work, and is what Android lets finish.
         messenger.fetchSoon()

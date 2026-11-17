@@ -1,6 +1,7 @@
 package org.maun.messenger.push
 
 import android.content.Context
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -23,7 +24,9 @@ import org.maun.messenger.MaunApp
 class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
+        DeliveryTrace.stepped(applicationContext, DeliveryTrace.FETCH_START)
         val caughtUp = (applicationContext as MaunApp).messenger.fetch()
+        DeliveryTrace.stepped(applicationContext, DeliveryTrace.FETCH_DONE, "caughtUp=$caughtUp attempt=$runAttemptCount")
         // What could not be fetched in time stays on the relay; try a few times, then
         // leave it to the next wake-up.
         return if (caughtUp || runAttemptCount >= MAX_ATTEMPTS) Result.success() else Result.retry()
@@ -37,21 +40,28 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         private const val NOW = "fetch"
         private const val HOURLY = "fetch-hourly"
         private const val MAX_ATTEMPTS = 3
+        private const val MIN_BACKOFF_SECONDS = 5L
 
         private val online = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
 
         /**
          * Fetches as soon as Android allows, which is at once unless the app
-         * has used up its allowance for urgent work. A fetch asked for while
-         * one is running starts after it: the running one may already be past
-         * the point where it would notice a new message.
+         * has used up its allowance for urgent work.
+         *
+         * A wake-up replaces whatever fetch is waiting rather than queueing
+         * behind it: a fetch that is being retried may be a minute away, and
+         * the messages that woke the phone now are in the same queue the retry
+         * would fetch. Replacing it also keeps the wait from growing with each
+         * message that arrives in the meantime.
          */
         fun schedule(context: Context) {
             val request = OneTimeWorkRequestBuilder<FetchWorker>()
                 .setConstraints(online)
                 .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                // A retry is worth waiting a few seconds for, not half a minute.
+                .setBackoffCriteria(BackoffPolicy.LINEAR, MIN_BACKOFF_SECONDS, TimeUnit.SECONDS)
                 .build()
-            WorkManager.getInstance(context).enqueueUniqueWork(NOW, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+            WorkManager.getInstance(context).enqueueUniqueWork(NOW, ExistingWorkPolicy.REPLACE, request)
         }
 
         /** Safe to call every time the app starts: an existing schedule is kept. */

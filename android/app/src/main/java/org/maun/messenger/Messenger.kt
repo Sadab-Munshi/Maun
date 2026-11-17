@@ -301,6 +301,11 @@ class Messenger(context: Context) {
                 // like the one that was on screen when it went offline.
                 _verified.value = Badges.parse(db.meta().get(Badges.KEY))
                 _chats.value = db.chat().observeChats().first()
+                // What was unread before this launch is not news, and must not be
+                // announced again in the first moment the app is awake. Noting it
+                // here, rather than at the first thing the flow emits, keeps a
+                // fetch that lands early from being taken for something already seen.
+                unread.hasNew(_chats.value)
                 scope.launch { db.contacts().observeAll().collect { _contacts.value = it } }
                 scope.launch {
                     db.chat().observeChats().collect {

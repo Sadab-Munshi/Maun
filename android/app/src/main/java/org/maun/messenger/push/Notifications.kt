@@ -142,6 +142,7 @@ class Notifications(context: Context) {
     @SuppressLint("MissingPermission")
     fun showMessages(announcement: Announcement, alert: Boolean) {
         if (!allowed) return
+        DeliveryTrace.stepped(context, DeliveryTrace.SHOWN, "alert=$alert count=${announcement.total}")
         val channel = SoundSettings.incomingChannel(context)
         val onLockScreen = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification)
