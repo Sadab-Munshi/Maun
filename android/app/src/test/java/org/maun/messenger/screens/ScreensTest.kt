@@ -41,6 +41,7 @@ import org.maun.messenger.network.RelayState
 import org.maun.messenger.ui.ChatRow
 import org.maun.messenger.ui.ChatScreen
 import org.maun.messenger.ui.ContactScreen
+import org.maun.messenger.ui.VerificationScreen
 import org.maun.messenger.ui.DeliveryUi
 import org.maun.messenger.ui.HomeLists
 import org.maun.messenger.ui.HomeScreen
@@ -176,13 +177,22 @@ class ScreensTest {
     private fun Contact(contact: ContactEntity) {
         ContactScreen(
             contact = contact,
-            safetyNumber = "12345 67890 12345 67890\n12345 67890 12345 67890\n12345 67890 12345 67890",
             onBack = {},
             onRename = {},
-            onChecked = {},
             onRemove = {},
             onBlock = {},
             onCall = {},
+            onOpenEncryption = {},
+        )
+    }
+
+    @Composable
+    private fun Verification(contact: ContactEntity) {
+        VerificationScreen(
+            contact = contact,
+            safetyNumber = "12345 67890 12345 67890\n12345 67890 12345 67890\n12345 67890 12345 67890",
+            onBack = {},
+            onChecked = {},
         )
     }
 
@@ -468,6 +478,13 @@ class ScreensTest {
     @Test
     @Config(qualifiers = "+night")
     fun contactChecked() = shoot("contact-checked-dark") { Contact(asha) }
+
+    @Test
+    fun verification() = shoot("verification") { Verification(rohan) }
+
+    @Test
+    @Config(qualifiers = "+night")
+    fun verificationChecked() = shoot("verification-checked-dark") { Verification(asha) }
 
     @Test
     fun locked() = shoot("locked") { LockScreen(onShown = {}, onUnlock = {}) }

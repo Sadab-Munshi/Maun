@@ -49,6 +49,7 @@ private const val SETTINGS = "settings"
 private const val PROFILE = "profile"
 private const val CHAT_PREFIX = "chat:"
 private const val CONTACT_PREFIX = "contact:"
+private const val VERIFY_PREFIX = "verify:"
 
 /**
  * Decides which screen is showing. There are few screens and no deep links
@@ -66,6 +67,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
     val goBack = {
         val signedIn = (account as? AccountState.Present)?.registered == true
         screen = when {
+            screen.startsWith(VERIFY_PREFIX) -> CONTACT_PREFIX + screen.removePrefix(VERIFY_PREFIX)
             screen.startsWith(CONTACT_PREFIX) -> CHAT_PREFIX + screen.removePrefix(CONTACT_PREFIX)
             screen == BLOCKED -> SETTINGS
             screen == PROFILE -> SETTINGS
@@ -215,6 +217,11 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                     val detailsOf = screen.takeIf { it.startsWith(CONTACT_PREFIX) }
                         ?.removePrefix(CONTACT_PREFIX)
                         ?.let { id -> contacts.firstOrNull { it.id == id } }
+                    // The safety number is worked out only on the screen that
+                    // shows it, never for the page about the person.
+                    val verifyOf = screen.takeIf { it.startsWith(VERIFY_PREFIX) }
+                        ?.removePrefix(VERIFY_PREFIX)
+                        ?.let { id -> contacts.firstOrNull { it.id == id } }
                     when {
                         screen == MY_CODE -> MyCodeScreen(
                             code = current.code,
@@ -362,6 +369,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                     onOpen = { seq, file -> viewModel.openFile(seq, file) },
                                     onStart = viewModel::startFile,
                                     onSave = viewModel::saveFile,
+                                    onShare = viewModel::shareFile,
                                     loadImage = viewModel::image,
                                     cachedImage = viewModel::cachedImage,
                                     onVoice = { recording, millis -> viewModel.sendVoice(chatPeer, recording, millis) },
@@ -384,32 +392,36 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             )
                         }
 
-                        detailsOf != null -> {
+                        verifyOf != null -> {
                             // A few thousand rounds of hashing: quick, but not something to do while drawing.
-                            val safetyNumber by produceState<String?>(null, current.code.id, detailsOf.id) {
+                            val safetyNumber by produceState<String?>(null, current.code.id, verifyOf.id) {
                                 value = withContext(Dispatchers.Default) {
-                                    SafetyNumber.of(current.code.id, detailsOf.id)?.let(SafetyNumber::grouped)
+                                    SafetyNumber.of(current.code.id, verifyOf.id)?.let(SafetyNumber::grouped)
                                 }
                             }
-                            ContactScreen(
-                                contact = detailsOf,
+                            VerificationScreen(
+                                contact = verifyOf,
                                 safetyNumber = safetyNumber,
                                 onBack = goBack,
-                                onRename = { name -> viewModel.renameContact(detailsOf.id, name) },
-                                onChecked = { checked -> viewModel.setContactChecked(detailsOf.id, checked) },
-                                onRemove = {
-                                    viewModel.removeContact(detailsOf.id)
-                                    goHome()
-                                },
-                                onPhoto = { uri -> viewModel.setLocalAvatar(detailsOf.id, uri) },
-                                onRemovePhoto = { viewModel.removeLocalAvatar(detailsOf.id) },
-                                onCall = { video -> viewModel.startCall(detailsOf.id, video) },
-                                onBlock = {
-                                    viewModel.block(detailsOf.id)
-                                    goHome()
-                                },
+                                onChecked = { checked -> viewModel.setContactChecked(verifyOf.id, checked) },
                             )
                         }
+
+                        detailsOf != null -> ContactScreen(
+                            contact = detailsOf,
+                            onBack = goBack,
+                            onRename = { name -> viewModel.renameContact(detailsOf.id, name) },
+                            onOpenEncryption = { screen = VERIFY_PREFIX + detailsOf.id },
+                            onRemove = {
+                                viewModel.removeContact(detailsOf.id)
+                                goHome()
+                            },
+                            onCall = { video -> viewModel.startCall(detailsOf.id, video) },
+                            onBlock = {
+                                viewModel.block(detailsOf.id)
+                                goHome()
+                            },
+                        )
 
                         else -> {
                             // These snapshots are read before the account is published. Derive

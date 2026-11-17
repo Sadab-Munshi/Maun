@@ -55,7 +55,7 @@ fun ProfileScreen(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
-    var hasPhoto by remember(code) { mutableStateOf(Avatars.has(context, Avatars.SELF)) }
+    var hasPhoto by remember(code) { mutableStateOf(Avatars.hasShared(context, Avatars.SELF)) }
 
     val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         AppLock.externalFlow = false

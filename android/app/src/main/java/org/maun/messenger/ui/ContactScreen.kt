@@ -1,8 +1,7 @@
 package org.maun.messenger.ui
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,23 +11,25 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -42,48 +43,48 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import org.maun.messenger.AppLock
-import org.maun.messenger.Avatars
 import org.maun.messenger.Messenger
 import org.maun.messenger.data.ContactEntity
 
 /**
  * Everything about one contact, in the order a person needs it: who this is,
- * how to reach them, whether their ID has been checked, and only then what can
- * be done about them.
+ * how to reach them, whether their phone has been checked, and only then what
+ * can be done about them.
  *
- * The picture at the top is the one this contact chose, which arrives from
- * their phone. It cannot be changed from here: what somebody looks like on
- * their own phone is theirs to decide. A photo added here is a private note on
- * this phone, kept apart from it and marked as such.
+ * The picture at the top is the one this contact chose on their own phone and
+ * shared with this one. It cannot be changed from here, and nothing else is
+ * drawn in its place: what somebody looks like is theirs to decide.
+ *
+ * The safety number and the raw ID used to take up most of this page, which
+ * made a page about a person look like a page about cryptography. They have
+ * moved one tap away, behind the encryption row, and everything a person does
+ * here is now the length of a list.
  */
 @Composable
 fun ContactScreen(
     contact: ContactEntity,
-    safetyNumber: String?,
     onBack: () -> Unit,
     onRename: (String) -> Unit,
-    onChecked: (Boolean) -> Unit,
     onRemove: () -> Unit,
     onBlock: () -> Unit,
     /** Starts a call with this contact, a video call when given true. Null where calls cannot be made. */
     onCall: ((Boolean) -> Unit)? = null,
-    /** Keeps a photo for this person on this phone only. It is never sent anywhere. */
-    onPhoto: (android.net.Uri) -> Unit = {},
-    onRemovePhoto: () -> Unit = {},
+    /** Opens the screen that holds the safety number and the check itself. */
+    onOpenEncryption: (() -> Unit)? = null,
 ) {
     var confirming by rememberSaveable { mutableStateOf(false) }
     var confirmingBlock by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
     var newName by rememberSaveable { mutableStateOf("") }
+    var menu by remember { mutableStateOf(false) }
 
     Scaffold(contentWindowInsets = WindowInsets.safeDrawing) { padding ->
         Box(
@@ -91,17 +92,40 @@ fun ContactScreen(
             contentAlignment = Alignment.TopCenter,
         ) {
             Column(modifier = Modifier.widthIn(max = 560.dp).fillMaxSize()) {
-                TopBar(title = "Contact", onBack = onBack)
+                TopBar(
+                    title = "Contact",
+                    onBack = onBack,
+                    actions = {
+                        // What can be changed about a contact is in one place,
+                        // out of the way of what the page is actually for.
+                        Box {
+                            IconButton(onClick = { menu = true }) {
+                                Icon(MaunIcons.More, contentDescription = "More")
+                            }
+                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Edit contact name") },
+                                    leadingIcon = { Icon(MaunIcons.Edit, contentDescription = null) },
+                                    onClick = {
+                                        menu = false
+                                        newName = contact.name
+                                        renaming = true
+                                    },
+                                )
+                            }
+                        }
+                    },
+                )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
                 // Who this is stays put while the rest of the page scrolls, so
                 // the picture is never left half under the bar.
                 Column(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Avatar(id = contact.id, name = contact.name, size = 84.dp)
+                    Avatar(id = contact.id, name = contact.name, size = 88.dp)
                     Text(
                         text = contact.name,
                         style = MaterialTheme.typography.headlineSmall,
@@ -109,6 +133,7 @@ fun ContactScreen(
                         textAlign = TextAlign.Center,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 4.dp),
                     )
                     contact.username?.let {
                         Text(
@@ -117,24 +142,31 @@ fun ContactScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (onCall != null) {
-                            val call = rememberCallStarter(onCall)
-                            FilledTonalButton(onClick = { call(false) }) {
+                    if (onCall != null) {
+                        val call = rememberCallStarter(onCall)
+                        // Two buttons of the same size, side by side, whatever
+                        // the width of the phone.
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            FilledTonalButton(
+                                onClick = { call(false) },
+                                modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                            ) {
                                 Icon(MaunIcons.Call, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Call")
+                                Text("Voice call")
                             }
-                            FilledTonalButton(onClick = { call(true) }) {
+                            FilledTonalButton(
+                                onClick = { call(true) },
+                                modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                            ) {
                                 Icon(MaunIcons.Videocam, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Video")
+                                Text("Video call")
                             }
                         }
-                        TextButton(onClick = {
-                            newName = contact.name
-                            renaming = true
-                        }) { Text("Change name") }
                     }
                 }
 
@@ -145,42 +177,41 @@ fun ContactScreen(
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 20.dp)
                         .padding(bottom = 24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    PictureSection(contact, onPhoto, onRemovePhoto)
-
-                    SafetySection(contact, safetyNumber, onChecked)
-
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        SectionTitle("Their ID")
-                        SelectionContainer { IdText(contact.id) }
-                    }
+                    EncryptionRow(verified = contact.verified, onClick = onOpenEncryption)
 
                     BodyText(
-                        "Messages with ${contact.name} are encrypted between your two phones. The relay " +
-                            "holds a message only until their phone has collected it.",
+                        "Messages with ${contact.name} are encrypted on this phone and read only on theirs. " +
+                            "The relay carries them and cannot read them.",
                     )
 
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Spacer(modifier = Modifier.height(2.dp))
 
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SectionTitle("Remove or block")
-                        OutlinedButton(
-                            onClick = { confirming = true },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("Remove contact and delete chat") }
-                        OutlinedButton(
-                            onClick = { confirmingBlock = true },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("Block", color = MaterialTheme.colorScheme.error) }
-                        Text(
-                            text = "Removing deletes this conversation from this phone. Blocking also throws " +
-                                "away anything they send from now on.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    // What can be done about a contact, as a list rather than a
+                    // wall of outlined buttons. Blocking is red: it is the one
+                    // that cannot be taken back from here.
+                    Text(
+                        text = "Remove or block",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 2.dp),
+                    )
+                    ActionRow(
+                        icon = MaunIcons.Delete,
+                        title = "Remove contact",
+                        detail = "Deletes this conversation from this phone only.",
+                        onClick = { confirming = true },
+                    )
+                    ActionRow(
+                        icon = MaunIcons.Block,
+                        title = "Block",
+                        detail = "Throws away anything ${contact.name} sends from now on. They are not told.",
+                        destructive = true,
+                        onClick = { confirmingBlock = true },
+                    )
                 }
             }
         }
@@ -189,10 +220,10 @@ fun ContactScreen(
     if (renaming) {
         AlertDialog(
             onDismissRequest = { renaming = false },
-            title = { Text("Change name") },
+            title = { Text("Edit contact name") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("The name is stored on this phone only. They are not told.")
+                    Text("The name is kept on this phone only. They are not told.")
                     OutlinedTextField(
                         value = newName,
                         onValueChange = { newName = it.take(Messenger.MAX_NAME_LENGTH) },
@@ -248,142 +279,93 @@ fun ContactScreen(
 }
 
 /**
- * Their picture, which came from their phone, and beneath it a photo kept on
- * this phone only. The two are never mixed: one is theirs, the other is a note
- * to oneself, and each says which it is.
+ * One line about encryption that says where things stand and leads to the
+ * place where they can be checked. A padlock, a state, and a chevron: the
+ * safety number itself lives behind it, on its own screen.
  */
 @Composable
-private fun PictureSection(contact: ContactEntity, onPhoto: (android.net.Uri) -> Unit, onRemovePhoto: () -> Unit) {
-    val context = LocalContext.current
-    // A picture that arrives, or is taken down, while this screen is open is
-    // read again rather than left as it was when the screen was first drawn.
-    val revision = LocalAvatarRevision.current
-    var theirs by remember(contact.id, revision) { mutableStateOf(Avatars.has(context, contact.id)) }
-    var mine by remember(contact.id, revision) { mutableStateOf(Avatars.hasLocal(context, contact.id)) }
-    val pick = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        AppLock.externalFlow = false
-        if (uri != null) {
-            mine = true
-            onPhoto(uri)
-        }
-    }
-
+private fun EncryptionRow(verified: Boolean, onClick: (() -> Unit)?) {
+    val passed = LocalStatusColors.current.passed
+    val warning = LocalStatusColors.current.warning
+    val state = if (verified) passed else warning
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            SectionTitle("Profile picture")
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Avatar(id = contact.id, name = contact.name, size = 44.dp)
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        text = when {
-                            mine -> "A photo you chose"
-                            theirs -> "Their own picture"
-                            else -> "No picture"
-                        },
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                    Text(
-                        text = when {
-                            mine && theirs -> "Shown instead of the picture their phone sent."
-                            mine -> "On this phone only. Their own picture is not shown here."
-                            theirs -> "Set on their phone, and seen here without asking."
-                            else -> "Their phone has not shared one, or took it down."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                modifier = Modifier.size(36.dp).clip(CircleShape).background(state.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(MaunIcons.Lock, contentDescription = null, tint = state, modifier = Modifier.size(19.dp))
             }
-            OutlinedButton(onClick = {
-                if (mine) {
-                    mine = false
-                    onRemovePhoto()
-                } else {
-                    try {
-                        AppLock.externalFlow = true
-                        pick.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                        )
-                    } catch (_: Exception) {
-                        AppLock.externalFlow = false
-                    }
-                }
-            }) { Text(if (mine) "Remove my photo" else "Add a photo on this phone") }
-            Text(
-                text = "Their picture belongs to them: it can only be changed on their own phone, and it " +
-                    "changes here by itself when they do. A photo added here stays on this phone, sealed " +
-                    "like everything else, and nobody is told.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(
+                    text = "End-to-end encryption",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = if (verified) {
+                        "Checked — the safety number was compared"
+                    } else {
+                        "Not checked yet — compare the safety number"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (verified) passed else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (onClick != null) {
+                Icon(
+                    MaunIcons.Forward,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
     }
 }
 
-/** The safety number and what it means, in one card that fits a narrow screen. */
+/** A row in the list of things that can be done about a contact. */
 @Composable
-private fun SafetySection(contact: ContactEntity, safetyNumber: String?, onChecked: (Boolean) -> Unit) {
-    val passed = LocalStatusColors.current.passed
-    val warning = LocalStatusColors.current.warning
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth(),
+private fun ActionRow(
+    icon: ImageVector,
+    title: String,
+    detail: String,
+    destructive: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val tint = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    MaunIcons.Shield,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                    tint = if (contact.verified) passed else MaterialTheme.colorScheme.outline,
-                )
-                Text(
-                    text = if (contact.verified) "Checked" else "Not checked yet",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = if (contact.verified) passed else warning,
-                )
-            }
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(21.dp))
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
             Text(
-                text = if (contact.verified) {
-                    "You scanned this ID from their screen, or compared the safety number with them. " +
-                        "You are writing to their phone and nobody else's."
-                } else {
-                    "This ID was typed or pasted, so it could have been swapped on the way to you. " +
-                        "To be sure, compare the safety number below with the one on their phone: " +
-                        "meet, or read it out on a call. If every digit matches, it is them."
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = tint,
+                fontWeight = if (destructive) FontWeight.Medium else FontWeight.Normal,
             )
-            Text("Safety number", style = MaterialTheme.typography.labelLarge)
-            if (safetyNumber == null) {
-                Text("Working it out…", style = MaterialTheme.typography.bodyMedium)
-            } else {
-                // Sixty digits in three lines of twenty: legible on a phone, and
-                // read out in the same groups by both people.
-                SelectionContainer {
-                    Text(
-                        text = safetyNumber,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
-            }
             Text(
-                text = "They see the same number when they open your name in their Maun.",
+                text = detail,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (contact.verified) {
-                TextButton(onClick = { onChecked(false) }) { Text("Mark as not checked") }
-            } else {
-                Button(onClick = { onChecked(true) }, enabled = safetyNumber != null) { Text("The numbers match") }
-            }
         }
     }
 }
@@ -394,10 +376,8 @@ private fun ContactPreview() {
     MaunTheme {
         ContactScreen(
             contact = ContactEntity("ab12".repeat(16), "Asha", verified = false, addedAt = 0),
-            safetyNumber = "12345 67890 12345 67890\n12345 67890 12345 67890\n12345 67890 12345 67890",
             onBack = {},
             onRename = {},
-            onChecked = {},
             onRemove = {},
             onBlock = {},
         )

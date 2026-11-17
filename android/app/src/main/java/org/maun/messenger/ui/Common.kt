@@ -144,14 +144,16 @@ val LocalAvatarRevision = staticCompositionLocalOf { 0 }
 fun Avatar(id: String, name: String?, modifier: Modifier = Modifier, size: Dp = 48.dp) {
     val context = LocalContext.current
     val revision = LocalAvatarRevision.current
-    var picture by remember(id) { mutableStateOf(Avatars.cached(id)) }
+    // Only the picture a person shared from their own phone is drawn. Nothing
+    // chosen on this phone takes its place: their face is their own.
+    var picture by remember(id) { mutableStateOf(Avatars.cachedShared(id)) }
     LaunchedEffect(id, revision) {
-        if (!Avatars.has(context, id)) {
+        if (!Avatars.hasShared(context, id)) {
             picture = null
             return@LaunchedEffect
         }
-        val known = Avatars.cached(id)
-        picture = known ?: withContext(Dispatchers.IO) { Avatars.load(context, id) }
+        val known = Avatars.cachedShared(id)
+        picture = known ?: withContext(Dispatchers.IO) { Avatars.loadShared(context, id) }
     }
     val shown = picture
     val known = !name.isNullOrBlank()
