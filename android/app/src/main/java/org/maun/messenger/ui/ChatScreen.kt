@@ -110,12 +110,15 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.ResolvedTextDirection
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -435,7 +438,14 @@ fun ChatScreen(
         if (file == null) {
             viewing = null
         } else {
-            ImageViewer(seq = seq, file = file, files = files, onSave = { save(seq, file) }, onClose = { viewing = null })
+            ImageViewer(
+                seq = seq,
+                file = file,
+                files = files,
+                onSave = { save(seq, file) },
+                onClose = { viewing = null },
+                onShare = { files.onShare(seq, file) },
+            )
         }
     }
 
@@ -782,6 +792,26 @@ private fun MessageRow(
     val text = if (outgoing) chatColors.outgoingContent else chatColors.incomingContent
     val quiet = if (outgoing) chatColors.outgoingMeta else chatColors.incomingMeta
 
+    // Web addresses in the text, marked in Maun's accent. Worked out once for
+    // the message rather than on every frame, and only for text: what a file is
+    // called is not an address even when it looks like one.
+    val context = LocalContext.current
+    val linkStyle = remember { SpanStyle(
+        color = MaterialTheme.colorScheme.primary,
+        textDecoration = TextDecoration.Underline,
+    ) }
+    val linked = remember(message.text, readable, linkStyle) {
+        if (!readable) AnnotatedString(message.text) else linkedText(
+            text = message.text,
+            style = linkStyle,
+            onOpen = { url ->
+                if (!openWebLink(context, url)) {
+                    Toast.makeText(context, "No app on this phone opens that link.", Toast.LENGTH_SHORT).show()
+                }
+            },
+        )
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = if (item.startsRun) 6.dp else 2.dp),
         horizontalArrangement = if (outgoing) Arrangement.End else Arrangement.Start,
@@ -857,7 +887,7 @@ private fun MessageRow(
 
                         readable -> {
                             InlineMessageBubble(
-                                text = message.text,
+                                text = linked,
                                 textColor = text,
                                 modifier = Modifier.padding(start = 11.dp, end = 9.dp, top = 6.dp, bottom = 5.dp),
                             ) {
@@ -957,7 +987,7 @@ private fun MessageRow(
  */
 @Composable
 private fun InlineMessageBubble(
-    text: String,
+    text: AnnotatedString,
     textColor: Color,
     modifier: Modifier = Modifier,
     meta: @Composable () -> Unit,
@@ -1219,31 +1249,37 @@ private fun Composer(
                         )
                     }
 
-                    IconButton(
-                        onClick = {
-                            focusManager.clearFocus()
-                            onAttach()
-                        },
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        Icon(
-                            imageVector = MaunIcons.Attach,
-                            contentDescription = "Send a file",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(22.dp),
-                        )
-                    }
+                    // While something is being written, the words get the room:
+                    // attaching and the camera step aside and come back the
+                    // moment the field is empty again. Anything that is not a
+                    // blank keeps them away, so a draft is never hidden.
+                    if (draft.isEmpty()) {
+                        IconButton(
+                            onClick = {
+                                focusManager.clearFocus()
+                                onAttach()
+                            },
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(
+                                imageVector = MaunIcons.Attach,
+                                contentDescription = "Send a file",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
 
-                    IconButton(
-                        onClick = onCamera,
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        Icon(
-                            imageVector = MaunIcons.Camera,
-                            contentDescription = "Take a photo",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(22.dp),
-                        )
+                        IconButton(
+                            onClick = onCamera,
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(
+                                imageVector = MaunIcons.Camera,
+                                contentDescription = "Take a photo",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
                     }
                 }
             }
