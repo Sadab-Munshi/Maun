@@ -7,7 +7,7 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 
-## Status: app 0.13.0 (files, voice messages, voice and video calls, and an optional member-only mode with usernames)
+## Status: app 0.16.0 (files, voice messages, voice and video calls, profile pictures, and an optional member-only mode with usernames)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
 messages while the app is closed. The app can be locked behind the phone's
@@ -17,7 +17,9 @@ encrypted file for one day. A relay can be made member-only: people log in
 once with a code sent to their email, pick a username, wait for the
 administrator's approval on a web page, and can be banned. Voice messages
 can be recorded and played in the conversation. Voice and video calls go
-through the relay's call servers, so neither phone learns the other's address.
+through the relay's call servers, so neither phone learns the other's address. A
+profile picture is chosen by its owner, sealed on their phone, and shown to their
+contacts without the relay being able to open it.
 
 | Piece | Where |
 |---|---|
