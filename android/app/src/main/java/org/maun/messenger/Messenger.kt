@@ -48,6 +48,7 @@ import org.maun.messenger.data.ChatSummary
 import org.maun.messenger.data.ContactEntity
 import org.maun.messenger.data.DatabaseKey
 import org.maun.messenger.data.MessageEntity
+import org.maun.messenger.data.Reactions
 import org.maun.messenger.data.MetaEntry
 import org.maun.messenger.data.RoomSignalStorage
 import org.maun.messenger.network.PushAddress
@@ -1359,6 +1360,15 @@ class Messenger(context: Context) {
     /** The newest [limit] messages with [peer], newest first, updated as they change. */
     fun messages(peer: String, limit: Int): Flow<List<MessageEntity>> =
         database?.chat()?.observeMessages(peer, limit) ?: emptyFlow()
+
+    /** What each message of the conversation with [peer] carries, as it changes. */
+    fun reactions(peer: String): Flow<Map<String, Reactions>> =
+        engine?.observeReactions(peer) ?: emptyFlow()
+
+    /** Puts an emoji on a message, or takes it off when [emoji] is empty. */
+    suspend fun react(peer: String, messageId: String, emoji: String) {
+        engine?.react(peer, messageId, emoji)
+    }
 
     /** Deletes one message from this phone only. */
     suspend fun deleteMessage(seq: Long) {

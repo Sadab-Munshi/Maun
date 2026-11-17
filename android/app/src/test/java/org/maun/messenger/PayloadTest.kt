@@ -98,6 +98,34 @@ class PayloadTest {
     }
 
     @Test
+    fun `a reaction survives the round trip, and only known emoji travel`() {
+        val id = "3f2c9a1e-0000-4000-8000-00000000000e"
+        val on = Payload.Reaction(id, Payload.REACTIONS.first(), 1_794_700_000_000)
+        assertEquals(on, Payload.decode(Payload.encode(on)))
+        // Taking one off travels as an empty emoji.
+        val off = Payload.Reaction(id, "", 1_794_700_000_001)
+        assertEquals(off, Payload.decode(Payload.encode(off)))
+
+        // Anything else is from a newer Maun, or from someone using a reaction
+        // as a way to send text: dropped, and saying nothing.
+        fun raw(emoji: String): Payload {
+            val json = org.json.JSONObject()
+                .put("v", 1).put("k", "reaction").put("of", id).put("emoji", emoji).put("at", 5L)
+            return Payload.decode(Payload.pad(json.toString().toByteArray(Charsets.UTF_8)))
+        }
+        assertEquals(Payload.Unknown, raw("hello"))
+        assertEquals(Payload.Unknown, raw("\uD83D\uDE00".repeat(300)))
+        // A mark on no message at all is dropped too.
+        assertEquals(Payload.Unknown, raw2(of = "not a message id"))
+    }
+
+    private fun raw2(of: String): Payload {
+        val json = org.json.JSONObject().put("v", 1).put("k", "reaction").put("of", of)
+            .put("emoji", Payload.REACTIONS.first()).put("at", 5L)
+        return Payload.decode(Payload.pad(json.toString().toByteArray(Charsets.UTF_8)))
+    }
+
+    @Test
     fun `length is hidden in steps of 160 bytes`() {
         fun size(text: String) = Payload.encode(Payload.Text("id", 0, text)).size
         assertEquals(size("a"), size("a much longer message than that"))

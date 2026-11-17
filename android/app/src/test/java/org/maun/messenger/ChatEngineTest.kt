@@ -78,6 +78,10 @@ class ChatEngineTest {
             }
         }
 
+        /** Answers the engine's clock when set; the real one otherwise. */
+        @Volatile
+        var clock: (() -> Long)? = null
+
         /** Made anew by [restart]: the app going away and coming back. */
         var engine = newEngine()
 
@@ -88,6 +92,7 @@ class ChatEngineTest {
             tx = db,
             scope = scope,
             retryMillis = 300,
+            now = { clock?.invoke() ?: System.currentTimeMillis() },
             push = push,
         )
 
@@ -166,6 +171,8 @@ class ChatEngineTest {
         }
 
         fun send(to: Phone, text: String) = runBlocking { engine.sendText(to.id, text) }
+
+        fun react(to: Phone, messageId: String, emoji: String) = runBlocking { engine.react(to.id, messageId, emoji) }
 
         fun read(from: Phone) = runBlocking { engine.markRead(from.id) }
 
@@ -450,6 +457,44 @@ class ChatEngineTest {
         eventually("arrived") { bob.chat(alice).size == 3 }
         // Once each: the queue is emptied as it goes, not replayed.
         assertEquals(listOf("< one", "< two", "< three"), bob.texts(alice))
+    }
+
+    @Test
+    fun `a reaction reaches the other phone sealed, and an older one cannot undo a newer one`() {
+        val bob = Phone().registeredAndOffline()
+        val alice = Phone().knows(bob)
+        bob.knows(alice)
+
+        alice.send(bob, "hello")
+        bob.online()
+        eventually("the message arrived") { bob.chat(alice).any { it.text == "hello" } }
+        val id = bob.chat(alice).single { it.text == "hello" }.id
+
+        // A thumb, then a heart chosen a moment earlier but sent after it.
+        bob.clock = { 1_000L }
+        bob.react(alice, id, "\uD83D\uDC4D")
+        bob.clock = { 500L }
+        bob.react(alice, id, "\u2764\uFE0F")
+        bob.clock = null
+        eventually("nothing left to send") { bob.engine.unsent.value == 0 }
+
+        alice.online()
+        eventually("the reaction arrived") { alice.db.reactionsOf(bob.id, id).isNotEmpty() }
+        val got = alice.db.reactionsOf(bob.id, id).single()
+        assertFalse(got.mine)
+        // The later mark, not the last to arrive.
+        assertEquals("\uD83D\uDC4D", got.emoji)
+
+        // Taken off again, which is later than both.
+        bob.clock = { 2_000L }
+        bob.react(alice, id, "")
+        bob.clock = null
+        eventually("nothing left to send") { bob.engine.unsent.value == 0 }
+        bob.offline()
+        alice.offline()
+
+        alice.online()
+        eventually("the reaction is gone") { alice.db.reactionsOf(bob.id, id).isEmpty() }
     }
 
     @Test

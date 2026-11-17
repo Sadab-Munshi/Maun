@@ -39,6 +39,17 @@ sealed interface Payload {
     data class Receipt(val delivered: List<String> = emptyList(), val read: List<String> = emptyList()) : Payload
 
     /**
+     * An emoji put on one of the other phone's messages, or taken off again.
+     *
+     * [of] names the message it is about, [emoji] is the character and an
+     * empty one takes the last off; [sentAt] is when the phone that chose it
+     * did so, which is what settles which of two answers is the later one when
+     * they arrive out of order. Only emoji from [REACTIONS] travel: a reaction
+     * is not a way to send text the reader is not expecting.
+     */
+    data class Reaction(val of: String, val emoji: String, val sentAt: Long) : Payload
+
+    /**
      * A profile picture, said to somebody one talks to: its [version], the
      * [key] that opens it (base64, a key of its own), and its [size] before
      * sealing. The picture itself sits on the relay under the sender's ID,
@@ -65,6 +76,19 @@ sealed interface Payload {
         const val MAX_RECEIPT_IDS = 50
 
         /** Told to somebody who asks: this phone has no picture to show. */
+        /**
+         * The emoji a reaction may carry, in the order the bar shows them. The
+         * list is fixed so that a reaction is a mark, not free text, and so
+         * that an older Maun can tell whether it knows the character.
+         */
+        val REACTIONS = listOf("\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83D\uDC4D", "\uD83D\uDE4F")
+
+        /** Fuller list, for the sheet behind the bar's "+". */
+        val MORE_REACTIONS = REACTIONS + listOf(
+            "\uD83D\uDC4F", "\uD83D\uDD25", "\uD83C\uDF89", "\uD83D\uDE0D", "\uD83D\uDE0E", "\uD83D\uDC4C",
+            "\u270C\uFE0F", "\uD83E\uDD1D", "\uD83D\uDE4C", "\uD83D\uDCAF", "\uD83D\uDCA9", "\uD83E\uDD14",
+        )
+
         const val AVATAR_NONE = "none"
 
         /** The question "which picture do you have?" carries no version. */
@@ -137,6 +161,7 @@ sealed interface Payload {
                     if (payload.key.isNotEmpty()) json.put("key", payload.key)
                     if (payload.size > 0L) json.put("size", payload.size)
                 }
+                is Reaction -> json.put("k", "reaction").put("of", payload.of).put("emoji", payload.emoji).put("at", payload.sentAt)
                 is Receipt -> {
                     json.put("k", "receipt")
                     if (payload.delivered.isNotEmpty()) json.put("delivered", JSONArray(payload.delivered))
@@ -188,6 +213,15 @@ sealed interface Payload {
                     if ((type == CALL_OFFER || type == CALL_ANSWER) && sdp == null) return Unknown
                     if (type == CALL_ICE && candidate == null) return Unknown
                     Call(callId, type, sdp, candidate, json.optString("why").take(40).ifEmpty { null }, video = json.optBoolean("video"))
+                }
+                "reaction" -> {
+                    val of = json.optString("of")
+                    val emoji = json.optString("emoji")
+                    // Only the characters this version knows; anything else is
+                    // from a newer Maun and is dropped without complaint.
+                    if (!isMessageId(of) || (emoji.isNotEmpty() && emoji !in MORE_REACTIONS)) return Unknown
+                    if (!json.has("at")) return Unknown
+                    Reaction(of, emoji, json.optLong("at"))
                 }
                 "receipt" -> Receipt(ids(json.optJSONArray("delivered")), ids(json.optJSONArray("read")))
                 "avatar" -> {

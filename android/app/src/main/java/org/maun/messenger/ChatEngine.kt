@@ -13,7 +13,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -42,6 +44,8 @@ import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.data.MessageKind
 import org.maun.messenger.data.MessageStatus
 import org.maun.messenger.data.OutboxEntity
+import org.maun.messenger.data.ReactionEntity
+import org.maun.messenger.data.Reactions
 import org.maun.messenger.data.ReceiptLevel
 import org.maun.messenger.data.Transactor
 import org.maun.messenger.network.PushState
@@ -547,6 +551,64 @@ class ChatEngine(
     }
 
     /**
+     * Puts [emoji] on message [messageId] of the conversation with [peer], or
+     * takes the last one off when [emoji] is empty. The mark is kept here at
+     * once, so the bar answers without waiting for a connection, and the other
+     * phone is told in a message of its own that is sealed like any other.
+     */
+    suspend fun react(peer: String, messageId: String, emoji: String) {
+        require(emoji.isEmpty() || emoji in Payload.MORE_REACTIONS) { "not a reaction" }
+        val at = now()
+        val queued = withContext(io) {
+            tx.inTransaction {
+                if (!dao.isContact(peer) || dao.seqOf(peer, messageId) == null) return@inTransaction false
+                storeReaction(messageId, mine = true, emoji, at)
+                dao.insertOutbox(
+                    OutboxEntity(
+                        peer = peer,
+                        messageId = null,
+                        payload = Payload.encode(Payload.Reaction(messageId, emoji, at)),
+                        // Nothing to show as a message, but worth waking them for.
+                        wakes = true,
+                    ),
+                )
+                true
+            }
+        }
+        if (queued) {
+            noteUnsent()
+            kick()
+        }
+    }
+
+    /**
+     * Keeps the later of two answers about the same message and side. A
+     * reaction chosen a second later may arrive before one chosen a second
+     * earlier — a reconnected phone sends what it has in its own order — so
+     * the time it was chosen, not the time it arrived, decides.
+     */
+    private fun storeReaction(messageId: String, mine: Boolean, emoji: String, at: Long) {
+        val existing = dao.reaction(messageId, mine)
+        if (existing != null && at <= existing.at) return
+        if (emoji.isEmpty()) {
+            if (existing != null) dao.deleteReaction(messageId, mine)
+        } else {
+            dao.insertReaction(ReactionEntity(messageId, mine, emoji, at))
+        }
+    }
+
+    /** What each message of the conversation with [peer] carries, as it changes. */
+    fun observeReactions(peer: String): Flow<Map<String, Reactions>> =
+        dao.observeReactions(peer).map { rows ->
+            rows.groupBy { it.messageId }.mapValues { (_, forOne) ->
+                Reactions(
+                    mine = forOne.firstOrNull { it.mine }?.emoji,
+                    theirs = forOne.firstOrNull { !it.mine }?.emoji,
+                )
+            }
+        }
+
+    /**
      * Adds a file [peer] is about to be sent, before it has been uploaded.
      * Nothing leaves the phone yet: see [sendFile]. Returns the new row.
      */
@@ -611,6 +673,7 @@ class ChatEngine(
         withContext(io) {
             tx.inTransaction {
                 dao.deleteAllOutbox()
+                dao.deleteAllReactions()
                 dao.deleteAllMessages()
             }
         }
@@ -665,6 +728,7 @@ class ChatEngine(
             tx.inTransaction {
                 val message = dao.message(seq) ?: return@inTransaction
                 if (message.outgoing) dao.deleteOutboxOf(message.peer, message.id)
+                dao.deleteReactions(message.id)
                 dao.deleteMessage(seq)
             }
         }
@@ -675,6 +739,7 @@ class ChatEngine(
         withContext(io) {
             tx.inTransaction {
                 dao.deleteContact(peer)
+                dao.deleteReactionsFor(peer)
                 dao.deleteMessages(peer)
                 dao.deleteOutboxFor(peer)
             }
@@ -688,6 +753,7 @@ class ChatEngine(
             tx.inTransaction {
                 dao.block(BlockedEntity(peer, now()))
                 dao.deleteContact(peer)
+                dao.deleteReactionsFor(peer)
                 dao.deleteMessages(peer)
                 dao.deleteOutboxFor(peer)
             }
@@ -735,6 +801,13 @@ class ChatEngine(
                             _avatars.tryEmit(from to payload)
                             false
                         }
+                    }
+                    is Payload.Reaction -> {
+                        // Only people one has added can mark a message, and only
+                        // a message this phone still has: a mark on nothing says nothing.
+                        if (!dao.isContact(from) || dao.seqOf(from, payload.of) == null) return@inTransaction false
+                        storeReaction(payload.of, mine = false, payload.emoji, payload.sentAt)
+                        false
                     }
                     is Payload.Call -> {
                         // Only people one has added can make the phone ring.
@@ -832,7 +905,7 @@ class ChatEngine(
             after = item.seq
             if (item.peer in held) continue
             // A receipt has nothing to show anyone: it must not wake the other phone.
-            when (val outcome = sending.withLock { deliver(link, item, quiet = item.messageId == null) }) {
+            when (val outcome = sending.withLock { deliver(link, item, quiet = item.messageId == null && !item.wakes) }) {
                 Outcome.Done -> Unit
                 // Their items now carry the new ID; this pass ends and another begins.
                 Outcome.Moved -> {

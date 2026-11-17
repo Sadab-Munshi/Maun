@@ -93,7 +93,37 @@ class OutboxEntity(
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val payload: ByteArray,
     @ColumnInfo(name = "cipher_kind") val cipherKind: Int? = null,
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val cipher: ByteArray? = null,
+    /**
+     * Whether this entry should wake the other phone. Receipts should not, and
+     * they are the entries without a message; a reaction has no message of its
+     * own either but must still be noticed, so it says so here.
+     */
+    @ColumnInfo(name = "wakes", defaultValue = "0") val wakes: Boolean = false,
 )
+
+/**
+ * One emoji on one message, as this phone knows it: [mine] when this phone put
+ * it there, otherwise the other person's. One row per side and message, so a
+ * second answer replaces the first rather than piling up; [at] is when the
+ * phone that chose it did so, and only a later one may replace an earlier one,
+ * which is what settles reactions that arrive out of order.
+ */
+@Entity(tableName = "reactions", primaryKeys = ["message_id", "mine"])
+data class ReactionEntity(
+    @ColumnInfo(name = "message_id") val messageId: String,
+    val mine: Boolean,
+    /** Empty never reaches storage: taking a reaction off deletes the row. */
+    val emoji: String,
+    val at: Long,
+)
+
+/** What one message carries: the emoji on it from each side, where there is one. */
+data class Reactions(val mine: String? = null, val theirs: String? = null) {
+    val isEmpty: Boolean get() = mine == null && theirs == null
+
+    /** Both, for the pill under the bubble: this phone's first. */
+    fun shown(): String = listOfNotNull(mine, theirs).distinct().joinToString("")
+}
 
 /** Someone whose messages are thrown away unread. */
 @Entity(tableName = "blocked")
@@ -218,6 +248,49 @@ interface ChatDao {
 
     @Query("DELETE FROM outbox")
     fun deleteAllOutbox(): Int
+
+    // ---- Reactions ----------------------------------------------------------
+
+    /** What is on the message [id] of one conversation, from each side. */
+    @Query(
+        """
+        SELECT r.* FROM reactions r
+        JOIN messages m ON m.id = r.message_id
+        WHERE m.peer = :peer AND r.message_id = :id
+        """,
+    )
+    fun reactionsOf(peer: String, id: String): List<ReactionEntity>
+
+    @Query(
+        """
+        SELECT r.* FROM reactions r
+        JOIN messages m ON m.id = r.message_id
+        WHERE m.peer = :peer
+        """,
+    )
+    fun observeReactions(peer: String): Flow<List<ReactionEntity>>
+
+    @Query("SELECT * FROM reactions WHERE message_id = :id AND mine = :mine")
+    fun reaction(id: String, mine: Boolean): ReactionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun insertReaction(reaction: ReactionEntity)
+
+    @Query("DELETE FROM reactions WHERE message_id = :id AND mine = :mine")
+    fun deleteReaction(id: String, mine: Boolean): Int
+
+    @Query("DELETE FROM reactions WHERE message_id = :id")
+    fun deleteReactions(id: String): Int
+
+    @Query("DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE peer = :peer)")
+    fun deleteReactionsFor(peer: String): Int
+
+    @Query("DELETE FROM reactions")
+    fun deleteAllReactions(): Int
+
+    /** The local order of the message with [id] from [peer], if this phone has it. */
+    @Query("SELECT seq FROM messages WHERE peer = :peer AND id = :id LIMIT 1")
+    fun seqOf(peer: String, id: String): Long?
 
     // ---- Outbox ------------------------------------------------------------
 

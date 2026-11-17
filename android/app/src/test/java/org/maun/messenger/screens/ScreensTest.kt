@@ -37,6 +37,7 @@ import org.maun.messenger.data.ContactEntity
 import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.data.MessageKind
 import org.maun.messenger.data.MessageStatus
+import org.maun.messenger.data.Reactions
 import org.maun.messenger.network.RelayState
 import org.maun.messenger.ui.ChatRow
 import org.maun.messenger.ui.ChatScreen
@@ -122,13 +123,18 @@ class ScreensTest {
         MessageEntity(seq = seq, peer = asha.id, id = "m$seq", outgoing = outgoing, kind = kind, text = text, at = now - ago, status = status)
 
     @Composable
-    private fun Chat(contactName: String? = asha.name, waiting: String? = null) {
+    private fun Chat(
+        contactName: String? = asha.name,
+        waiting: String? = null,
+        reactions: Map<String, Reactions> = emptyMap(),
+    ) {
         ChatScreen(
             peerId = asha.id,
             contactName = contactName,
             contactUsername = "asha_k",
             onCall = {},
             peerVerified = true,
+            reactions = reactions,
             // Newest first.
             messages = listOf(
                 message(9, true, "Leaving now", 1 * minute, MessageStatus.PENDING),
@@ -393,6 +399,18 @@ class ScreensTest {
     @Composable
     private fun Call(call: CallUi, verified: Boolean = false) {
         CallScreen(call = call, name = asha.name, actions = CallActions(), verified = verified, now = { 1_000_000 })
+    }
+
+    // What is on a message, under it: this phone's emoji first, then theirs.
+    @Test
+    fun chatWithReactions() = shoot("chat-reactions") {
+        Chat(
+            reactions = mapOf(
+                "m8" to Reactions(mine = "\uD83D\uDC4D", theirs = "\u2764\uFE0F"),
+                "m7" to Reactions(theirs = "\uD83D\uDE02"),
+                "m6" to Reactions(mine = "\uD83D\uDE4F"),
+            ),
+        )
     }
 
     @Test

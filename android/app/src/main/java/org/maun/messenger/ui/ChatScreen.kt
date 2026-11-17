@@ -32,12 +32,15 @@ import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -124,6 +127,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
@@ -142,6 +146,7 @@ import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.data.MessageKind
 import org.maun.messenger.data.MessageStatus
 import org.maun.messenger.data.ReceiptLevel
+import org.maun.messenger.data.Reactions
 import org.maun.messenger.network.RelayState
 import org.maun.messenger.voice.VoiceRecorder
 
@@ -175,6 +180,10 @@ fun ChatScreen(
     chatPattern: Boolean = true,
     /** The relay says this account carries Maun's administrators' tick. */
     peerVerified: Boolean = false,
+    /** What each message carries, by message ID: an emoji from each side. */
+    reactions: Map<String, Reactions> = emptyMap(),
+    /** Puts an emoji on a message, or takes it off when the emoji is empty. */
+    onReact: (messageId: String, emoji: String) -> Unit = { _, _ -> },
     onLoadOlder: () -> Unit,
     onDelete: (Long) -> Unit,
     onBack: () -> Unit,
@@ -190,7 +199,10 @@ fun ChatScreen(
     val zone = remember { ZoneId.systemDefault() }
     val items = remember(messages, zone) { chatItems(messages, zone) }
     val today = dayOf(System.currentTimeMillis(), zone)
-    var deleting by remember { mutableStateOf<MessageEntity?>(null) }
+    var deleting by remember { mutableStateOf<List<MessageEntity>>(emptyList()) }
+    // What was long-pressed, or tapped while something is: the bar below does
+    // for one message or for many what the old popup did for one.
+    var selection by remember(peerId) { mutableStateOf<Set<Long>>(emptySet()) }
     var showAttachSheet by rememberSaveable { mutableStateOf(false) }
 
     val currentMessages by rememberUpdatedState(messages)
@@ -338,8 +350,16 @@ fun ChatScreen(
                                                     item = item,
                                                     online = relay == RelayState.Online,
                                                     stuck = waiting != null,
-                                                    onCopy = { copyMessage(context, it) },
-                                                    onDelete = { deleting = it },
+                                                    selected = item.message.seq in selection,
+                                                    selectionActive = selection.isNotEmpty(),
+                                                    reactions = reactions[item.message.id],
+                                                    onTap = { selection = toggle(selection, item.message.seq) },
+                                                    onLongPress = {
+                                                        // A notice is not a message: nothing to do with it.
+                                                        if (item.message.kind != MessageKind.NOTICE) {
+                                                            selection = selection + item.message.seq
+                                                        }
+                                                    },
                                                     files = files,
                                                     onOpenFile = { seq, file ->
                                                         when {
@@ -390,13 +410,45 @@ fun ChatScreen(
 
                         if (waiting != null) Notice(waiting)
                         if (isContact) {
-                            Composer(
-                                peerId = peerId,
-                                onSend = onSend,
-                                onAttach = { showAttachSheet = true },
-                                onCamera = triggerCamera,
-                                onVoice = files.onVoice,
-                            )
+                            if (selection.isEmpty()) {
+                                Composer(
+                                    peerId = peerId,
+                                    onSend = onSend,
+                                    onAttach = { showAttachSheet = true },
+                                    onCamera = triggerCamera,
+                                    onVoice = files.onVoice,
+                                )
+                            } else {
+                                // The same place as the composer: while something
+                                // is selected, that is what the bar is for.
+                                val picked = messages.filter { it.seq in selection }
+                                val one = picked.singleOrNull()
+                                SelectionBar(
+                                    picked = picked,
+                                    reactions = one?.let { reactions[it.id] },
+                                    onReact = { emoji ->
+                                        if (one != null) {
+                                            // The same emoji again takes it off.
+                                            val take = reactions[one.id]?.mine == emoji
+                                            onReact(one.id, if (take) "" else emoji)
+                                        }
+                                    },
+                                    onCopy = {
+                                        val text = picked.sortedBy { it.seq }.joinToString("\n") { it.text }
+                                        copyMessage(context, text)
+                                        selection = emptySet()
+                                    },
+                                    onSave = {
+                                        val file = one?.let { message ->
+                                            Attachment.fromLocal(message.text)?.takeIf { message.kind == MessageKind.FILE }
+                                        }
+                                        if (one != null && file != null) files.onSave(one.seq, file)
+                                        selection = emptySet()
+                                    },
+                                    onDelete = { deleting = picked },
+                                    onClose = { selection = emptySet() },
+                                )
+                            }
                         } else {
                             RequestBar(peerId = peerId, onAccept = onAccept, onBlock = onBlock)
                         }
@@ -452,27 +504,121 @@ fun ChatScreen(
         }
     }
 
-    deleting?.let { message ->
+    if (deleting.isNotEmpty()) {
+        val picked = deleting
         AlertDialog(
-            onDismissRequest = { deleting = null },
-            title = { Text("Delete this message?") },
+            onDismissRequest = { deleting = emptyList() },
+            title = { Text(if (picked.size == 1) "Delete this message?" else "Delete ${picked.size} messages?") },
             text = {
                 Text(
-                    when {
-                        !message.outgoing -> "It is deleted from this phone only."
-                        message.status == MessageStatus.PENDING -> "It has not been sent yet, and now it will not be."
-                        else -> "It is deleted from this phone only. ${contactName ?: "The other person"} keeps their copy."
+                    if (picked.size > 1) {
+                        // One question for the lot, as with one message.
+                        val unsent = picked.count { it.outgoing && it.status == MessageStatus.PENDING }
+                        "They are deleted from this phone only. " +
+                            (if (unsent > 0) "$unsent of them ${if (unsent == 1) "has" else "have"} not been sent, and now will not be. " else "") +
+                            "${contactName ?: "The other person"} keeps their copy."
+                    } else {
+                        val message = picked.first()
+                        when {
+                            !message.outgoing -> "It is deleted from this phone only."
+                            message.status == MessageStatus.PENDING -> "It has not been sent yet, and now it will not be."
+                            else -> "It is deleted from this phone only. ${contactName ?: "The other person"} keeps their copy."
+                        }
                     },
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
-                    deleting = null
-                    onDelete(message.seq)
+                    deleting = emptyList()
+                    selection = emptySet()
+                    picked.forEach { onDelete(it.seq) }
                 }) { Text("Delete") }
             },
-            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Keep") } },
+            dismissButton = { TextButton(onClick = { deleting = emptyList() }) { Text("Keep") } },
         )
+    }
+}
+
+/** Adds or removes one message from the selection. */
+private fun toggle(selection: Set<Long>, seq: Long): Set<Long> =
+    if (seq in selection) selection - seq else selection + seq
+
+/**
+ * What long-pressing a message does, in place of the old popup: the emoji bar
+ * for the one message that is selected, and the same Copy, Save and Delete for
+ * one or for many. Nothing here acts twice: Delete asks once, for all of them.
+ */
+@Composable
+private fun SelectionBar(
+    picked: List<MessageEntity>,
+    reactions: Reactions?,
+    onReact: (String) -> Unit,
+    onCopy: () -> Unit,
+    onSave: () -> Unit,
+    onDelete: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    var more by rememberSaveable { mutableStateOf(false) }
+    val one = picked.singleOrNull()
+    val text = one != null && one.kind == MessageKind.TEXT
+    val file = one != null && one.kind == MessageKind.FILE
+    Surface(color = colors.surfaceContainerHigh, tonalElevation = 2.dp) {
+        Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars).padding(horizontal = 10.dp, vertical = 8.dp)) {
+            if (one != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val shown = if (more) Payload.MORE_REACTIONS else Payload.REACTIONS
+                    shown.forEach { emoji ->
+                        val mine = reactions?.mine == emoji
+                        TextButton(
+                            onClick = { onReact(emoji) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(0.dp),
+                        ) {
+                            Text(
+                                text = emoji,
+                                fontSize = 22.sp,
+                                modifier = if (mine) {
+                                    // The one this phone chose stands out.
+                                    Modifier.background(colors.primary.copy(alpha = 0.18f), CircleShape).padding(2.dp)
+                                } else {
+                                    Modifier.padding(2.dp)
+                                },
+                            )
+                        }
+                    }
+                    TextButton(onClick = { more = !more }, modifier = Modifier.weight(0.8f), contentPadding = PaddingValues(0.dp)) {
+                        Icon(
+                            imageVector = if (more) MaunIcons.Check else MaunIcons.More,
+                            contentDescription = if (more) "That is enough emoji" else "More emoji",
+                        )
+                    }
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onClose) {
+                    Icon(MaunIcons.Close, contentDescription = "Nothing selected")
+                }
+                Text(
+                    text = if (picked.size == 1) "1 selected" else "${picked.size} selected",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                if (text) {
+                    TextButton(onClick = onCopy) { Text("Copy") }
+                }
+                if (file) {
+                    TextButton(onClick = onSave) { Text("Save") }
+                }
+                TextButton(onClick = onDelete) {
+                    Text("Delete", color = colors.error)
+                }
+            }
+        }
     }
 }
 
@@ -748,8 +894,14 @@ private fun MessageRow(
     item: MessageItem,
     online: Boolean,
     stuck: Boolean,
-    onCopy: (String) -> Unit,
-    onDelete: (MessageEntity) -> Unit,
+    /** This message is part of the selection. */
+    selected: Boolean = false,
+    /** Something is selected, so a tap picks this one instead of opening it. */
+    selectionActive: Boolean = false,
+    /** The emoji on it, from each side. */
+    reactions: Reactions? = null,
+    onTap: () -> Unit = {},
+    onLongPress: () -> Unit = {},
     files: FileActions = FileActions(),
     onOpenFile: (Long, Attachment) -> Unit = { _, _ -> },
     onSaveFile: (Long, Attachment) -> Unit = { _, _ -> },
@@ -759,7 +911,7 @@ private fun MessageRow(
     // Worked out when the list was built, not on every frame (see MessageItem.file).
     val file = item.file
     val fileStep = file?.let { fileStep(it, outgoing, active = message.seq in files.progress) }
-    val onTap: (() -> Unit)? = when (fileStep) {
+    val fileTap: (() -> Unit)? = when (fileStep) {
         null, FileStep.Working, FileStep.Gone -> null
         FileStep.Open -> ({ onOpenFile(message.seq, file) })
         FileStep.Fetch, FileStep.Retry -> ({ files.onStart(message.seq) })
@@ -768,7 +920,6 @@ private fun MessageRow(
     val imageBubble = file != null && fileStep != null && isPictureBubble(message, file, fileStep)
     val chatColors = LocalChatColors.current
     val haptics = LocalHapticFeedback.current
-    var menu by remember { mutableStateOf(false) }
 
     val round = 16.dp
     val tight = 4.dp
@@ -827,25 +978,36 @@ private fun MessageRow(
             modifier = Modifier.fillMaxWidth(0.85f),
             contentAlignment = if (outgoing) Alignment.CenterEnd else Alignment.CenterStart,
         ) {
-            Box {
+            Column(horizontalAlignment = if (outgoing) Alignment.End else Alignment.Start) {
                 Surface(
                     color = bubbleColor,
                     shape = shape,
                     shadowElevation = 1.dp,
                     modifier = Modifier
                         .widthIn(max = 480.dp)
-                        .pointerInput(message.seq, fileStep) {
+                        .then(
+                            // A selected bubble says so, in the same green the app uses
+                            // for what is pressed.
+                            if (selected) {
+                                Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape)
+                            } else {
+                                Modifier
+                            },
+                        )
+                        .pointerInput(message.seq, fileStep, selectionActive) {
                             detectTapGestures(
-                                onTap = onTap?.let { tap -> { tap() } },
+                                onTap = {
+                                    if (selectionActive) onTap() else fileTap?.invoke()
+                                },
                                 onLongPress = {
                                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    menu = true
+                                    onLongPress()
                                 },
                             )
                         }
                         .semantics {
-                            onLongClick(label = "Copy or delete") {
-                                menu = true
+                            onLongClick(label = "Select") {
+                                onLongPress()
                                 true
                             }
                         },
@@ -942,45 +1104,20 @@ private fun MessageRow(
                         }
                     }
                 }
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    if (readable) {
-                        DropdownMenuItem(
-                            text = { Text("Copy") },
-                            leadingIcon = { Icon(MaunIcons.Copy, contentDescription = null) },
-                            onClick = {
-                                menu = false
-                                onCopy(message.text)
-                            },
-                        )
+                if (reactions != null && !reactions.isEmpty) {
+                    // What is on it, under it: this phone's emoji first, then theirs.
+                    Row(
+                        modifier = Modifier
+                            .padding(top = 2.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(chatColors.incomingBubble)
+                            .padding(horizontal = 6.dp, vertical = 1.dp),
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        reactions.mine?.let { Text(text = it, fontSize = 12.sp) }
+                        reactions.theirs?.let { Text(text = it, fontSize = 12.sp) }
                     }
-                    if (file != null && fileStep == FileStep.Open && !file.isVoice) {
-                        // The word says what the action will do: a file that is
-                        // already in Gallery or Downloads is saved again, not saved.
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    when {
-                                        message.savedToGallery -> "Save again"
-                                        file.isGalleryMedia -> "Save to Gallery"
-                                        else -> "Save to Downloads/Maun"
-                                    },
-                                )
-                            },
-                            leadingIcon = { Icon(MaunIcons.Download, contentDescription = null) },
-                            onClick = {
-                                menu = false
-                                onSaveFile(message.seq, file)
-                            },
-                        )
-                    }
-                    DropdownMenuItem(
-                        text = { Text("Delete") },
-                        leadingIcon = { Icon(MaunIcons.Delete, contentDescription = null) },
-                        onClick = {
-                            menu = false
-                            onDelete(message)
-                        },
-                    )
                 }
             }
         }

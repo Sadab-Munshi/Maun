@@ -3,6 +3,7 @@ package org.maun.messenger.support
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.maun.messenger.crypto.SignalStorage
 import org.maun.messenger.data.BlockedEntity
 import org.maun.messenger.data.ChatDao
@@ -12,6 +13,7 @@ import org.maun.messenger.data.ChatSummary
 import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.data.MessageKind
 import org.maun.messenger.data.OutboxEntity
+import org.maun.messenger.data.ReactionEntity
 import org.maun.messenger.data.MetaDao
 import org.maun.messenger.data.MetaEntry
 import org.maun.messenger.data.Transactor
@@ -25,6 +27,7 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
     private data class State(
         val messages: List<MessageEntity> = emptyList(),
         val outbox: List<OutboxEntity> = emptyList(),
+        val reactions: List<ReactionEntity> = emptyList(),
         val contacts: Map<String, ContactEntity> = emptyMap(),
         val blocked: Map<String, Long> = emptyMap(),
         val sessions: Map<String, ByteArray> = emptyMap(),
@@ -179,6 +182,60 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
     override fun outboxFor(peer: String): List<OutboxEntity> = lock.withLock { state.outbox.filter { it.peer == peer } }
 
     override fun outboxSize(): Int = lock.withLock { state.outbox.size }
+
+    // ---- Reactions ----------------------------------------------------------
+
+    override fun reactionsOf(peer: String, id: String): List<ReactionEntity> = lock.withLock {
+        state.reactions.filter { it.messageId == id && hasMessage(peer, id) }
+    }
+
+    override fun observeReactions(peer: String): Flow<List<ReactionEntity>> {
+        val ids = lock.withLock { state.messages.filter { it.peer == peer }.map { it.id }.toSet() }
+        return MutableStateFlow(lock.withLock { state.reactions.filter { it.messageId in ids } })
+    }
+
+    override fun reaction(id: String, mine: Boolean): ReactionEntity? = lock.withLock {
+        state.reactions.firstOrNull { it.messageId == id && it.mine == mine }
+    }
+
+    override fun insertReaction(reaction: ReactionEntity) = lock.withLock {
+        state = state.copy(
+            reactions = state.reactions.filterNot { it.messageId == reaction.messageId && it.mine == reaction.mine } +
+                reaction,
+        )
+    }
+
+    override fun deleteReaction(id: String, mine: Boolean): Int = lock.withLock {
+        val before = state.reactions.size
+        state = state.copy(reactions = state.reactions.filterNot { it.messageId == id && it.mine == mine })
+        before - state.reactions.size
+    }
+
+    override fun deleteReactions(id: String): Int = lock.withLock {
+        val before = state.reactions.size
+        state = state.copy(reactions = state.reactions.filterNot { it.messageId == id })
+        before - state.reactions.size
+    }
+
+    override fun deleteReactionsFor(peer: String): Int = lock.withLock {
+        val ids = state.messages.filter { it.peer == peer }.map { it.id }.toSet()
+        val before = state.reactions.size
+        state = state.copy(reactions = state.reactions.filterNot { it.messageId in ids })
+        before - state.reactions.size
+    }
+
+    override fun deleteAllReactions(): Int = lock.withLock {
+        val before = state.reactions.size
+        state = state.copy(reactions = emptyList())
+        before
+    }
+
+    override fun seqOf(peer: String, id: String): Long? = lock.withLock {
+        state.messages.firstOrNull { it.peer == peer && it.id == id }?.seq
+    }
+
+    private fun hasMessage(peer: String, id: String): Boolean =
+        state.messages.any { it.peer == peer && it.id == id }
 
     override fun isContact(id: String): Boolean = lock.withLock { id in state.contacts }
 

@@ -38,6 +38,7 @@ import org.maun.messenger.CodeCheck
 import org.maun.messenger.MaunApp
 import org.maun.messenger.MediaSaver
 import org.maun.messenger.data.MessageEntity
+import org.maun.messenger.data.Reactions
 import org.maun.messenger.network.RelayException
 import org.maun.messenger.push.Background
 import org.maun.messenger.SoundSettings
@@ -627,6 +628,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteMessage(seq: Long) {
         viewModelScope.launch { messenger.deleteMessage(seq) }
+    }
+
+    /** What each message of a conversation carries, as it changes. */
+    fun reactions(peer: String): Flow<Map<String, Reactions>> = messenger.reactions(peer)
+
+    /** Puts an emoji on a message, or takes it off when [emoji] is empty. */
+    fun react(peer: String, messageId: String, emoji: String) {
+        viewModelScope.launch {
+            try {
+                messenger.react(peer, messageId, emoji)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // The message went away under the bar; nothing to mark.
+            }
+        }
     }
 
     fun sendText(peer: String, text: String) {

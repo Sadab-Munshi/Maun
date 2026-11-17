@@ -364,6 +364,9 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 value = if (!isContact && username != null) viewModel.usernameOf(chatPeer) else null
                             }
                             val waiting by viewModel.waiting.collectAsStateWithLifecycle()
+                            // What each message of this conversation carries, by message ID.
+                            val reactions by remember(chatPeer) { viewModel.reactions(chatPeer) }
+                                .collectAsStateWithLifecycle(emptyMap())
                             val fileProgress by viewModel.fileProgress.collectAsStateWithLifecycle()
                             val fileProblem by viewModel.fileProblem.collectAsStateWithLifecycle()
                             val fileNotice by viewModel.fileNotice.collectAsStateWithLifecycle()
@@ -379,6 +382,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 contactUsername = contacts.firstOrNull { it.id == chatPeer }?.username,
                                 chatPattern = privacy.chatPattern,
                                 peerVerified = chatPeer in badges,
+                                reactions = reactions,
+                                onReact = { messageId, emoji -> viewModel.react(chatPeer, messageId, emoji) },
                                 loading = !conversation.loaded,
                                 messages = conversation.messages,
                                 hasOlder = conversation.hasOlder,
