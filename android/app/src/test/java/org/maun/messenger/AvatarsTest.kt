@@ -80,9 +80,10 @@ class AvatarsTest {
     }
 
     @Test
-    fun `something that is not a picture is not kept as one`() = runBlocking {
+    fun `nothing too small or too large is kept as a picture`() = runBlocking {
         assertFalse(Avatars.store(context, contact, ByteArray(0)))
-        assertFalse(Avatars.store(context, contact, "not a picture at all".toByteArray()))
+        // The relay takes 256 KB and no more, so nothing larger is a picture.
+        assertFalse(Avatars.store(context, contact, ByteArray(256 * 1024 + 1)))
         assertFalse(Avatars.has(context, contact))
     }
 }

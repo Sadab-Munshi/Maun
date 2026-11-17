@@ -13,6 +13,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -39,6 +40,20 @@ import org.robolectric.annotation.Config
 class FileOpenAndPreviewTest {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+
+    /**
+     * Each test here gets a fresh copy of the app, and so a fresh cache
+     * directory, but the file provider remembers the roots it was first given.
+     * Forgetting them makes every test look at its own directory.
+     */
+    @Before
+    fun forgetProviderRoots() {
+        runCatching {
+            val field = androidx.core.content.FileProvider::class.java.getDeclaredField("sCache")
+            field.isAccessible = true
+            (field.get(null) as MutableMap<*, *>).clear()
+        }
+    }
 
     @After
     fun tearDown() {

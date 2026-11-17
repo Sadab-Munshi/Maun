@@ -273,7 +273,7 @@ class ProfilePicturesTest {
         assertFalse(Avatars.has(context, Avatars.SELF))
         assertEquals(1, deletions.get())
         assertNull(Avatars.bytes(context, Avatars.SELF))
-        assertEquals(listOf(bob to Payload.AVATAR_NONE), sent.toList())
+        assertEquals(listOf(bob to Payload.Avatar(Payload.AVATAR_NONE)), sent.toList())
         // The next person to ask is told the truth.
         assertNull(pictures.mine())
     }
