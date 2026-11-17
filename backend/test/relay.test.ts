@@ -42,6 +42,13 @@ describe("logged-in socket", () => {
     inbox.ws.close(1000, "done");
   });
 
+  it("tells a phone that nobody can be verified on an open relay", async () => {
+    const inbox = await register(await makeIdentity(), await makeDevice());
+    inbox.sendJson({ t: "verified", id: "v1", users: ["c".repeat(64)] });
+    expect(await inbox.nextJson()).toEqual({ t: "verified", id: "v1", member: false, ok: {} });
+    inbox.ws.close(1000, "done");
+  });
+
   it("reports bad frames without closing the socket", async () => {
     const inbox = await register(await makeIdentity(), await makeDevice());
 

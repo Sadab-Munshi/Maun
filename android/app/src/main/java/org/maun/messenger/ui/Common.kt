@@ -15,6 +15,7 @@ import kotlinx.coroutines.withContext
 import org.maun.messenger.Avatars
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,11 +36,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -62,6 +65,44 @@ import java.time.ZoneId
 import java.util.Date
 import kotlin.math.floor
 import org.maun.messenger.crypto.QrCodec
+
+/**
+ * The tick that says Maun's administrators have checked who this account is.
+ *
+ * It is drawn only when the relay says so, and it is a different thing from
+ * the safety number having been checked. Tapping it says what it does and does
+ * not mean, in as many words, because a tick invites more trust than it carries.
+ */
+@Composable
+fun VerifiedBadge(verified: Boolean, modifier: Modifier = Modifier) {
+    if (!verified) return
+    var explaining by remember { mutableStateOf(false) }
+    Icon(
+        imageVector = MaunIcons.Verified,
+        contentDescription = "Verified account",
+        modifier = modifier
+            .size(16.dp)
+            .clip(CircleShape)
+            .clickable(onClickLabel = "What this tick means") { explaining = true },
+    )
+    if (explaining) {
+        AlertDialog(
+            onDismissRequest = { explaining = false },
+            icon = { Icon(MaunIcons.Verified, contentDescription = null, modifier = Modifier.size(28.dp)) },
+            title = { Text("Verified by Maun") },
+            text = {
+                Text(
+                    "Maun's administrators checked this account and gave it this tick. It means the account " +
+                        "is run by whoever the administrators know it to be.\n\n" +
+                        "It is not a security check: it says nothing about the phone, the keys or the " +
+                        "encryption, and nothing about what the person tells you. The safety number is the " +
+                        "separate check for that, and only the two of you can do it.",
+                )
+            },
+            confirmButton = { TextButton(onClick = { explaining = false }) { Text("Close") } },
+        )
+    }
+}
 
 /**
  * The page layout every screen shares: a bar with the title and a way back,

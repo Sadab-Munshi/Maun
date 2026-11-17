@@ -90,6 +90,8 @@ data class Ready(
     val name: String? = null,
     /** The credential for the relay's file routes, until the next login. */
     val filesToken: String? = null,
+    /** True when Maun's administrators have given this account their tick. */
+    val verified: Boolean = false,
 )
 
 /** What the messaging code needs from a connection. */
@@ -310,6 +312,7 @@ class RelayConnection(
                                         email = if (frame.isNull("email")) null else frame.optString("email").ifEmpty { null },
                                         name = if (frame.isNull("name")) null else frame.optString("name").ifEmpty { null },
                                         filesToken = frame.optString("files").ifEmpty { null },
+                                        verified = frame.optBoolean("verified"),
                                     )
                                     live = socket
                                     _state.value = RelayState.Online

@@ -51,6 +51,8 @@ import org.maun.messenger.ui.PermissionSetupState
 import org.maun.messenger.ui.PermissionsScreen
 import org.maun.messenger.ui.PrivacyUi
 import org.maun.messenger.ui.SettingsScreen
+import org.maun.messenger.ui.SoundChoices
+import org.maun.messenger.SoundSettings
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
@@ -110,6 +112,7 @@ class ScreensTest {
             onOpenChat = {},
             onReconnect = {},
             onOpenSettings = {},
+            verified = setOf(asha.id, zoya.id),
         )
     }
 
@@ -123,6 +126,7 @@ class ScreensTest {
             contactName = contactName,
             contactUsername = "asha_k",
             onCall = {},
+            peerVerified = true,
             // Newest first.
             messages = listOf(
                 message(9, true, "Leaving now", 1 * minute, MessageStatus.PENDING),
@@ -150,10 +154,15 @@ class ScreensTest {
     }
 
     @Composable
-    private fun Settings(memberEmail: String? = null, username: String? = null) {
+    private fun Settings(
+        memberEmail: String? = null,
+        username: String? = null,
+        sounds: SoundChoices = SoundChoices(),
+    ) {
         SettingsScreen(
             memberEmail = memberEmail,
             username = username,
+            sounds = sounds,
             version = "0.13.0",
             relayName = "maun.example.workers.dev",
             relay = RelayState.Online,
@@ -174,9 +183,10 @@ class ScreensTest {
     }
 
     @Composable
-    private fun Contact(contact: ContactEntity) {
+    private fun Contact(contact: ContactEntity, ticked: Boolean = true) {
         ContactScreen(
             contact = contact,
+            ticked = ticked,
             onBack = {},
             onRename = {},
             onRemove = {},
@@ -473,7 +483,30 @@ class ScreensTest {
     fun settingsDark() = shoot("settings-dark") { Settings() }
 
     @Test
-    fun contact() = shoot("contact") { Contact(rohan) }
+    fun settingsSoundsSilent() = shoot("settings-sounds-silent") {
+        Settings(
+            sounds = SoundChoices(
+                sent = SoundSettings.SENT_SILENT,
+                incoming = SoundSettings.INCOMING_SILENT,
+            ),
+        )
+    }
+
+    @Test
+    fun settingsSoundsPhone() = shoot("settings-sounds-phone") {
+        Settings(
+            sounds = SoundChoices(
+                sent = SoundSettings.SENT_MAUN,
+                incoming = SoundSettings.INCOMING_SYSTEM,
+            ),
+        )
+    }
+
+    @Test
+    fun contact() = shoot("contact") { Contact(rohan, ticked = false) }
+
+    @Test
+    fun contactTicked() = shoot("contact-ticked") { Contact(zoya) }
 
     @Test
     @Config(qualifiers = "+night")

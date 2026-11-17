@@ -58,6 +58,8 @@ const APP = `
 <section id="panel" class="hidden">
   <p id="summary" class="quiet"></p>
   <p id="callsNote" class="quiet"></p>
+  <p class="quiet">The verified tick is yours to give: it says the relay's owner has looked at an account.
+  It is not a check of who somebody is, and it has nothing to do with the safety number a phone checks itself.</p>
   <div class="row">
     <div class="grow"><input id="search" type="search" placeholder="Search username, email, phone or ID"></div>
     <div class="grow"><input id="addEmail" type="email" placeholder="Approve an email address in advance"></div>
@@ -156,6 +158,7 @@ function memberRow(m) {
   if (m.deviceBanned) tag("phone banned", "bad");
   if (!m.banned && m.status === "pending") tag(m.id ? "waiting" : "not joined", "warn");
   if (!m.banned && !m.deviceBanned && m.status === "approved") tag(m.id ? "member" : "invited", "ok");
+  if (m.verified && !m.banned && !m.deviceBanned) tag("verified", "ok");
   tr.append(state);
 
   const phone = cell(m.device || "not seen yet", m.appVersion ? el("div", "sub", "Maun " + m.appVersion) : null);
@@ -175,6 +178,13 @@ function memberRow(m) {
   const acts = el("td", "acts");
   if (!m.banned && m.status === "pending") acts.append(button("Approve", "main", () => act({ action: "approve", email: m.email })));
   if (m.banned) acts.append(button("Lift ban", "main", () => act({ action: "unban", email: m.email })));
+  if (m.status === "approved" && !m.banned && !m.deviceBanned) {
+    acts.append(
+      m.verified
+        ? button("Take the tick away", "", () => act({ action: "unverify", email: m.email }, "Take the verified tick away from " + m.email + "? Their contacts stop showing it."))
+        : button("Verify", "main", () => act({ action: "verify", email: m.email }, "Give " + m.email + " the verified tick? Every phone that has them as a contact shows a green tick beside their name.")),
+    );
+  }
   if (!m.admin && !m.banned) acts.append(button("Ban", "bad", () => act({ action: "ban", email: m.email }, "Ban " + m.email + "? Their phone deletes its messages and files.")));
   if (m.deviceId && m.deviceBanned) acts.append(button("Lift phone ban", "", () => act({ action: "unban_device", device: m.deviceId })));
   if (m.deviceId && !m.deviceBanned && !m.admin) acts.append(button("Ban phone", "bad", () => act({ action: "ban_device", device: m.deviceId }, "Ban this phone (" + (m.device || "unknown") + ")? Nobody can use Maun on it, whichever email address they log in with.")));

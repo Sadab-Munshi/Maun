@@ -130,6 +130,9 @@ export const FILE_DAILY_COUNT = 200;
  */
 export const AVATAR_PREFIX = "avatar/";
 /** The most a profile picture may be: a face, shrunk to 512 pixels, and sealed. */
+/** How many accounts one phone may ask about in one frame. */
+export const VERIFIED_LOOKUP_MAX = 64;
+
 export const MAX_AVATAR_BYTES = 256 * 1024;
 /** The name of the object that holds one account's picture. */
 export function avatarKey(mailboxId: string): string {
@@ -210,6 +213,12 @@ export type ClientFrame =
   | { t: "drop_push"; id: string }
   /** Looks a member up, by username (`name`) or by ID (`user`). Member-only relays. */
   | { t: "find"; id: string; name: string | null; user: string | null }
+  /**
+   * Asks which of these accounts wear the administrator's verified badge.
+   * Read-only: a phone cannot grant it to itself or anyone else, whatever it
+   * puts in the frame. Member-only relays; at most [VERIFIED_LOOKUP_MAX] IDs.
+   */
+  | { t: "verified"; id: string; users: string[] }
   /** `hash`: SHA-256 of what the phone says about itself, in hex. */
   | ({ t: "device"; id: string } & DeviceReport);
 
@@ -235,6 +244,7 @@ export type ServerFrame =
    * `vapid`: the public key this mailbox signs its wake-ups with. The phone
    * passes it to its push app, for push services that ask who will be calling.
    * `email` and `name`: on a member-only relay, the address this ID is tied to and its username.
+   * `verified`: on a member-only relay, whether this account wears the administrator's badge.
    * `files`: the token for uploading and downloading files until the next login.
    */
   | {
@@ -248,6 +258,7 @@ export type ServerFrame =
       queued: number;
       email: string | null;
       name: string | null;
+      verified: boolean;
       files: string;
     }
   | { t: "echo"; id: string; body: string; at: number }
@@ -262,6 +273,11 @@ export type ServerFrame =
     }
   | { t: "stored"; id: string }
   | { t: "found"; id: string; user: string; name: string }
+  /**
+   * `member`: false on a relay without a member list, where nobody can be
+   * verified. `ok`: yes or no for each ID that was asked about.
+   */
+  | { t: "verified"; id: string; member: boolean; ok: Record<string, boolean> }
   | { t: "failed"; id: string; code: FailureCode }
   /** `age`: how long the message has been waiting, in milliseconds. A call that rang a minute ago is over. */
   | { t: "msg"; seq: number; from: string; kind: number; body: string; at: number; age: number }
@@ -422,6 +438,18 @@ export function parseClientFrame(raw: string | ArrayBuffer): ClientFrame | Error
       const user = typeof frame.user === "string" ? frame.user : null;
       if (name !== null ? !isUsername(name) || user !== null : user === null || !isMailboxId(user)) return "bad_frame";
       return { t: "find", id: frame.id, name, user };
+    }
+    case "verified": {
+      // Read-only, and only ids: there is nothing here a phone could use to
+      // give itself the badge. The mailbox answers from the member list.
+      if (!isRequestId(frame.id)) return "bad_frame";
+      if (!Array.isArray(frame.users) || frame.users.length === 0 || frame.users.length > VERIFIED_LOOKUP_MAX) return "bad_frame";
+      const users: string[] = [];
+      for (const value of frame.users) {
+        if (typeof value !== "string" || !isMailboxId(value)) return "bad_frame";
+        if (!users.includes(value)) users.push(value);
+      }
+      return { t: "verified", id: frame.id, users };
     }
     case "device": {
       const report = deviceReport(frame);

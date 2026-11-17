@@ -66,6 +66,8 @@ fun HomeScreen(
     onOpenChat: (String) -> Unit,
     onReconnect: () -> Unit,
     onOpenSettings: () -> Unit,
+    /** IDs the relay says carry Maun's verified tick. */
+    verified: Set<String> = emptySet(),
 ) {
     val nobody = lists.chats.isEmpty() && lists.requests.isEmpty()
     Scaffold(
@@ -123,12 +125,12 @@ fun HomeScreen(
                     if (lists.requests.isNotEmpty()) {
                         item(key = "requests") { ListHeading("Message requests") }
                         items(lists.requests, key = { "r" + it.peer }) { row ->
-                            ChatRowItem(row, onClick = { onOpenChat(row.peer) })
+                            ChatRowItem(row, verified = row.peer in verified, onClick = { onOpenChat(row.peer) })
                         }
                         if (lists.chats.isNotEmpty()) item(key = "chats") { ListHeading("Chats") }
                     }
                     items(lists.chats, key = { "c" + it.peer }) { row ->
-                        ChatRowItem(row, onClick = { onOpenChat(row.peer) })
+                        ChatRowItem(row, verified = row.peer in verified, onClick = { onOpenChat(row.peer) })
                     }
                     if (nobody) {
                         item(key = "nobody") { NobodyYet(onAddContact = onAddContact, onShowMyCode = onShowMyCode) }
@@ -194,7 +196,7 @@ private fun ListHeading(text: String) {
 }
 
 @Composable
-private fun ChatRowItem(row: ChatRow, onClick: () -> Unit) {
+private fun ChatRowItem(row: ChatRow, verified: Boolean, onClick: () -> Unit) {
     val last = row.last
     val unread = last?.unread ?: 0
     val colors = MaterialTheme.colorScheme
@@ -206,15 +208,24 @@ private fun ChatRowItem(row: ChatRow, onClick: () -> Unit) {
         Avatar(id = row.peer, name = row.contact?.name)
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = row.contact?.name ?: shortId(row.peer),
+                // The name and, right beside it, the administrators' tick: on
+                // one line, so the row is no taller than it was without it.
+                Row(
                     modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontFamily = if (row.contact == null) FontFamily.Monospace else null,
-                    fontWeight = if (unread > 0) FontWeight.Bold else FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = row.contact?.name ?: shortId(row.peer),
+                        modifier = Modifier.weight(1f, fill = false),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontFamily = if (row.contact == null) FontFamily.Monospace else null,
+                        fontWeight = if (unread > 0) FontWeight.Bold else FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    VerifiedBadge(verified)
+                }
                 if (last != null) {
                     Text(
                         text = formatListTime(last.at),

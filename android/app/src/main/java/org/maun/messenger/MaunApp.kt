@@ -6,8 +6,21 @@ import org.maun.messenger.push.FetchWorker
 import org.maun.messenger.push.Notifications
 
 class MaunApp : Application() {
-    /** Created on first use, so that starting the process does no work by itself. */
-    val messenger: Messenger by lazy { Messenger(this) }
+    // Created on first use, so that starting the process does no work by itself,
+    // and only once: a notification arriving and a screen opening at the same
+    // moment must find the same Messenger.
+    private val built = lazy { Messenger(this) }
+
+    val messenger: Messenger
+        get() = built.value
+
+    /**
+     * Frees the decoded message sounds when the last screen of the app closes.
+     * The next sound loads them again; nothing else is kept by them.
+     */
+    fun releaseSounds() {
+        if (built.isInitialized()) built.value.sounds.release()
+    }
 
     override fun onCreate() {
         super.onCreate()

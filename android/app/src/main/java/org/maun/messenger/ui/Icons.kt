@@ -356,6 +356,30 @@ object MaunIcons {
         )
     }
 
+    /**
+     * The tick of a Maun-verified account: a green disc with a white check.
+     * It keeps its own two colours wherever it is drawn, so it cannot be
+     * mistaken for the grey ticks that carry no such meaning.
+     */
+    val Verified: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "Verified",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        )
+            .addPath(
+                pathData = addPathNodes("M12,2a10,10 0 1,0 0,20a10,10 0 1,0 0,-20z"),
+                fill = SolidColor(Color(0xFF00C96B)),
+            )
+            .addPath(
+                pathData = addPathNodes("M10.7,15.9 7.2,12.4 8.6,11 10.7,13.1 15.9,7.9 17.3,9.3z"),
+                fill = SolidColor(Color.White),
+            )
+            .build()
+    }
+
     private fun icon(name: String, path: String, mirrored: Boolean = false): ImageVector =
         ImageVector.Builder(
             name = name,

@@ -5,14 +5,24 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -21,6 +31,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import org.maun.messenger.Avatars
+import org.maun.messenger.SoundSettings
 import org.maun.messenger.network.RelayState
 
 /** Privacy, incoming media, and chat appearance switches, as the settings screen shows them. */
@@ -45,6 +56,24 @@ data class PrivacyUi(
     val chatPattern: Boolean = true,
 )
 
+/** Which sounds Maun makes, as the settings screen shows them. */
+data class SoundChoices(
+    /** One of SoundSettings.SENT_MAUN, SENT_SILENT. */
+    val sent: String = SoundSettings.DEFAULT_SENT,
+    /** One of SoundSettings.INCOMING_MAUN, INCOMING_SYSTEM, INCOMING_SILENT. */
+    val incoming: String = SoundSettings.DEFAULT_INCOMING,
+) {
+    val sentLabel: String
+        get() = if (sent == SoundSettings.SENT_SILENT) "Silent" else "Maun default"
+
+    val incomingLabel: String
+        get() = when (incoming) {
+            SoundSettings.INCOMING_SYSTEM -> "This phone's notification sound"
+            SoundSettings.INCOMING_SILENT -> "Silent"
+            else -> "Maun default"
+        }
+}
+
 @Composable
 fun SettingsScreen(
     version: String,
@@ -54,6 +83,7 @@ fun SettingsScreen(
     pushProblem: String?,
     privacy: PrivacyUi,
     blockedCount: Int,
+    sounds: SoundChoices = SoundChoices(),
     memberEmail: String? = null,
     username: String? = null,
     onChoosePushApp: (String) -> Unit,
@@ -68,11 +98,17 @@ fun SettingsScreen(
     onTelecomCalls: (Boolean) -> Unit = {},
     onSaveIncomingFiles: (Boolean) -> Unit = {},
     onChatPattern: (Boolean) -> Unit = {},
+    onSentSound: (String) -> Unit = {},
+    onIncomingSound: (String) -> Unit = {},
+    onPreviewIncomingSound: (String) -> Unit = {},
     onOpenProfile: () -> Unit = {},
     onOpenBlocked: () -> Unit,
     onOpenSetupCheck: () -> Unit,
     onBack: () -> Unit,
 ) {
+    var choosingSent by remember { mutableStateOf(false) }
+    var choosingIncoming by remember { mutableStateOf(false) }
+
     ScreenFrame(title = "Settings", onBack = onBack) {
         SectionTitle("Profile", modifier = Modifier.padding(bottom = 4.dp))
         ProfileRow(onClick = onOpenProfile)
@@ -137,6 +173,25 @@ fun SettingsScreen(
                 checked = privacy.chatPattern,
                 enabled = true,
                 onChange = onChatPattern,
+            )
+        }
+
+        Column {
+            SectionTitle("Message sounds", modifier = Modifier.padding(bottom = 4.dp))
+            ChoiceRow(
+                icon = MaunIcons.Send,
+                title = "Sound when you send",
+                text = sounds.sentLabel,
+                onClick = { choosingSent = true },
+            )
+            ChoiceRow(
+                icon = MaunIcons.Bell,
+                title = "Sound when a message arrives",
+                text = sounds.incomingLabel,
+                onClick = { choosingIncoming = true },
+                onPreview = if (sounds.incoming == SoundSettings.INCOMING_SILENT) null else {
+                    { onPreviewIncomingSound(sounds.incoming) }
+                },
             )
         }
 
@@ -218,6 +273,134 @@ fun SettingsScreen(
                 },
             )
         }
+    }
+
+    if (choosingSent) {
+        SoundChoiceDialog(
+            title = "Sound when you send",
+            explanation = "Played once when a message has been handed to this phone's sending queue. " +
+                "Replies, receipts and messages read back from storage never make a sound.",
+            options = listOf(
+                SoundSettings.SENT_MAUN to "Maun default",
+                SoundSettings.SENT_SILENT to "Silent",
+            ),
+            chosen = sounds.sent,
+            onChoose = {
+                choosingSent = false
+                onSentSound(it)
+            },
+            onDismiss = { choosingSent = false },
+        )
+    }
+
+    if (choosingIncoming) {
+        SoundChoiceDialog(
+            title = "Sound when a message arrives",
+            explanation = "While Maun is open the app plays this itself. While it is closed, Android makes " +
+                "the sound for the notification, on a channel of its own for each choice here, so a sound " +
+                "turned off in Android's own settings stays off.",
+            options = listOf(
+                SoundSettings.INCOMING_MAUN to "Maun default",
+                SoundSettings.INCOMING_SYSTEM to "This phone's notification sound",
+                SoundSettings.INCOMING_SILENT to "Silent",
+            ),
+            chosen = sounds.incoming,
+            onChoose = {
+                choosingIncoming = false
+                onIncomingSound(it)
+            },
+            onDismiss = { choosingIncoming = false },
+            onPreview = onPreviewIncomingSound,
+        )
+    }
+}
+
+/**
+ * One choice of a sound, or of none. The row that is in use is marked, and
+ * each of the others can be heard before it is chosen.
+ */
+@Composable
+private fun SoundChoiceDialog(
+    title: String,
+    explanation: String,
+    options: List<Pair<String, String>>,
+    chosen: String,
+    onChoose: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onPreview: ((String) -> Unit)? = null,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = explanation,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                options.forEach { (value, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .selectable(selected = value == chosen, role = Role.RadioButton) { onChoose(value) }
+                            .padding(vertical = 10.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        RadioButton(selected = value == chosen, onClick = null)
+                        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                        if (onPreview != null && value != SoundSettings.INCOMING_SILENT) {
+                            IconButton(onClick = { onPreview(value) }, modifier = Modifier.size(36.dp)) {
+                                Icon(
+                                    MaunIcons.Speaker,
+                                    contentDescription = "Hear it",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+/** A settings row that says what is chosen now, and opens the choices. */
+@Composable
+private fun ChoiceRow(
+    icon: ImageVector,
+    title: String,
+    text: String,
+    onClick: () -> Unit,
+    onPreview: (() -> Unit)? = null,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RowIcon(icon)
+        RowText(title, text, modifier = Modifier.weight(1f))
+        if (onPreview != null) {
+            IconButton(onClick = onPreview, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    MaunIcons.Speaker,
+                    contentDescription = "Hear it",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+        Icon(MaunIcons.Forward, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

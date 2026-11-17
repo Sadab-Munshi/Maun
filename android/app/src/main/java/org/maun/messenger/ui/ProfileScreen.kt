@@ -51,6 +51,8 @@ fun ProfileScreen(
     onRemovePhoto: () -> Unit,
     /** The picture chosen here is kept, but has not reached the relay yet. */
     sharingPending: Boolean = false,
+    /** Maun's administrators have given this account their tick. */
+    verified: Boolean = false,
     onShowCode: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -72,11 +74,18 @@ fun ProfileScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Avatar(id = Avatars.SELF, name = username ?: "You", size = 104.dp)
-            Text(
-                text = username?.let { "@$it" } ?: "No username on this relay",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = username?.let { "@$it" } ?: "No username on this relay",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                VerifiedBadge(verified)
+            }
             Text(
                 text = memberEmail ?: "This ID is not tied to an email address.",
                 style = MaterialTheme.typography.bodySmall,

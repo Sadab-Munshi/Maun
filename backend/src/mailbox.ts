@@ -9,7 +9,7 @@ import {
   isPushUrl,
   vapidAuthorization,
 } from "./crypto/webpush";
-import { admit, findMember, memberConfig, memberOf, notifyAdmin, recordDevice } from "./members";
+import { admit, findMember, memberConfig, memberOf, notifyAdmin, recordDevice, verifiedAmong } from "./members";
 import { TURN_DAILY_CAP, TURN_TTL_SECONDS, iceServers, turnConfig } from "./turn";
 import {
   CLOSE_ACCESS_REQUIRED,
@@ -189,11 +189,13 @@ export class Mailbox extends DurableObject<Env> {
       // address to it, and a stranger leaves no account behind.
       let email: string | null = null;
       let name: string | null = null;
+      let badge = false;
       const admit = async (): Promise<ErrorCode | null> => {
         const answer = await this.admit(state.m, frame.access, frame.dev);
         if (answer.refused) return answer.refused;
         email = answer.email;
         name = answer.name;
+        badge = answer.verified === true;
         return null;
       };
       const failure = fresh
@@ -226,6 +228,7 @@ export class Mailbox extends DurableObject<Env> {
         queued: this.size().total,
         email,
         name,
+        verified: badge,
         files: this.newFileToken(),
       });
       // Everything that arrived while the phone was away.
@@ -403,6 +406,30 @@ export class Mailbox extends DurableObject<Env> {
         return;
       }
 
+      case "verified": {
+        // Which of the accounts this phone asked about wear the administrator's
+        // badge. An open relay has no member list, so nobody can be verified
+        // there and the answer says so. Nothing is written: the badge is the
+        // administrator's alone, and only the admin page may change it.
+        if (!memberConfig(this.env)) {
+          send(ws, { t: "verified", id: frame.id, member: false, ok: {} });
+          return;
+        }
+        if (!(await this.env.SEND_LIMIT.limit({ key: state.m })).success) {
+          send(ws, { t: "failed", id: frame.id, code: "rate_limited" });
+          return;
+        }
+        let ok: Record<string, boolean>;
+        try {
+          ok = await verifiedAmong(this.env, frame.users);
+        } catch {
+          send(ws, { t: "failed", id: frame.id, code: "unavailable" });
+          return;
+        }
+        send(ws, { t: "verified", id: frame.id, member: true, ok });
+        return;
+      }
+
       case "device":
         // Kept only by a member-only relay, next to the member's name.
         if (memberConfig(this.env)) {
@@ -439,9 +466,9 @@ export class Mailbox extends DurableObject<Env> {
     mailboxId: string,
     ticket: string | null,
     device: DeviceReport | null,
-  ): Promise<{ refused: ErrorCode } | { refused: null; email: string | null; name: string | null }> {
+  ): Promise<{ refused: ErrorCode } | { refused: null; email: string | null; name: string | null; verified: boolean }> {
     const config = memberConfig(this.env);
-    if (!config) return { refused: null, email: null, name: null };
+    if (!config) return { refused: null, email: null, name: null, verified: false };
     const answer = await admit(this.env, config, mailboxId, ticket, device, Date.now());
     if ((answer.is === "member" || answer.is === "pending") && answer.movedFrom && answer.movedFrom !== mailboxId) {
       // This address had another ID until now. That one is finished: whoever
@@ -455,7 +482,7 @@ export class Mailbox extends DurableObject<Env> {
     switch (answer.is) {
       case "member":
         this.memberCheckedAt = Date.now();
-        return { refused: null, email: answer.email, name: answer.username };
+        return { refused: null, email: answer.email, name: answer.username, verified: answer.verified };
       case "pending":
         if (answer.fresh) this.ctx.waitUntil(notifyAdmin(this.env, config, answer.email, answer.username, this.origin));
         return { refused: "pending" };

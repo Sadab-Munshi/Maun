@@ -184,6 +184,7 @@ export async function register(identity: Identity, device: Device): Promise<Inbo
     queued: 0,
     email: null,
     name: null,
+    verified: false,
     files: expect.any(String),
   });
   return inbox;

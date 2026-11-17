@@ -213,6 +213,11 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
 
                 else -> {
                     val contacts by viewModel.contacts.collectAsStateWithLifecycle()
+                    // Which of these people the relay says Maun's administrators
+                    // have checked. Kept for everyone, shown beside their name.
+                    val badges by viewModel.verified.collectAsStateWithLifecycle()
+                    // Whether this account itself carries that tick.
+                    val ownVerified by viewModel.ownVerified.collectAsStateWithLifecycle()
                     val chatPeer = screen.takeIf { it.startsWith(CHAT_PREFIX) }?.removePrefix(CHAT_PREFIX)
                     val detailsOf = screen.takeIf { it.startsWith(CONTACT_PREFIX) }
                         ?.removePrefix(CONTACT_PREFIX)
@@ -251,6 +256,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             val delivery by viewModel.delivery.collectAsStateWithLifecycle()
                             val pushProblem by viewModel.pushProblem.collectAsStateWithLifecycle()
                             val privacy by viewModel.privacy.collectAsStateWithLifecycle()
+                            val soundChoices by viewModel.soundChoices.collectAsStateWithLifecycle()
                             // Permissions, push apps and the screen lock change outside Maun.
                             LifecycleResumeEffect(Unit) {
                                 viewModel.refreshDelivery()
@@ -265,6 +271,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 pushProblem = pushProblem,
                                 privacy = privacy,
                                 blockedCount = blocked.size,
+                                sounds = soundChoices,
                                 memberEmail = memberEmail,
                                 username = username,
                                 onChoosePushApp = viewModel::choosePushApp,
@@ -283,6 +290,9 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 onSaveIncomingFiles = viewModel::setSaveIncomingFiles,
                                 onOpenProfile = { screen = PROFILE },
                                 onChatPattern = viewModel::setChatPattern,
+                                onSentSound = viewModel::setSentSound,
+                                onIncomingSound = viewModel::setIncomingSound,
+                                onPreviewIncomingSound = viewModel::previewIncomingSound,
                                 onLockScreenCalls = {
                                     // Android 14's own page for this; the answer shows when Settings is back in front.
                                     runCatching {
@@ -315,6 +325,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             onPhoto = { uri -> viewModel.setAvatar(uri) },
                             onRemovePhoto = { viewModel.removeAvatar() },
                             sharingPending = avatarPending,
+                            verified = ownVerified,
                             onShowCode = { screen = MY_CODE },
                             onBack = goBack,
                         )
@@ -351,6 +362,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 onCall = { video -> viewModel.startCall(chatPeer, video) },
                                 contactUsername = contacts.firstOrNull { it.id == chatPeer }?.username,
                                 chatPattern = privacy.chatPattern,
+                                peerVerified = chatPeer in badges,
                                 loading = !conversation.loaded,
                                 messages = conversation.messages,
                                 hasOlder = conversation.hasOlder,
@@ -409,6 +421,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
 
                         detailsOf != null -> ContactScreen(
                             contact = detailsOf,
+                            ticked = detailsOf.id in badges,
                             onBack = goBack,
                             onRename = { name -> viewModel.renameContact(detailsOf.id, name) },
                             onOpenEncryption = { screen = VERIFY_PREFIX + detailsOf.id },
@@ -430,9 +443,11 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             val lists = remember(contacts, chats) { homeLists(contacts, chats) }
                             val delivery by viewModel.delivery.collectAsStateWithLifecycle()
                             val pushProblem by viewModel.pushProblem.collectAsStateWithLifecycle()
-                            // Permissions and push apps change outside Maun; look again on every return.
+                            // Permissions and push apps change outside Maun; look again on every return,
+                            // and ask the relay again who carries the administrators' tick.
                             LifecycleResumeEffect(Unit) {
                                 viewModel.refreshDelivery()
+                                viewModel.refreshBadges()
                                 onPauseOrDispose { }
                             }
                             HomeScreen(
@@ -449,6 +464,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 onOpenChat = { id -> screen = CHAT_PREFIX + id },
                                 onReconnect = viewModel::reconnect,
                                 onOpenSettings = { screen = SETTINGS },
+                                verified = badges.keys,
                             )
                         }
                     }

@@ -8,12 +8,14 @@ import androidx.core.app.Person
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import org.maun.messenger.MainActivity
+import org.maun.messenger.SoundSettings
 import org.maun.messenger.webrtc.CallService
 import org.maun.messenger.webrtc.CallManager
 import org.maun.messenger.R
@@ -35,12 +37,22 @@ class Notifications(context: Context) {
     fun createChannels() {
         // From an earlier version: a silent channel for calls, replaced by one that rings.
         manager.deleteNotificationChannel("calls")
+        // From an earlier version: one message channel with whatever sound
+        // Android gave it. There is one for each choice now, so this one goes;
+        // Android keeps whatever the user did to the new ones.
+        manager.deleteNotificationChannel(LEGACY_MESSAGES)
+        // The three message channels. Android fixes a channel's sound when it
+        // is made and never changes it again, so the choice in Settings picks a
+        // channel rather than rewriting one. Each is made once and then left
+        // alone: a sound turned off in Android's own settings stays off, and
+        // this app never puts it back.
+        for (channel in messageChannels()) {
+            if (manager.getNotificationChannelCompat(channel.id) == null) {
+                manager.createNotificationChannelCompat(channel)
+            }
+        }
         manager.createNotificationChannelsCompat(
             listOf(
-                NotificationChannelCompat.Builder(CHANNEL_MESSAGES, NotificationManagerCompat.IMPORTANCE_HIGH)
-                    .setName("Messages")
-                    .setDescription("Tells you that a message has arrived. Never shows the message.")
-                    .build(),
                 // The ringing itself: the phone's own ringtone, and a vibration, for as long as the call rings.
                 NotificationChannelCompat.Builder(CHANNEL_RING, NotificationManagerCompat.IMPORTANCE_HIGH)
                     .setName("Incoming calls")
@@ -71,6 +83,47 @@ class Notifications(context: Context) {
     }
 
     /**
+     * The three channels a message notification can arrive on: Maun's own
+     * sound, the phone's notification sound, or silence. They differ only in
+     * what they are called and what they play, so that a person's choice in
+     * Settings is a choice of channel, and Android's own per-channel settings
+     * are respected for the one they picked.
+     */
+    private fun messageChannels(): List<NotificationChannelCompat> {
+        val maun = NotificationChannelCompat.Builder(SoundSettings.Channel.MAUN.id, NotificationManagerCompat.IMPORTANCE_HIGH)
+            .setName("Messages")
+            .setDescription("Tells you that a message has arrived. Never shows the message.")
+            .setSound(
+                Uri.parse("android.resource://${context.packageName}/${R.raw.incoming_message_ringtone1}"),
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+            .setVibrationEnabled(true)
+            .build()
+        val system = NotificationChannelCompat.Builder(SoundSettings.Channel.SYSTEM.id, NotificationManagerCompat.IMPORTANCE_HIGH)
+            .setName("Messages (phone sound)")
+            .setDescription("Tells you that a message has arrived, with the notification sound this phone uses.")
+            .setSound(
+                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+            .setVibrationEnabled(true)
+            .build()
+        val silent = NotificationChannelCompat.Builder(SoundSettings.Channel.SILENT.id, NotificationManagerCompat.IMPORTANCE_HIGH)
+            .setName("Messages (silent)")
+            .setDescription("Lets you know that a message has arrived, without a sound.")
+            .setSound(null, null)
+            .setVibrationEnabled(false)
+            .build()
+        return listOf(maun, system, silent)
+    }
+
+    /**
      * Whether notifications quote the newest message. On unless the user
      * turned it off; a locked screen never shows the text either way.
      */
@@ -89,12 +142,13 @@ class Notifications(context: Context) {
     @SuppressLint("MissingPermission")
     fun showMessages(announcement: Announcement, alert: Boolean) {
         if (!allowed) return
-        val onLockScreen = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
+        val channel = SoundSettings.incomingChannel(context).id
+        val onLockScreen = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Maun")
             .setContentText(announcement.discreet)
             .build()
-        val notification = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
+        val notification = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(announcement.title)
             .setContentText(announcement.text)
@@ -291,7 +345,7 @@ class Notifications(context: Context) {
         private const val CHANNEL_RING = "incoming_calls"
         private const val CHANNEL_CALL_ONGOING = "call_ongoing"
 
-        private const val CHANNEL_MESSAGES = "messages"
+        private const val LEGACY_MESSAGES = "messages"
         private const val CHANNEL_BACKGROUND = "background"
     }
 }

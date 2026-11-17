@@ -48,6 +48,7 @@ const SCHEMA = [
      username TEXT,
      status TEXT NOT NULL DEFAULT 'pending',
      is_banned INTEGER NOT NULL DEFAULT 0,
+     verified INTEGER NOT NULL DEFAULT 0,
      created_at INTEGER NOT NULL DEFAULT 0,
      approved_at INTEGER,
      last_login_at INTEGER,
@@ -109,6 +110,11 @@ async function ready(db: D1Database): Promise<D1Database> {
     await db.prepare("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'").run();
   }
   if (!columns.includes("approved_at")) await db.prepare("ALTER TABLE users ADD COLUMN approved_at INTEGER").run();
+  // The administrator's badge: an account official Maun has looked at. Nothing
+  // a phone can set, and nothing to do with the safety number it checks itself.
+  if (!columns.includes("verified")) {
+    await db.prepare("ALTER TABLE users ADD COLUMN verified INTEGER NOT NULL DEFAULT 0").run();
+  }
   if (!columns.includes("device_id")) {
     await db.batch([
       db.prepare("ALTER TABLE users ADD COLUMN device_id TEXT"),
@@ -340,14 +346,21 @@ async function redeemTicket(env: Env, ticket: string, now: number): Promise<{ em
 
 // ---- Members --------------------------------------------------------------------
 
-export type Member = { email: string; username: string | null; approved: boolean; banned: boolean };
+export type Member = {
+  email: string;
+  username: string | null;
+  approved: boolean;
+  banned: boolean;
+  /** The administrator has verified this account: the badge other phones show. */
+  verified: boolean;
+};
 
 /** The member an ID is tied to, or null when it is tied to nobody. A member whose phone is banned counts as banned. */
 export async function memberOf(env: Env, maunId: string): Promise<Member | null> {
   const db = await ready(env.DB);
   const row = await db
     .prepare(
-      `SELECT email, username, status, is_banned,
+      `SELECT email, username, status, is_banned, verified,
          EXISTS (SELECT 1 FROM banned_devices b WHERE b.device_id = users.device_id) AS device_banned
        FROM users WHERE maun_id = ?`,
     )
@@ -359,6 +372,7 @@ export async function memberOf(env: Env, maunId: string): Promise<Member | null>
     username: row.username as string | null,
     approved: row.status === "approved",
     banned: row.is_banned === 1 || row.device_banned === 1,
+    verified: row.verified === 1,
   };
 }
 
@@ -371,7 +385,7 @@ async function deviceBanned(db: D1Database, deviceId: string): Promise<boolean> 
  * to a new one. Whoever writes to the old ID has to be told it is gone.
  */
 export type Admission =
-  | { is: "member"; email: string; username: string | null; movedFrom: string | null }
+  | { is: "member"; email: string; username: string | null; movedFrom: string | null; verified: boolean }
   | { is: "pending"; email: string; username: string | null; fresh: boolean; movedFrom: string | null }
   | { is: "banned" }
   | { is: "stranger" };
@@ -401,7 +415,7 @@ export async function admit(
     if (device) await recordDevice(env, maunId, device, now);
     if (!known.approved) return { is: "pending", email: known.email, username: known.username, fresh: false, movedFrom: null };
     await db.prepare("UPDATE users SET logins = logins + 1, last_login_at = ? WHERE maun_id = ?").bind(now, maunId).run();
-    return { is: "member", email: known.email, username: known.username, movedFrom: null };
+    return { is: "member", email: known.email, username: known.username, movedFrom: null, verified: known.verified };
   }
   const proven = ticket ? await redeemTicket(env, ticket, now) : null;
   if (!proven) return { is: "stranger" };
@@ -430,7 +444,10 @@ export async function admit(
     return { is: "stranger" };
   }
   if (device) await recordDevice(env, maunId, device, now);
-  if (approved) return { is: "member", email: proven.email, username, movedFrom };
+  // A list that was written to before this member joined keeps the badge it was given.
+  if (approved) {
+    return { is: "member", email: proven.email, username, movedFrom, verified: (await memberOf(env, maunId))?.verified === true };
+  }
   return { is: "pending", email: proven.email, username, fresh: !existing, movedFrom };
 }
 
@@ -510,6 +527,8 @@ export type MemberRow = {
   id: string | null;
   status: "pending" | "approved";
   banned: boolean;
+  /** The verified badge: granted and taken away by the administrator alone. */
+  verified: boolean;
   admin: boolean;
   createdAt: number;
   approvedAt: number | null;
@@ -546,6 +565,7 @@ export async function listMembers(
     id: row.maun_id as string | null,
     status: row.status === "approved" ? ("approved" as const) : ("pending" as const),
     banned: row.is_banned === 1,
+    verified: row.verified === 1,
     admin: row.email === config.admin,
     createdAt: row.created_at as number,
     approvedAt: row.approved_at as number | null,
@@ -570,7 +590,16 @@ export async function listMembers(
   return { members, bannedDevices, mailsToday, mailCap: MAIL_DAILY_CAP };
 }
 
-export type AdminAction = "approve" | "ban" | "unban" | "remove" | "add" | "ban_device" | "unban_device";
+export type AdminAction =
+  | "approve"
+  | "ban"
+  | "unban"
+  | "remove"
+  | "add"
+  | "verify"
+  | "unverify"
+  | "ban_device"
+  | "unban_device";
 
 /**
  * approve       lets a waiting member in.
@@ -578,6 +607,9 @@ export type AdminAction = "approve" | "ban" | "unban" | "remove" | "add" | "ban_
  * unban         lifts that.
  * remove        forgets the address: its phone has to log in and be approved again.
  * add           approves an address in advance, so its owner is let straight in.
+ * verify        gives the account the verified badge: every phone that has this
+ *               member as a contact shows a green tick beside their name.
+ * unverify      takes it away again.
  * ban_device    shuts a phone out, whichever address is used on it. [target] is the phone's ID.
  * unban_device  lifts that.
  *
@@ -623,6 +655,12 @@ export async function adminAction(env: Env, config: MemberConfig, action: AdminA
       ]);
       break;
     }
+    case "verify":
+      await db.prepare("UPDATE users SET verified = 1 WHERE email = ?").bind(email).run();
+      break;
+    case "unverify":
+      await db.prepare("UPDATE users SET verified = 0 WHERE email = ?").bind(email).run();
+      break;
     case "ban_device": {
       const owners = await db.prepare("SELECT email, device_model FROM users WHERE device_id = ?").bind(target).all();
       if (owners.results.some((row) => row.email === config.admin)) return "refused";
@@ -638,6 +676,30 @@ export async function adminAction(env: Env, config: MemberConfig, action: AdminA
       break;
   }
   return "done";
+}
+
+/**
+ * Which of these accounts wear the verified badge. Asked by a phone about the
+ * people it has as contacts; the answer says only yes or no for each ID, never
+ * whose account it is, and only an approved, unbanned member can be verified.
+ * This is the administrator's badge, not the safety number: it says that the
+ * relay's owner has looked at an account, nothing about the person behind it.
+ */
+export async function verifiedAmong(env: Env, ids: string[]): Promise<Record<string, boolean>> {
+  const answer: Record<string, boolean> = {};
+  for (const id of ids) answer[id] = false;
+  if (ids.length === 0) return answer;
+  const db = await ready(env.DB);
+  const marks = ids.map(() => "?").join(",");
+  const rows = await db
+    .prepare(`SELECT maun_id, verified FROM users WHERE maun_id IN (${marks}) AND status = 'approved' AND is_banned = 0`)
+    .bind(...ids)
+    .all();
+  for (const row of rows.results) {
+    const id = row.maun_id as string | null;
+    if (id) answer[id] = row.verified === 1;
+  }
+  return answer;
 }
 
 /** Hourly: forgets codes, tickets and sessions that have run out, and old mail counts. */

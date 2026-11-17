@@ -40,6 +40,7 @@ import org.maun.messenger.MediaSaver
 import org.maun.messenger.data.MessageEntity
 import org.maun.messenger.network.RelayException
 import org.maun.messenger.push.Background
+import org.maun.messenger.SoundSettings
 import org.maun.messenger.push.Notifications
 import org.maun.messenger.push.PushApps
 
@@ -74,6 +75,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val blocked = messenger.blocked
     val waiting = messenger.waiting
     val pushProblem = messenger.pushProblem
+
+    /** Which contacts carry the tick Maun's administrators hand out. */
+    val verified = messenger.verified
+
+    /** Whether this account itself carries that tick. */
+    val ownVerified = messenger.ownVerified
+
+    /** Asks the relay again which contacts are verified. Cheap, and worth doing when the app returns. */
+    fun refreshBadges() = messenger.refreshBadges()
 
     /** On a member-only relay: the email address this ID is tied to. */
     val memberEmail = messenger.memberEmail
@@ -171,13 +181,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun checkBanAgain() = messenger.checkBanAgain()
 
     fun sendFile(peer: String, uri: Uri) {
-        viewModelScope.launch { attachProblem.value = messenger.sendFile(peer, uri) }
+        viewModelScope.launch {
+            val problem = messenger.sendFile(peer, uri)
+            attachProblem.value = problem
+            if (problem == null) messenger.sounds.playSent()
+        }
     }
 
     /** Several pictures or documents picked at once, sent one after the other. */
     fun sendFiles(peer: String, uris: List<Uri>) {
         if (uris.isEmpty()) return
-        viewModelScope.launch { attachProblem.value = messenger.sendFiles(peer, uris) }
+        viewModelScope.launch {
+            val problem = messenger.sendFiles(peer, uris)
+            attachProblem.value = problem
+            // Several files sent in one action make one sound, not a burst.
+            if (problem == null) messenger.sounds.playSent()
+        }
     }
 
     /**
@@ -304,7 +323,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** A voice message was recorded for [peer]. The file is taken over and deleted. */
     fun sendVoice(peer: String, recording: File, millis: Long) {
-        viewModelScope.launch { attachProblem.value = messenger.sendVoice(peer, recording, millis) }
+        viewModelScope.launch {
+            val problem = messenger.sendVoice(peer, recording, millis)
+            attachProblem.value = problem
+            if (problem == null) messenger.sounds.playSent()
+        }
     }
 
     /** Plays the voice message of message [seq], or pauses it. */
@@ -467,6 +490,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshPrivacy()
     }
 
+    private val _soundChoices = MutableStateFlow(
+        SoundChoices(
+            sent = SoundSettings.sent(getApplication()),
+            incoming = SoundSettings.incoming(getApplication()),
+        ),
+    )
+
+    /** What the "Message sounds" rows of Settings show. */
+    val soundChoices: StateFlow<SoundChoices> = _soundChoices.asStateFlow()
+
+    fun refreshSounds() {
+        val context: Context = getApplication()
+        _soundChoices.value = SoundChoices(
+            sent = SoundSettings.sent(context),
+            incoming = SoundSettings.incoming(context),
+        )
+    }
+
+    fun setSentSound(choice: String) {
+        SoundSettings.setSent(getApplication(), choice)
+        refreshSounds()
+        // Heard at once, so that the choice means something before the next message.
+        if (choice != SoundSettings.SENT_SILENT) messenger.sounds.previewSent()
+    }
+
+    fun setIncomingSound(choice: String) {
+        SoundSettings.setIncoming(getApplication(), choice)
+        refreshSounds()
+        // The notification channel follows the choice; it is made once and
+        // then left to Android, never rewritten.
+        Notifications(getApplication()).createChannels()
+    }
+
+    fun previewIncomingSound(choice: String) = messenger.sounds.previewIncoming(choice)
+
     fun setStayConnected(on: Boolean) {
         Background.setStayConnected(getApplication(), on)
         refreshDelivery()
@@ -526,6 +584,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 messenger.sendText(peer, text)
+                // Handed to the sending queue: one sound, once. Nothing that
+                // comes back later (a receipt, a retry, a message read from
+                // storage) makes a sound of its own.
+                messenger.sounds.playSent()
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {

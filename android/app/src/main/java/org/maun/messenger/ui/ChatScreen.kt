@@ -173,6 +173,8 @@ fun ChatScreen(
     contactUsername: String? = null,
     /** Show the soft subtle pattern behind the chat (off = solid background). */
     chatPattern: Boolean = true,
+    /** The relay says this account carries Maun's administrators' tick. */
+    peerVerified: Boolean = false,
     onLoadOlder: () -> Unit,
     onDelete: (Long) -> Unit,
     onBack: () -> Unit,
@@ -302,6 +304,7 @@ fun ChatScreen(
                 ChatHeader(
                     peerId = peerId,
                     name = contactName ?: (contactUsername ?: peerUsername)?.let { "@$it" },
+                    verified = peerVerified,
                     onBack = onBack,
                     onOpenDetails = if (isContact) onOpenDetails else null,
                     onCall = if (isContact) onCall else null,
@@ -659,6 +662,7 @@ private fun AttachmentChoice(
 private fun ChatHeader(
     peerId: String,
     name: String?,
+    verified: Boolean,
     onBack: () -> Unit,
     onOpenDetails: (() -> Unit)?,
     onCall: ((Boolean) -> Unit)? = null,
@@ -679,14 +683,19 @@ private fun ChatHeader(
         ) {
             Avatar(id = peerId, name = name, size = 40.dp)
             Column {
-                Text(
-                    text = name ?: shortId(peerId),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    fontFamily = if (name == null) FontFamily.Monospace else null,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                // The tick sits at the end of the name, on the name's own line.
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = name ?: shortId(peerId),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = if (name == null) FontFamily.Monospace else null,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    VerifiedBadge(verified)
+                }
             }
         }
         if (onCall != null) {

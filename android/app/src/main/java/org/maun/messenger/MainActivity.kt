@@ -132,6 +132,14 @@ class MainActivity : ComponentActivity() {
         if (intent.action == ACTION_OPEN_CHAT) messenger.requestChat(intent.getStringExtra(EXTRA_CHAT))
     }
 
+    override fun onDestroy() {
+        if (isFinishing && !isChangingConfigurations) {
+            // The app is going away: the decoded message sounds go with it.
+            (application as? MaunApp)?.releaseSounds()
+        }
+        super.onDestroy()
+    }
+
     override fun onStart() {
         super.onStart()
         messenger.onForeground()

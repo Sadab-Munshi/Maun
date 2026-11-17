@@ -10,6 +10,8 @@
 //   POST /v1/admin/login  {email, code}       sets the session cookie
 //   GET  /v1/admin/members
 //   POST /v1/admin/members {action, email | device}
+//        action: approve | ban | unban | remove | add | verify | unverify |
+//                ban_device | unban_device
 //   POST /v1/admin/logout
 //
 // When ADMIN_HOST is set, the page and the /v1/admin routes answer on that
@@ -37,7 +39,7 @@ import {
 
 const MAX_BODY_CHARS = 2048;
 const COOKIE = "maun_admin";
-const EMAIL_ACTIONS: AdminAction[] = ["approve", "ban", "unban", "remove", "add"];
+const EMAIL_ACTIONS: AdminAction[] = ["approve", "ban", "unban", "remove", "add", "verify", "unverify"];
 const DEVICE_ACTIONS: AdminAction[] = ["ban_device", "unban_device"];
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>

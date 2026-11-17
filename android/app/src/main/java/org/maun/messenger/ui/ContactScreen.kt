@@ -79,6 +79,12 @@ fun ContactScreen(
     onCall: ((Boolean) -> Unit)? = null,
     /** Opens the screen that holds the safety number and the check itself. */
     onOpenEncryption: (() -> Unit)? = null,
+    /**
+     * The relay says Maun's administrators have checked this account. This is
+     * not [ContactEntity.verified], which is whether the user themselves has
+     * checked the safety number.
+     */
+    ticked: Boolean = false,
 ) {
     var confirming by rememberSaveable { mutableStateOf(false) }
     var confirmingBlock by rememberSaveable { mutableStateOf(false) }
@@ -126,15 +132,29 @@ fun ContactScreen(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Avatar(id = contact.id, name = contact.name, size = 88.dp)
-                    Text(
-                        text = contact.name,
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = TextAlign.Center,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.padding(top = 4.dp),
-                    )
+                    ) {
+                        Text(
+                            text = contact.name,
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        VerifiedBadge(ticked)
+                    }
+                    if (ticked) {
+                        Text(
+                            "Verified by Maun",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     contact.username?.let {
                         Text(
                             "@$it",

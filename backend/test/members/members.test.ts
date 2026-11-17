@@ -505,26 +505,134 @@ async function adminLogin(password = PASSWORD): Promise<Response> {
   return post("/v1/admin/login", { email: ADMIN, code });
 }
 
-describe("the admin page", () => {
-  /** Logs the administrator in and returns the cookie to send from then on. */
-  async function adminCookie(): Promise<string> {
-    const response = await adminLogin();
-    expect(response.status).toBe(200);
-    const cookie = response.headers.get("Set-Cookie")!;
-    expect(cookie).toMatch(/HttpOnly/);
-    expect(cookie).toMatch(/Secure/);
-    expect(cookie).toMatch(/SameSite=Strict/);
-    return cookie.split(";")[0]!;
+/** Logs the administrator in and returns the cookie to send from then on. */
+async function adminCookie(): Promise<string> {
+  const response = await adminLogin();
+  expect(response.status).toBe(200);
+  const cookie = response.headers.get("Set-Cookie")!;
+  expect(cookie).toMatch(/HttpOnly/);
+  expect(cookie).toMatch(/Secure/);
+  expect(cookie).toMatch(/SameSite=Strict/);
+  return cookie.split(";")[0]!;
+}
+
+const list = async (cookie: string) => {
+  const response = await SELF.fetch("https://relay.test/v1/admin/members", { headers: { Cookie: cookie } });
+  expect(response.status).toBe(200);
+  return (await response.json()) as { admin: string; members: Record<string, unknown>[]; bannedDevices: Record<string, unknown>[]; mailsToday: number };
+};
+const act = (cookie: string, action: string, target: string, headers: Record<string, string> = {}) =>
+  post("/v1/admin/members", action.endsWith("_device") ? { action, device: target } : { action, email: target }, { Cookie: cookie, ...headers });
+
+describe("the verified badge", () => {
+  /** Sends a verified lookup from a logged-in phone and returns its answer. */
+  async function askVerified(inbox: Inbox, users: string[], extra: Record<string, unknown> = {}) {
+    const id = requestId();
+    inbox.sendJson({ t: "verified", id, users, ...extra });
+    const answer = await inbox.nextJson();
+    expect(answer.id).toBe(id);
+    return answer;
   }
 
-  const list = async (cookie: string) => {
-    const response = await SELF.fetch("https://relay.test/v1/admin/members", { headers: { Cookie: cookie } });
-    expect(response.status).toBe(200);
-    return (await response.json()) as { admin: string; members: Record<string, unknown>[]; bannedDevices: Record<string, unknown>[]; mailsToday: number };
-  };
-  const act = (cookie: string, action: string, target: string, headers: Record<string, string> = {}) =>
-    post("/v1/admin/members", action.endsWith("_device") ? { action, device: target } : { action, email: target }, { Cookie: cookie, ...headers });
+  it("says yes for a member the administrator has verified, and no for anyone else", async () => {
+    const asha = await member("asha@example.com", "asha");
+    const rohan = await member("rohan@example.com", "rohan");
+    const waiting = await applicant("zoya@example.com", "zoya");
+    const { inbox, answer: ready } = await tryLogin(asha);
+    // The phone learns its own state before it is told anything else.
+    expect(ready).toMatchObject({ t: "ready", verified: false });
 
+    expect(await askVerified(inbox, [rohan.id, waiting.id, "9".repeat(64)])).toEqual({
+      t: "verified",
+      id: expect.any(String),
+      member: true,
+      ok: { [rohan.id]: false, [waiting.id]: false, ["9".repeat(64)]: false },
+    });
+
+    const cookie = await adminCookie();
+    expect((await act(cookie, "verify", "rohan@example.com")).status).toBe(200);
+    expect(await askVerified(inbox, [rohan.id])).toMatchObject({ ok: { [rohan.id]: true } });
+
+    // Taking it away is the administrator's as well.
+    expect(await row("rohan@example.com")).toMatchObject({ verified: 1 });
+    expect((await act(cookie, "unverify", "rohan@example.com")).status).toBe(200);
+    expect(await row("rohan@example.com")).toMatchObject({ verified: 0 });
+    expect(await askVerified(inbox, [rohan.id])).toMatchObject({ ok: { [rohan.id]: false } });
+    await hangUp(inbox);
+  });
+
+  it("stays with the account through a restart, and the phone is told its own", async () => {
+    const asha = await member("asha@example.com", "asha");
+    const cookie = await adminCookie();
+    await act(cookie, "verify", "asha@example.com");
+
+    const listed = (await list(cookie)).members.find((m) => m.email === "asha@example.com");
+    expect(listed).toMatchObject({ verified: true, status: "approved" });
+
+    // Logging in again is what a restart does.
+    const again = await tryLogin(asha);
+    expect(again.answer).toMatchObject({ t: "ready", verified: true });
+    await hangUp(again.inbox);
+  });
+
+  it("is not something a phone can give itself", async () => {
+    const asha = await member("asha@example.com", "asha");
+    const { inbox } = await tryLogin(asha);
+    // Whatever the frame claims about the answer, the mailbox asks the list.
+    expect(await askVerified(inbox, [asha.id], { ok: { [asha.id]: true }, verified: true })).toMatchObject({
+      ok: { [asha.id]: false },
+    });
+    expect(await askVerified(inbox, [asha.id], { member: true })).toMatchObject({ ok: { [asha.id]: false } });
+    expect(await row("asha@example.com")).toMatchObject({ verified: 0 });
+    await hangUp(inbox);
+  });
+
+  it("refuses the badge to an account the relay has banned", async () => {
+    const asha = await member("asha@example.com", "asha");
+    const rohan = await member("rohan@example.com", "rohan");
+    const cookie = await adminCookie();
+    await act(cookie, "verify", "rohan@example.com");
+    await set("rohan@example.com", "is_banned = 1");
+
+    const { inbox } = await tryLogin(asha);
+    expect(await askVerified(inbox, [rohan.id])).toMatchObject({ ok: { [rohan.id]: false } });
+    await hangUp(inbox);
+  });
+
+  it("is not told to the administrator's tools for a phone that never joined", async () => {
+    const cookie = await adminCookie();
+    await act(cookie, "add", "later@example.com");
+    expect((await act(cookie, "verify", "later@example.com")).status).toBe(200);
+    const listed = (await list(cookie)).members.find((m) => m.email === "later@example.com");
+    // Given in advance; the phone has no ID yet, so there is nothing to show it on.
+    expect(listed).toMatchObject({ verified: true, id: null });
+  });
+
+  it("cannot be granted without the administrator's session", async () => {
+    await member("asha@example.com", "asha");
+    expect((await post("/v1/admin/members", { action: "verify", email: "asha@example.com" })).status).toBe(401);
+    expect((await post("/v1/admin/members", { action: "unverify", email: "asha@example.com" }, { Cookie: `maun_admin=${"A".repeat(43)}` })).status).toBe(401);
+    expect((await post("/v1/admin/members", { action: "verify" }, { Cookie: await adminCookie() })).status).toBe(400);
+    expect(await row("asha@example.com")).toMatchObject({ verified: 0 });
+  });
+
+  it("rejects a frame that asks about nothing, or about a hundred things, or about rubbish", async () => {
+    const asha = await member("asha@example.com", "asha");
+    const { inbox } = await tryLogin(asha);
+    const bad = async (frame: Record<string, unknown>) => {
+      inbox.sendJson({ t: "verified", id: requestId(), ...frame });
+      expect(await inbox.nextJson()).toEqual({ t: "error", code: "bad_frame" });
+    };
+    await bad({ users: [] });
+    await bad({ users: ["not-an-id"] });
+    await bad({ users: Array.from({ length: 65 }, () => "a".repeat(64)) });
+    await bad({ users: "a".repeat(64) });
+    await bad({});
+    await hangUp(inbox);
+  });
+});
+
+describe("the admin page", () => {
   it("is a page that loads nothing from elsewhere", async () => {
     const page = await SELF.fetch("https://relay.test/admin");
     expect(page.status).toBe(200);

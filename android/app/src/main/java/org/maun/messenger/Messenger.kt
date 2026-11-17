@@ -3,6 +3,7 @@ package org.maun.messenger
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import org.json.JSONArray
 import org.json.JSONObject
 import org.maun.messenger.network.AuthApi
 import org.maun.messenger.webrtc.CallManager
@@ -189,6 +190,16 @@ class Messenger(context: Context) {
     /** Bumped whenever a profile picture on this phone is new, so that avatars redraw. */
     val avatarChanges: StateFlow<Int> = _avatarChanges.asStateFlow()
 
+    private val _verified = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+
+    /** Which contacts carry the tick Maun's administrators hand out, by ID. */
+    val verified: StateFlow<Map<String, Boolean>> = _verified.asStateFlow()
+
+    private val _ownVerified = MutableStateFlow(false)
+
+    /** Whether this account itself has that tick. */
+    val ownVerified: StateFlow<Boolean> = _ownVerified.asStateFlow()
+
     private val _waiting = MutableStateFlow<Map<String, String>>(emptyMap())
 
     /** For each person whose messages are stuck: why, in words for the screen. */
@@ -200,6 +211,9 @@ class Messenger(context: Context) {
     val pushProblem: StateFlow<String?> = _pushProblem.asStateFlow()
 
     private val notifications = Notifications(appContext)
+
+    /** The two sounds Maun makes itself. Freed when the app closes. */
+    val sounds = MessageSounds(appContext)
 
     /** Voice calls. One at a time; see [CallManager]. */
     val calls = CallManager(
@@ -283,6 +297,9 @@ class Messenger(context: Context) {
                 // Read once before anything is shown, so that the first screen
                 // is the real list and not an empty one that fills in later.
                 _contacts.value = db.contacts().observeAll().first()
+                // The ticks the relay last gave out, so an offline list looks
+                // like the one that was on screen when it went offline.
+                _verified.value = Badges.parse(db.meta().get(Badges.KEY))
                 _chats.value = db.chat().observeChats().first()
                 scope.launch { db.contacts().observeAll().collect { _contacts.value = it } }
                 scope.launch {
@@ -406,6 +423,8 @@ class Messenger(context: Context) {
             onLoggedIn = ::markRegistered,
             onOnline = {
                 chat.onOnline()
+                _ownVerified.value = chat.link?.ready?.verified == true
+                refreshBadges()
                 scope.launch { pictures?.sync() }
                 val ready = chat.link?.ready
                 scope.launch { onLoggedInAs(db, chat, ready?.email, ready?.name) }
@@ -907,7 +926,9 @@ class Messenger(context: Context) {
                 notifications.clearMessages()
                 announced = false
             }
-            inForeground -> Unit
+            // On screen: Android is shown nothing, so the app is what makes the
+            // sound. Exactly once, and only for a message that is actually new.
+            inForeground -> if (news) sounds.playIncoming()
             news -> {
                 notifications.showMessages(announcement, alert = true)
                 announced = true
@@ -942,6 +963,45 @@ class Messenger(context: Context) {
     }
 
     /**
+     * Asks the relay which of this phone's contacts carry the administrators'
+     * tick. It is asked often rather than often enough: on login, when a
+     * contact is added, and when the app comes back to the front, so that a
+     * tick that was given or taken away is not left stale for long.
+     *
+     * A failure is not the user's problem: the answers already known stay.
+     */
+    fun refreshBadges() {
+        val link = connection ?: return
+        val ids = _contacts.value.map { it.id }
+        if (ids.isEmpty()) return
+        scope.launch {
+            val db = database ?: return@launch
+            val checked = HashMap<String, Boolean>()
+            for (chunk in ids.chunked(Badges.LOOKUP_MAX)) {
+                val answer = try {
+                    link.request(
+                        JSONObject()
+                            .put("t", "verified")
+                            .put("users", JSONArray(chunk)),
+                    )
+                } catch (_: Exception) {
+                    // Offline, or the relay said no. What is known is still what was last true.
+                    break
+                }
+                if (answer.optString("t") != "verified") break
+                // A relay that only lets members in cannot answer for a stranger.
+                if (!answer.optBoolean("member", true)) break
+                val ok = answer.optJSONObject("ok") ?: break
+                for (id in chunk) checked[id] = ok.optBoolean(id, false)
+            }
+            if (checked.isEmpty()) return@launch
+            val merged = Badges.merge(_verified.value, checked, ids)
+            _verified.value = merged
+            withContext(Dispatchers.IO) { db.meta().put(MetaEntry(Badges.KEY, Badges.encode(merged))) }
+        }
+    }
+
+    /**
      * Adds a contact, or accepts a message request from [id]. Adding someone
      * who was blocked unblocks them. From now on they are told when their
      * messages arrive and are read.
@@ -960,8 +1020,10 @@ class Messenger(context: Context) {
             database?.contacts()?.put(contact)
         }
         engine?.onContactAdded(id)
-        // A new contact is shown with their picture as soon as they answer.
+        // A new contact is shown with their picture as soon as they answer,
+        // and with their tick as soon as the relay has said whether they have one.
         engine?.askAvatar(id)
+        refreshBadges()
     }
 
     /** Changes what this phone calls a contact. Nobody else is told. */
