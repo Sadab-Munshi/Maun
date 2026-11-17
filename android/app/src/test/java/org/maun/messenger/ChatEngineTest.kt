@@ -466,6 +466,9 @@ class ChatEngineTest {
         bob.knows(alice)
 
         alice.send(bob, "hello")
+        alice.online()
+        eventually("sent") { alice.chat(bob).all { it.status == MessageStatus.SENT } }
+        alice.offline()
         bob.online()
         eventually("the message arrived") { bob.chat(alice).any { it.text == "hello" } }
         val id = bob.chat(alice).single { it.text == "hello" }.id
