@@ -7,8 +7,13 @@ backup that closes it. It is deliberately explicit about which parts are
 path is worse than none: it teaches people to trust it.
 
 Everything below marked *verified* was read out of the code in this repository
-at commit `7f091de` and, where it says so, exercised by a test. Nothing here
-was confirmed on a real phone.
+and, where it says so, exercised by a test: 49 relay tests in
+`test/members/members.test.ts` run against a real Durable Object and D1, and the
+phone-side crypto and parsing by `RecoveryTest` and `AuthApiTest` in CI. Nothing
+here was confirmed on a real phone.
+
+**State at `b73823d`:** §2's gap is closed and the backup in §3 is built. Chat
+history backup (§3.3) is not built, and is not claimed anywhere in the app.
 
 ---
 
@@ -31,7 +36,7 @@ Two consequences worth stating plainly:
   the phone.** No server-side operation can bring it back, because the server
   never had a key. Only an export made *before* the loss can.
 
-## 2. The gap on a reinstall (verified, with references)
+## 2. The gap that was on a reinstall (fixed at `177b2cd`)
 
 A fresh install makes a new identity by itself (that is how first run works).
 If the person then logs in with the same email address on a member-only relay:
@@ -50,28 +55,31 @@ If the person then logs in with the same email address on a member-only relay:
 4. The administrator's tick (`verified`) is keyed by `maun_id`, so it is lost
    with the old ID; the R2 picture, also keyed by ID, is orphaned.
 
-So today a reinstall **does** quietly give a new crypto identity the old
-username. Contacts get a new safety number, and everything queued for the old
-ID is dropped. That is exactly the outcome item 4 of the brief says must not
-happen silently.
+So until this round a reinstall **did** quietly give a new crypto identity the
+old username, with a new safety number and everything queued for the old ID
+dropped. That is gone.
 
-Nothing about this is a bug in the encryption: it is a *product* decision that
-was never made explicit. Two ways out, and this document proposes the second:
+**(B) Consent + recover** was chosen, and is what is built:
 
-* **(A) Refuse.** A login whose email already has a `maun_id` fails with
-  "this address already has a Maun ID; restore its key, or start a new
-  username". Correct, but it locks out every reinstall until recovery exists
-  and is written into the app, so it cannot ship alone.
-* **(B) Consent + recover.** Keep the login working, but (i) require the app to
-  say what is about to happen and get an explicit answer, (ii) offer the
-  encrypted backup below so that answering "keep my old ID" is actually
-  possible, and (iii) stop calling the result the same account: the relay tells
-  the app it moved, the app says so, and the new ID carries a new safety number
-  and no old history.
+1. `admit()` in `members.ts` now returns `{ is: "conflict", id, username,
+   hasRecovery }` when the ticket's address already has a `maun_id` that this
+   phone is not. Nothing is written: not the account row, not the username, not
+   the badge, not the mailbox, not the queue.
+2. The mailbox refuses that login with `identity_conflict` (close 4003), so an
+   old app cannot get in either.
+3. The app shows one of two screens (§3.5): restore from the sealed backup, or
+   start again. Starting again is a separate HTTP call, `POST /v1/auth/replace`,
+   which marks the *ticket*. Only a ticket marked that way may take an existing
+   ID's place — and only then is the old mailbox retired, its queue dropped and
+   its sealed backup deleted.
+4. The username, the badge (`verified`) and the R2 picture all stay keyed to the
+   ID. Restoring the ID therefore brings them back; replacing the ID is the one
+   path that loses them, and it says so first.
 
-**(B) is the recommendation.** It needs a `moved: true` field on the relay's
-login answer, a one-time screen in the app, and the backup below. None of that
-is in this build yet; the relay half is a dozen lines, the app half is the work.
+Tests: *is not given the existing ID's place by logging in, and nothing of it is
+touched* (the row, the queue and the keys are all unchanged), *starts again only
+when the member says so on purpose*, *comes back as itself when the phone holds
+the old identity*.
 
 ## 3. Opt-in encrypted identity backup — design
 
@@ -120,31 +128,34 @@ it is: a sealed copy of the message database, uploaded in chunks, as large as
 the history. It costs R2 storage per person and restores nothing about identity
 by itself. It is out of scope until the identity half is proved on real phones.
 
-### 3.4 Relay endpoints (proposed)
+### 3.4 Relay endpoints (built)
 
-| Frame | Who may call it | What it does |
+| Route | Who may call it | What it does |
 | --- | --- | --- |
-| `put_recovery` | a logged-in mailbox, for its own ID only | stores `{salt, kdf, blob}`; replaces the previous one; rate-limited |
-| `get_recovery` | a logged-in mailbox **whose proven email maps to this ID** | returns `{salt, kdf, blob}`; nothing else |
-| `drop_recovery` | a logged-in mailbox, its own ID | deletes the blob; the account is no longer recoverable |
+| frame `put_recovery` | a logged-in mailbox, its own ID, member-only relay | stores `{salt, kdf, blob}`; replaces the previous one; caps at 8 KB and answers `bad_recovery` |
+| frame `drop_recovery` | a logged-in mailbox, its own ID | deletes the blob: the account is not recoverable any more |
+| `POST /v1/auth/recovery` | whoever holds a live ticket | returns `{salt, kdf, blob, id, username}`, or 404 `no_backup`; the ID comes from the ticket's email, never from the request |
+| `POST /v1/auth/replace` | whoever holds a live ticket | marks the ticket as having agreed to a new ID; changes nothing else |
 
-A new table `recovery (maun_id TEXT PRIMARY KEY, salt TEXT, kdf TEXT, blob TEXT,
-updated_at INTEGER)`, with the blob size capped (identity blobs are ~1–2 KB;
-cap at 8 KB so the endpoint cannot be used as free file storage).
+Table `recovery (maun_id TEXT PRIMARY KEY, salt TEXT, kdf TEXT, blob TEXT,
+updated_at INTEGER)` in D1; `tickets` gains `replace INTEGER NOT NULL DEFAULT 0`
+(both added by the migration in `ready()`, so an existing relay keeps working).
+Roughly 1–2 KB of ciphertext per account.
 
 Two properties this gives and one it does not:
 
 * The relay can hand the blob back only to someone who has already proved the
-  email address — so a stranger cannot download and crack it offline. *(This is
-  the whole reason retrieval sits behind the member login rather than behind
-  the public ID.)*
+  email address with a code — so a stranger cannot download it and crack it
+  offline. *(This is the whole reason retrieval sits behind the member login
+  rather than behind the public ID.)* A test shows a request that names another
+  account still gets its own address's backup, or none.
 * A stolen D1 dump is ciphertext, and a stolen blob plus a weak passphrase is
   still crackable offline. That risk is the passphrase's, not the design's, and
   the UI has to say so.
 * The relay still learns *that* a member recovered, and when. It already learns
   logins; this adds no new content.
 
-### 3.5 Restore flow (fresh install)
+### 3.5 Restore flow (fresh install), as built
 
 1. First run shows "**Sign in to an existing account**" next to "Set up Maun".
 2. Email address → code from the relay, exactly as the current member login does.
@@ -152,8 +163,10 @@ Two properties this gives and one it does not:
    "This address has Maun ID `ab12…`. Restoring it needs the recovery
    passphrase you set on the old phone."
 4. Passphrase → blob downloaded → decrypted **on the phone** → the ID inside is
-   checked against the relay's claim (`maun_id`) before anything is installed.
-   A wrong passphrase fails the GCM tag, not a guess.
+   checked against the one the relay named for this address before anything is
+   installed, and a backup that belongs to another account is refused
+   (`Recovery.NotMine`) rather than installed. A wrong passphrase fails the GCM
+   tag, not a guess, and is reported as a wrong passphrase.
 5. The identity is written into the (new, empty) database; the app restarts into
    the account: same ID, same safety number, same picture (its record decrypts
    and re-fetches the R2 object), pending messages that the relay still holds
@@ -188,19 +201,32 @@ will see a new safety number and your old chats cannot be restored."
 
 ## 5. Status, and what is left
 
-**Shipped in this round:** Log out (session only, everything kept, wake-ups
-withdrawn), the signed-out screen that states what is kept, and the separation
-of that action from anything destructive. Verified by `SignOutTest` (the
-connection decision), by `ScreensTest` pictures of the two new screens, and by
-CI run 44078799334 compiling and testing the app.
+**Built and tested:**
 
-**Not shipped:** the `put_recovery` / `get_recovery` / `drop_recovery`
-endpoints, the KDF+cipher helper, the restore screen, `moved: true` on the login
-answer. They are specified above rather than half-built, for two reasons: the
-reinstall decision in §2 needs to be taken with the product in view, and none of
-this can be called done without testing on real phones (a restore that half
-works destroys the only copy of a key).
+* The refusal, the consent and the restore (§2). Relay tests in
+  `test/members/members.test.ts`; the app-side steps are
+  `LoginStep.ExistingAccount`, `Messenger.restoreAccount()`,
+  `Messenger.startNewIdentity()` and `LoginStep.Restored` / `Replaced`.
+* `Recovery.seal()` / `Recovery.open()`: PBKDF2-HMAC-SHA256 600 000 rounds,
+  AES-256-GCM, 16-byte salt, 12-byte IV, 128-bit tag, versioned JSON inside.
+  Tested for round-trip, wrong passphrase, tampered blob, swapped salt, another
+  account's backup, a blob that is not one, and the passphrase length rule.
+* Storing and withdrawing a backup from the app (`Messenger.enableRecovery`,
+  `disableRecovery`), with the passphrase typed twice and never leaving the
+  phone.
+* Installing a restored identity (`Messenger.installIdentity`): the empty
+  database's sessions and pre-keys are thrown away with the ID they were made
+  for, the restored registration ID and picture record are put in their place,
+  and the ticket is shown to the relay again.
 
-**Order of work proposed:** (1) `moved` on the login answer + the consent
-screen, so nothing is silent any more; (2) the backup helper and the three
-frames with relay tests; (3) the restore flow; (4) chat backup.
+**Not built, and not claimed:** chat history backup (§3.3); restoring on a phone
+that already has chats (the restore path is the first-run one); an email to the
+account when a backup is stored or withdrawn; any statement, anywhere in the
+app, that chats come back.
+
+**Not verified, because it needs two phones:** the whole journey end to end —
+backup on phone A, wipe, login on phone B, the account coming back with its
+picture and pending messages. Everything below the UI is covered by tests, and
+the UI is covered by screenshots, but nobody has done it with a real phone in
+each hand. Until that is done, this is not a claim that recovery works; it is a
+claim that each part of it behaves as described.

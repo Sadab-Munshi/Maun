@@ -104,8 +104,19 @@ by a test that fails without the change.
    moved *sooner* (`armAlarm`), so the queue-expiry appointment and the retry
    appointment coexist instead of overwriting each other.
    Tests: *wakes the phone again when it does not come, then stops*, *stops
-   waking a phone that came before the next try*, *looks for a ringing call
-   sooner, and gives up sooner*.
+   once the message has been taken, and not a moment before*, *looks for a
+   ringing call sooner, and gives up sooner*.
+
+   **What stops the chain is the acknowledgement, not the socket.** The first
+   cut of this called the search off when a connection reported itself ready —
+   the same mistake the stale-socket fix above exists for, since a dead
+   connection looks exactly like a quiet live one. It no longer does: each try
+   records how much was waiting (`wake_retry.seen`), and the next try compares
+   it with how much is waiting then. A queue that went down means the phone is
+   really taking messages, so it is left alone and the appointment moves to the
+   next interval; a queue that did not move means another wake-up, whatever the
+   socket says. Only an empty queue ends it. Test: *keeps looking while nothing
+   is taken, even on a socket that says it is connected*.
 
 5. **Nothing measured the part of the delay the relay cannot see.**
    The mailbox records the push service's HTTP status (`push_result`) and the
