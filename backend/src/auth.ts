@@ -1,9 +1,16 @@
 // The HTTP side of a member-only relay: the email login the app uses, and the
 // administrator's page with the routes behind it.
 //
-//   POST /v1/auth/start   {email}             sends a login code
-//   POST /v1/auth/verify  {email, code}       -> {ticket, username}
-//   POST /v1/auth/name    {ticket, username}  a new member picks a username
+//   POST /v1/auth/start     {email}             sends a login code
+//   POST /v1/auth/verify    {email, code}       -> {ticket, username, id, hasRecovery}
+//   POST /v1/auth/name      {ticket, username}  a new member picks a username
+//   POST /v1/auth/recovery  {ticket}            -> {salt, kdf, blob} sealed identity backup
+//   POST /v1/auth/replace   {ticket}            the member has agreed to start a new ID
+//
+// The last two are how a phone with new keys gets back the ID an address
+// already has: read its sealed backup and restore it, or say on purpose that
+// they are starting again. Logging in with the ticket never does either by
+// itself (see `admit` in members.ts).
 //
 //   GET  /admin                               the page (also "/" on ADMIN_HOST)
 //   POST /v1/admin/start  {email, password}   checks the password, sends a code
@@ -26,7 +33,10 @@ import {
   adminAction,
   checkAdminPassword,
   checkCode,
+  consentToReplace,
   endSession,
+  getRecovery,
+  idForTicket,
   listMembers,
   memberConfig,
   nameTicket,
@@ -100,6 +110,32 @@ export async function handleAuth(request: Request, env: Env, url: URL): Promise<
       const outcome = await checkCode(env, email, code, now);
       if (outcome !== "ok") return json({ error: outcome === "wrong" ? "wrong_code" : "expired" }, 401);
       return json(await newTicket(env, email, now));
+    }
+
+    // What this address already has, so that a phone with new keys can be told
+    // what happened instead of taking the account over by logging in.
+    if (path === "/v1/auth/recovery") {
+      const ticket = text(body.ticket, 64);
+      if (!ticket) return json({ error: "bad_request" }, 400);
+      const account = await idForTicket(env, ticket, now);
+      if (!account) return json({ error: "expired" }, 401);
+      if (!account.id) return json({ error: "no_backup" }, 404);
+      const sealed = await getRecovery(env, account.id);
+      if (!sealed) return json({ error: "no_backup", id: account.id, username: account.username }, 404);
+      return json({ ...sealed, id: account.id, username: account.username });
+    }
+
+    // Starting again over an ID that already exists has to be asked for. This
+    // marks the ticket; the relay never does it on its own.
+    if (path === "/v1/auth/replace") {
+      const ticket = text(body.ticket, 64);
+      if (!ticket) return json({ error: "bad_request" }, 400);
+      const account = await idForTicket(env, ticket, now);
+      if (!account) return json({ error: "expired" }, 401);
+      if (!(await consentToReplace(env, ticket, now))) return json({ error: "expired" }, 401);
+      // The old ID's sealed backup is not deleted here: consenting is not the
+      // same as doing it, and the login may still be abandoned.
+      return json({ ok: true });
     }
 
     if (path === "/v1/auth/name") {

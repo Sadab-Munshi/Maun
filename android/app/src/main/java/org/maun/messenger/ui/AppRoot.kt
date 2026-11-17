@@ -120,6 +120,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
             val registered = current is AccountState.Present && current.registered
             val banned by viewModel.banned.collectAsStateWithLifecycle()
             val signedOut by viewModel.signedOut.collectAsStateWithLifecycle()
+            val recovery by viewModel.recovery.collectAsStateWithLifecycle()
             val awaiting by viewModel.awaitingApproval.collectAsStateWithLifecycle()
             val needsPermissionSetup by viewModel.needsPermissionSetup.collectAsStateWithLifecycle()
             val username by viewModel.username.collectAsStateWithLifecycle()
@@ -180,6 +181,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                         },
                         onUsername = viewModel::loginChooseUsername,
                         onStartOver = viewModel::loginStartOver,
+                        onRestore = viewModel::loginRestore,
+                        onStartNewIdentity = viewModel::loginStartNewIdentity,
                     )
                 }
 
@@ -332,6 +335,9 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             sharingPending = avatarPending,
                             verified = ownVerified,
                             onShowCode = { screen = MY_CODE },
+                            recovery = recovery,
+                            onEnableRecovery = viewModel::enableRecovery,
+                            onDisableRecovery = viewModel::disableRecovery,
                             onLogOut = {
                                 // Nothing to go back to: the signed-out screen takes over.
                                 screen = HOME

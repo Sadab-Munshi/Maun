@@ -26,7 +26,7 @@
 // mail_days how many emails went out on a day.
 
 import { type MailConfig, mailConfig, sendMail } from "./mail";
-import { type DeviceReport, isUsername } from "./protocol";
+import { type DeviceReport, MAX_RECOVERY_BYTES, isUsername } from "./protocol";
 
 export type { DeviceReport };
 
@@ -91,7 +91,17 @@ const SCHEMA = [
      hash TEXT PRIMARY KEY,
      email TEXT NOT NULL,
      username TEXT,
-     expires_at INTEGER NOT NULL
+     expires_at INTEGER NOT NULL,
+     replace INTEGER NOT NULL DEFAULT 0
+   )`,
+  // A member's sealed identity backup: ciphertext and the recipe for opening
+  // it, nothing else. The relay cannot read it and has no key for it.
+  `CREATE TABLE IF NOT EXISTS recovery (
+     maun_id TEXT PRIMARY KEY,
+     salt TEXT NOT NULL,
+     kdf TEXT NOT NULL,
+     blob TEXT NOT NULL,
+     updated_at INTEGER NOT NULL
    )`,
   "CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)",
   "CREATE TABLE IF NOT EXISTS mail_days (day INTEGER PRIMARY KEY, sent INTEGER NOT NULL)",
@@ -123,6 +133,10 @@ async function ready(db: D1Database): Promise<D1Database> {
       db.prepare("ALTER TABLE users ADD COLUMN reinstalls INTEGER NOT NULL DEFAULT 0"),
       db.prepare("ALTER TABLE devices ADD COLUMN device_id TEXT"),
     ]);
+  }
+  const ticketColumns = (await db.prepare("PRAGMA table_info(tickets)").all()).results.map((row) => row.name as string);
+  if (!ticketColumns.includes("replace")) {
+    await db.prepare("ALTER TABLE tickets ADD COLUMN replace INTEGER NOT NULL DEFAULT 0").run();
   }
   await db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS users_username ON users (username)").run();
   schemaReady.add(db);
@@ -298,16 +312,70 @@ export async function checkCode(env: Env, address: string, code: string, now: nu
 
 // ---- Tickets --------------------------------------------------------------------
 
-/** A ticket for a checked email address, and the username that address already has, if any. */
-export async function newTicket(env: Env, email: string, now: number): Promise<{ ticket: string; username: string | null }> {
+/**
+ * A ticket for a checked email address, and what that address already has: its
+ * username, the ID it is tied to, and whether that ID left a sealed backup the
+ * phone could be recovered from.
+ *
+ * The ID matters because a ticket is the only thing that can say "this is that
+ * member". A phone that turns up with new keys and a ticket for an address
+ * that already has an ID is *not* allowed to take that ID's place by logging
+ * in: see [admit].
+ */
+export type Ticket = {
+  ticket: string;
+  username: string | null;
+  id: string | null;
+  hasRecovery: boolean;
+};
+
+export async function newTicket(env: Env, email: string, now: number): Promise<Ticket> {
   const db = await ready(env.DB);
   const ticket = randomToken();
-  const username = (await db.prepare("SELECT username FROM users WHERE email = ?").bind(email).first("username")) as string | null;
+  const existing = await db.prepare("SELECT maun_id, username FROM users WHERE email = ?").bind(email).first();
+  const username = (existing?.username as string | null | undefined) ?? null;
+  const id = (existing?.maun_id as string | null | undefined) ?? null;
   await db
     .prepare("INSERT INTO tickets (hash, email, username, expires_at) VALUES (?, ?, NULL, ?)")
     .bind(await sha256(`ticket:${ticket}`), email, now + TICKET_TTL_MS)
     .run();
-  return { ticket, username };
+  return { ticket, username, id, hasRecovery: id !== null && (await hasRecovery(env, id)) };
+}
+
+/** The ID a checked email address is tied to, if any. Used by the ticket routes. */
+export async function idForTicket(
+  env: Env,
+  ticket: string,
+  now: number,
+): Promise<{ email: string; username: string | null; id: string | null; hasRecovery: boolean } | null> {
+  const db = await ready(env.DB);
+  const row = await db
+    .prepare("SELECT email, username, expires_at FROM tickets WHERE hash = ?")
+    .bind(await sha256(`ticket:${ticket}`))
+    .first();
+  if (!row || (row.expires_at as number) <= now) return null;
+  const existing = await db.prepare("SELECT maun_id, username FROM users WHERE email = ?").bind(row.email as string).first();
+  const id = (existing?.maun_id as string | null | undefined) ?? null;
+  return {
+    email: row.email as string,
+    username: (existing?.username as string | null | undefined) ?? null,
+    id,
+    hasRecovery: id !== null && (await hasRecovery(env, id)),
+  };
+}
+
+/**
+ * Records that the person behind this ticket has been told what starting a new
+ * ID means and has chosen to do it anyway. Only a ticket marked this way may
+ * take the place of an ID that already exists.
+ */
+export async function consentToReplace(env: Env, ticket: string, now: number): Promise<boolean> {
+  const db = await ready(env.DB);
+  const hash = await sha256(`ticket:${ticket}`);
+  const row = await db.prepare("SELECT expires_at FROM tickets WHERE hash = ?").bind(hash).first();
+  if (!row || (row.expires_at as number) <= now) return false;
+  await db.prepare("UPDATE tickets SET replace = 1 WHERE hash = ?").bind(hash).run();
+  return true;
 }
 
 /** Puts the username a new member wants on their ticket, if nobody else has it. */
@@ -334,14 +402,77 @@ export async function nameTicket(
 }
 
 /** Uses a ticket up. Returns whose it was, or null when it is not a live ticket. */
-async function redeemTicket(env: Env, ticket: string, now: number): Promise<{ email: string; username: string | null } | null> {
+async function redeemTicket(
+  env: Env,
+  ticket: string,
+  now: number,
+): Promise<{ email: string; username: string | null; replace: boolean } | null> {
   const db = await ready(env.DB);
   const row = await db
-    .prepare("DELETE FROM tickets WHERE hash = ? RETURNING email, username, expires_at")
+    .prepare("DELETE FROM tickets WHERE hash = ? RETURNING email, username, expires_at, replace")
     .bind(await sha256(`ticket:${ticket}`))
     .first();
   if (!row || (row.expires_at as number) <= now) return null;
-  return { email: row.email as string, username: row.username as string | null };
+  return { email: row.email as string, username: row.username as string | null, replace: row.replace === 1 };
+}
+
+// ---- Sealed identity backups -----------------------------------------------------
+//
+// A member may leave a copy of their identity on the relay so that a phone they
+// no longer have can be recovered. What is stored is ciphertext: the key comes
+// from a passphrase only the member knows, and the relay has no way to open it,
+// to check the passphrase, or to make a new one. Everything the relay can do
+// with a row here is hand it back to somebody who has proved the email address
+// on the same account.
+
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+const KDF = /^[a-z0-9-]{1,32}$/;
+
+export type Recovery = { salt: string; kdf: string; blob: string };
+
+/** Whether this ID left a sealed backup behind. */
+export async function hasRecovery(env: Env, maunId: string): Promise<boolean> {
+  const db = await ready(env.DB);
+  return (await db.prepare("SELECT 1 FROM recovery WHERE maun_id = ?").bind(maunId).first()) !== null;
+}
+
+/** The sealed backup of an ID, or null when there is none. Readable only by its owner. */
+export async function getRecovery(env: Env, maunId: string): Promise<Recovery | null> {
+  const db = await ready(env.DB);
+  const row = await db
+    .prepare("SELECT salt, kdf, blob FROM recovery WHERE maun_id = ?")
+    .bind(maunId)
+    .first();
+  if (!row) return null;
+  return { salt: row.salt as string, kdf: row.kdf as string, blob: row.blob as string };
+}
+
+/** Checks the shape of a backup before it is written. Null when it is not one. */
+export function checkRecovery(salt: unknown, kdf: unknown, blob: unknown): Recovery | null {
+  if (typeof salt !== "string" || !BASE64.test(salt) || salt.length > 128) return null;
+  if (typeof kdf !== "string" || !KDF.test(kdf)) return null;
+  if (typeof blob !== "string" || !BASE64.test(blob)) return null;
+  if (blob.length === 0 || blob.length > Math.ceil(MAX_RECOVERY_BYTES / 3) * 4) return null;
+  return { salt, kdf, blob };
+}
+
+/** Writes a member's sealed backup over whatever was there before. */
+export async function putRecovery(env: Env, maunId: string, recovery: Recovery, now: number): Promise<void> {
+  const db = await ready(env.DB);
+  await db
+    .prepare(
+      `INSERT INTO recovery (maun_id, salt, kdf, blob, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
+       ON CONFLICT (maun_id) DO UPDATE SET salt = excluded.salt, kdf = excluded.kdf,
+         blob = excluded.blob, updated_at = excluded.updated_at`,
+    )
+    .bind(maunId, recovery.salt, recovery.kdf, recovery.blob, now)
+    .run();
+}
+
+/** Forgets a member's backup: they asked for it, or their account went away. */
+export async function dropRecovery(env: Env, maunId: string): Promise<void> {
+  const db = await ready(env.DB);
+  await db.prepare("DELETE FROM recovery WHERE maun_id = ?").bind(maunId).run();
 }
 
 // ---- Members --------------------------------------------------------------------
@@ -387,6 +518,14 @@ async function deviceBanned(db: D1Database, deviceId: string): Promise<boolean> 
 export type Admission =
   | { is: "member"; email: string; username: string | null; movedFrom: string | null; verified: boolean }
   | { is: "pending"; email: string; username: string | null; fresh: boolean; movedFrom: string | null }
+  /**
+   * This address already has an ID, and this phone is not it. Nothing is
+   * changed: the account, its username, its badge, its picture and anything
+   * waiting for it stay exactly as they were. The phone is offered the sealed
+   * backup (`hasRecovery`), or — if there is none — the choice to start a new
+   * ID, which it has to ask for on purpose.
+   */
+  | { is: "conflict"; email: string; username: string | null; id: string; hasRecovery: boolean }
   | { is: "banned" }
   | { is: "stranger" };
 
@@ -422,6 +561,21 @@ export async function admit(
 
   const existing = await db.prepare("SELECT maun_id, username, status, is_banned FROM users WHERE email = ?").bind(proven.email).first();
   if (existing?.is_banned === 1) return { is: "banned" };
+  // An address has one ID. This phone does not hold that ID's keys, and a login
+  // is not a reason to hand the address — its username, its badge, its picture
+  // and everything waiting for it — to a new key pair. The member has to either
+  // restore the old ID from its sealed backup, or say in as many words that
+  // they are starting again.
+  const previous = (existing?.maun_id as string | null | undefined) ?? null;
+  if (previous !== null && previous !== maunId && !proven.replace) {
+    return {
+      is: "conflict",
+      email: proven.email,
+      username: (existing?.username as string | null | undefined) ?? null,
+      id: previous,
+      hasRecovery: await hasRecovery(env, previous),
+    };
+  }
   const username = (existing?.username as string | null) ?? proven.username;
   // Everybody has a username; the app asks for one before it gets this far.
   if (!username) return { is: "stranger" };
@@ -444,6 +598,10 @@ export async function admit(
     return { is: "stranger" };
   }
   if (device) await recordDevice(env, maunId, device, now);
+  // The old ID has been replaced, deliberately, by a member who was told what
+  // that means. Nothing can be recovered to it any more, so its sealed backup
+  // — ciphertext the relay cannot read — goes as well.
+  if (movedFrom && movedFrom !== maunId) await dropRecovery(env, movedFrom);
   // A list that was written to before this member joined keeps the badge it was given.
   if (approved) {
     return { is: "member", email: proven.email, username, movedFrom, verified: (await memberOf(env, maunId))?.verified === true };

@@ -75,6 +75,44 @@ class AuthApiTest {
     }
 
     @Test
+    fun `says which ID the address already has, and whether it can be recovered`() = runBlocking {
+        answer = """{"ticket":"$ticket","username":"asha","id":"${"ab12".repeat(16)}","hasRecovery":true}"""
+        assertEquals(
+            AuthApi.Verified.Ok(ticket, "asha", "ab12".repeat(16), true),
+            api().verify("asha@example.com", "123456"),
+        )
+        // An address that has never been used here has neither.
+        answer = """{"ticket":"$ticket","username":null,"id":null,"hasRecovery":false}"""
+        assertEquals(AuthApi.Verified.Ok(ticket, null, null, false), api().verify("asha@example.com", "123456"))
+    }
+
+    @Test
+    fun `fetches a sealed backup, or says there is none`() = runBlocking {
+        answer = """{"salt":"AAECAwQFBgcICQoLDA0ODw==","kdf":"pbkdf2-sha256-600000","blob":"AQID","id":"${"ab12".repeat(16)}"}"""
+        val found = api().recovery(ticket) as AuthApi.Found.Ok
+        assertEquals("/v1/auth/recovery", seenPath)
+        assertEquals(ticket, seenBody.getString("ticket"))
+        assertEquals("pbkdf2-sha256-600000", found.backup.kdf)
+        assertEquals("ab12".repeat(16), found.backup.id)
+        assertEquals(listOf<Byte>(1, 2, 3), found.backup.blob.toList())
+
+        // 404 is not a failure: it says this account left no backup.
+        status = 404
+        answer = """{"error":"no_backup"}"""
+        assertEquals(AuthApi.Found.NoBackup, api().recovery(ticket))
+    }
+
+    @Test
+    fun `records the agreement to start a new ID over an existing one`() = runBlocking {
+        assertNull(api().replace(ticket))
+        assertEquals("/v1/auth/replace", seenPath)
+        assertEquals(ticket, seenBody.getString("ticket"))
+        status = 401
+        answer = """{"error":"expired"}"""
+        assertEquals("That code has run out. Ask for a new one.", api().replace(ticket))
+    }
+
+    @Test
     fun `a wrong code, or an answer without a ticket, is a problem`() = runBlocking {
         status = 401
         answer = """{"error":"wrong_code"}"""

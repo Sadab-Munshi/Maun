@@ -17,6 +17,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -39,6 +40,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import org.maun.messenger.network.Usernames
@@ -52,8 +54,13 @@ data class LoginUi(
     val working: Boolean = false,
     /** Why the last thing tried did not work. */
     val problem: String? = null,
+    /** This address already has a Maun ID that is not on this phone. */
+    val existing: Existing? = null,
 ) {
-    enum class Step { Email, Code, Username }
+    enum class Step { Email, Code, Username, Existing }
+
+    /** [hasRecovery] is false when that ID left no sealed backup to restore. */
+    data class Existing(val id: String, val username: String?, val hasRecovery: Boolean)
 }
 
 /** Whether [text] has the shape of an email address. The relay has the last word. */
@@ -78,6 +85,8 @@ fun LoginScreen(
     onCode: (String) -> Unit,
     onUsername: (String) -> Unit,
     onStartOver: () -> Unit,
+    onRestore: (CharArray) -> Unit = {},
+    onStartNewIdentity: () -> Unit = {},
 ) {
     val busy = ui.working || checking
     BackHandler(enabled = ui.step != LoginUi.Step.Email && !busy, onBack = onStartOver)
@@ -85,6 +94,89 @@ fun LoginScreen(
         LoginUi.Step.Email -> EmailStep(relayName, ui, busy, onEmail)
         LoginUi.Step.Code -> CodeStep(ui, busy, onCode, onResend = { onEmail(ui.email) }, onStartOver = onStartOver)
         LoginUi.Step.Username -> UsernameStep(ui, busy, onUsername)
+        LoginUi.Step.Existing -> ExistingStep(ui, busy, onRestore, onStartNewIdentity, onStartOver)
+    }
+}
+
+/**
+ * The address has a Maun ID already, and this phone does not hold its keys.
+ *
+ * Nothing on the relay has been touched to get here, and nothing will be until
+ * this is answered. If the old phone left a sealed backup, its passphrase is
+ * asked for here and the ID comes back as it was: same ID, same safety number,
+ * same username, same badge, same picture. If it left none, the only way on is
+ * to start a new ID — said in as many words, with what it costs spelled out.
+ */
+@Composable
+private fun ExistingStep(
+    ui: LoginUi,
+    busy: Boolean,
+    onRestore: (CharArray) -> Unit,
+    onStartNewIdentity: () -> Unit,
+    onStartOver: () -> Unit,
+) {
+    val existing = ui.existing ?: return
+    var passphrase by rememberSaveable { mutableStateOf("") }
+    var confirming by rememberSaveable { mutableStateOf(false) }
+    val who = existing.username?.let { "@$it" } ?: "an account"
+    StepFrame(
+        icon = MaunIcons.Lock,
+        title = "This address already has a Maun ID",
+        text = if (existing.hasRecovery) {
+            "$who is on this relay, with its own keys. Enter the recovery passphrase you set on the " +
+                "phone that had it, and this phone becomes that account again: the same ID, the same " +
+                "safety number, the same picture."
+        } else {
+            "$who is on this relay, and it left no recovery backup. Its keys were only ever on the " +
+                "phone that had it, so they cannot be brought here, and its chats cannot be recovered. " +
+                "Nothing has been changed yet."
+        },
+    ) {
+        if (existing.hasRecovery) {
+            OutlinedTextField(
+                value = passphrase,
+                onValueChange = { passphrase = it },
+                label = { Text("Recovery passphrase") },
+                singleLine = false,
+                isError = ui.problem != null,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(onGo = { if (passphrase.isNotEmpty() && !busy) onRestore(passphrase.toCharArray()) }),
+                modifier = fieldWidth,
+            )
+            Problem(ui.problem)
+            Button(
+                onClick = { onRestore(passphrase.toCharArray()) },
+                enabled = passphrase.isNotEmpty() && !busy,
+                modifier = fieldWidth,
+            ) { Text(if (busy) "Opening…" else "Restore this account") }
+        } else {
+            Problem(ui.problem)
+        }
+
+        if (!existing.hasRecovery || confirming) {
+            Text(
+                text = "A new Maun ID gets new keys: your contacts will see a new safety number, the " +
+                    "username becomes the new ID's, and everything waiting for the old one is thrown " +
+                    "away. Your chats are not brought back by either way.",
+                style = MaterialTheme.typography.bodySmall,
+                color = LocalStatusColors.current.warning,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.widthIn(max = 420.dp),
+            )
+            Button(
+                onClick = onStartNewIdentity,
+                enabled = !busy,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                modifier = fieldWidth,
+            ) { Text(if (busy) "One moment…" else "Start a new Maun ID") }
+        } else {
+            TextButton(onClick = { confirming = true }, enabled = !busy) {
+                Text("I cannot restore it — start a new ID instead")
+            }
+        }
+
+        TextButton(onClick = onStartOver, enabled = !busy) { Text("Use another email address") }
     }
 }
 

@@ -365,25 +365,60 @@ describe("waking a phone", () => {
     await hangUp(a);
   }, 30_000);
 
-  it("stops waking a phone that came before the next try", async () => {
+  it("keeps looking while nothing is taken, even on a socket that says it is connected", async () => {
+    // A connection that merely reports being alive is not proof of anything:
+    // a stale one looks exactly like that. Only a message actually taken
+    // counts, which is why a live socket no longer stops the chain.
+    const alice = await registered();
+    const bob = await withPush();
+    const a = await online(alice);
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(1)).toBe(1);
+    // Bob's phone is on the connection, and takes nothing.
+    const b = await online(bob);
+    await vi.waitFor(async () => expect(await retryRow(bob.id)).toBeDefined());
+    await editPush(bob.id, "UPDATE wake_retry SET at = ?", Date.now() - 1);
+    await editPush(bob.id, "UPDATE push SET last = last - ?", PUSH_REPEAT_MS + 1000);
+    await runAlarm(bob.id);
+    expect(await wakeCount(2)).toBe(2);
+
+    // Now it takes the message. The next look sees the queue went down, and
+    // leaves it alone.
+    const msg = await b.nextJson();
+    b.sendJson({ t: "ack", seq: msg.seq });
+    b.sendJson({ t: "echo", id: "settle", body: "" });
+    expect(await b.nextJson()).toMatchObject({ t: "echo" });
+    await editPush(bob.id, "UPDATE wake_retry SET at = ?", Date.now() - 1);
+    await editPush(bob.id, "UPDATE push SET last = last - ?", PUSH_REPEAT_MS + 1000);
+    await runAlarm(bob.id);
+    expect(await wakeCount(2)).toBe(2);
+    await hangUp(b);
+    await hangUp(a);
+  }, 30_000);
+
+  it("stops once the message has been taken, and not a moment before", async () => {
     const alice = await registered();
     let bob = await withPush();
     const a = await online(alice);
     await sendMessage(a, bob.id, randomBytes(8));
     expect(await wakeCount(1)).toBe(1);
 
-    // Bob's phone comes by itself, and takes the message.
+    // Bob's phone logs in and takes the message.
     const b = await online(bob);
     const msg = await b.nextJson();
     b.sendJson({ t: "ack", seq: msg.seq });
     b.sendJson({ t: "echo", id: "settle", body: "" });
     expect(await b.nextJson()).toMatchObject({ t: "echo" });
     await hangUp(b);
-    expect(await retryRow(bob.id)).toBeUndefined();
 
+    // The appointment made by the first wake-up still stands, and running it
+    // now finds nothing to do: the message was acknowledged, so there is
+    // nothing left to look for.
+    await editPush(bob.id, "UPDATE wake_retry SET at = ?", Date.now() - 1);
     await editPush(bob.id, "UPDATE push SET last = last - ?", PUSH_REPEAT_MS + 1000);
     await runAlarm(bob.id);
     expect(await wakeCount(1)).toBe(1);
+    await vi.waitFor(async () => expect(await retryRow(bob.id)).toBeUndefined());
     await hangUp(a);
   }, 30_000);
 

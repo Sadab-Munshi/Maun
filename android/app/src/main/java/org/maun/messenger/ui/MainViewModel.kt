@@ -91,6 +91,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** The relay's owner has shut this member out. */
     val banned = messenger.banned
 
+    /** Whether this account can be recovered on another phone. */
+    val recovery = messenger.recovery
+
+    /** Leaves a sealed copy of the account on the relay. Returns why it could not, or null. */
+    suspend fun enableRecovery(passphrase: CharArray): String? = messenger.enableRecovery(passphrase)
+
+    /** Has the relay throw the sealed copy away. */
+    suspend fun disableRecovery(): String? = messenger.disableRecovery()
+
     /** This phone has been signed out. The chats and the ID are still here. */
     val signedOut = messenger.signedOut
 
@@ -152,6 +161,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _login.value = when (val step = action()) {
                 Messenger.LoginStep.Done -> onDone
                 Messenger.LoginStep.NeedsUsername -> LoginUi(LoginUi.Step.Username, email)
+                is Messenger.LoginStep.ExistingAccount -> LoginUi(
+                    step = LoginUi.Step.Existing,
+                    email = email,
+                    existing = LoginUi.Existing(step.id, step.username, step.hasRecovery),
+                )
+                is Messenger.LoginStep.Restored -> if (step.problem == null) {
+                    onDone
+                } else {
+                    _login.value.copy(working = false, problem = step.problem)
+                }
+                is Messenger.LoginStep.Replaced -> if (step.problem == null) {
+                    onDone
+                } else {
+                    _login.value.copy(working = false, problem = step.problem)
+                }
                 is Messenger.LoginStep.Problem -> _login.value.copy(working = false, problem = step.message)
             }
         }
@@ -170,6 +194,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 else -> LoginUi(LoginUi.Step.Email, email, problem = problem)
             }
         }
+    }
+
+    /** Restores the ID this address already has, from its sealed backup. */
+    fun loginRestore(passphrase: CharArray) {
+        val email = _login.value.email
+        loginStep(email, { messenger.restoreAccount(passphrase) }, onDone = LoginUi(email = email))
+    }
+
+    /** Starts a new ID in place of the one this address has, on purpose, having been told what that costs. */
+    fun loginStartNewIdentity() {
+        val email = _login.value.email
+        loginStep(email, { messenger.startNewIdentity() }, onDone = LoginUi(email = email))
     }
 
     fun loginSubmitCode(code: String) {

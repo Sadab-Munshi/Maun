@@ -9,7 +9,18 @@ import {
   isPushUrl,
   vapidAuthorization,
 } from "./crypto/webpush";
-import { admit, findMember, memberConfig, memberOf, notifyAdmin, recordDevice, verifiedAmong } from "./members";
+import {
+  admit,
+  checkRecovery,
+  dropRecovery,
+  findMember,
+  memberConfig,
+  memberOf,
+  notifyAdmin,
+  putRecovery,
+  recordDevice,
+  verifiedAmong,
+} from "./members";
 import { TURN_DAILY_CAP, TURN_TTL_SECONDS, iceServers, turnConfig } from "./turn";
 import {
   CLOSE_ACCESS_REQUIRED,
@@ -216,8 +227,12 @@ export class Mailbox extends DurableObject<Env> {
       const vapid = await this.vapidKeys();
       // The phone is here: whatever wake-up was on its way has done its job.
       sql.exec("UPDATE push SET pending = 0 WHERE id = 1 AND pending = 1");
-      // The phone is here: there is nothing left to wake it for.
-      sql.exec("DELETE FROM wake_retry");
+      // The retry chain is *not* called off here. A socket that has logged in
+      // is not the same thing as messages being taken: a connection that
+      // reports itself alive can have nothing on the other end of it, which is
+      // the case this chain exists for. It stops when the queue empties —
+      // that is, when the messages have actually been acknowledged — or when
+      // it has looked as often as it is allowed to.
       // An ID that was given up and is in use again takes messages again.
       sql.exec("DELETE FROM retired");
       this.standing = { ok: true, at: Date.now() };
@@ -451,6 +466,41 @@ export class Mailbox extends DurableObject<Env> {
         send(ws, { t: "saved", id: frame.id, otks: this.oneTimeKeyCount() });
         return;
 
+      case "put_recovery": {
+        if (!memberConfig(this.env)) {
+          // An open relay has no accounts to recover, and no email to prove one with.
+          send(ws, { t: "failed", id: frame.id, code: "no_members" });
+          return;
+        }
+        const sealed = checkRecovery(frame.salt, frame.kdf, frame.blob);
+        if (!sealed) {
+          send(ws, { t: "failed", id: frame.id, code: "bad_recovery" });
+          return;
+        }
+        try {
+          await putRecovery(this.env, state.m, sealed, Date.now());
+        } catch {
+          send(ws, { t: "failed", id: frame.id, code: "unavailable" });
+          return;
+        }
+        send(ws, { t: "saved", id: frame.id, otks: this.oneTimeKeyCount() });
+        return;
+      }
+
+      case "drop_recovery":
+        if (!memberConfig(this.env)) {
+          send(ws, { t: "failed", id: frame.id, code: "no_members" });
+          return;
+        }
+        try {
+          await dropRecovery(this.env, state.m);
+        } catch {
+          send(ws, { t: "failed", id: frame.id, code: "unavailable" });
+          return;
+        }
+        send(ws, { t: "saved", id: frame.id, otks: this.oneTimeKeyCount() });
+        return;
+
       case "drop_push":
         sql.exec("DELETE FROM push WHERE id = 1");
         sql.exec("DELETE FROM wake_retry");
@@ -489,6 +539,10 @@ export class Mailbox extends DurableObject<Env> {
       case "member":
         this.memberCheckedAt = Date.now();
         return { refused: null, email: answer.email, name: answer.username, verified: answer.verified };
+      case "conflict":
+        // Nothing was changed: not the account, not its username or badge, not
+        // its picture, and not a single message waiting for it.
+        return { refused: "identity_conflict" };
       case "pending":
         if (answer.fresh) this.ctx.waitUntil(notifyAdmin(this.env, config, answer.email, answer.username, this.origin));
         return { refused: "pending" };
@@ -737,8 +791,22 @@ export class Mailbox extends DurableObject<Env> {
       sql.exec("DELETE FROM wake_retry");
       return;
     }
-    sql.exec("INSERT OR REPLACE INTO wake_retry (id, at, count, urgent) VALUES (1, ?, ?, ?)", now + wait, count, urgent ? 1 : 0);
+    // `seen` is how much was waiting when this try was arranged. The next try
+    // compares it with how much is waiting then: only a message that was
+    // actually taken counts as the phone having come.
+    sql.exec(
+      "INSERT OR REPLACE INTO wake_retry (id, at, count, urgent, seen) VALUES (1, ?, ?, ?, ?)",
+      now + wait,
+      count,
+      urgent ? 1 : 0,
+      this.queueDepth(),
+    );
     await this.armAlarm(now + wait);
+  }
+
+  /** How many messages are waiting for this phone. */
+  private queueDepth(): number {
+    return Number(this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM queue").toArray()[0]?.n ?? 0);
   }
 
   /** Asks to be called at [at], unless something sooner is already asked for. */
@@ -764,24 +832,37 @@ export class Mailbox extends DurableObject<Env> {
       return;
     }
     const urgent = row.urgent === 1;
-    const waiting = Number(sql.exec("SELECT COUNT(*) AS n FROM queue").toArray()[0]?.n ?? 0);
+    const waiting = this.queueDepth();
     const hasAddress = sql.exec("SELECT 1 FROM push WHERE id = 1").toArray().length > 0;
-    if (waiting === 0 || !hasAddress || this.connected()) {
-      // The phone came, nothing is waiting, or there is nowhere to send a
+    if (waiting === 0 || !hasAddress) {
+      // Everything waiting has been taken, or there is nowhere to send a
       // wake-up: there is nothing left to look for.
       sql.exec("DELETE FROM wake_retry");
       return;
     }
+    // A socket that says it is connected is not evidence that anything is
+    // being taken: a connection can look alive with nothing on the other end
+    // of it, which is the whole reason this chain exists. What counts is the
+    // queue having gone down since the last try.
+    const seen = Number(row.seen ?? 0);
+    const progress = waiting < seen;
     const count = row.count as number;
     const waits = urgent ? WAKE_RETRY_WAITS_CALL_MS : WAKE_RETRY_WAITS_MS;
     if (count + 1 >= waits.length) {
       sql.exec("DELETE FROM wake_retry");
     } else {
-      sql.exec("UPDATE wake_retry SET at = ?, count = ? WHERE id = 1", now + waits[count + 1]!, count + 1);
+      sql.exec(
+        "UPDATE wake_retry SET at = ?, count = ?, seen = ? WHERE id = 1",
+        now + waits[count + 1]!,
+        count + 1,
+        waiting,
+      );
       await this.armAlarm(now + waits[count + 1]!);
     }
-    // The chain has already been moved on above, so this one only sends.
-    this.wake(now, urgent, false);
+    // The chain has already been moved on above, so this one only sends. A
+    // phone that demonstrably took some of what was waiting is left alone to
+    // take the rest; one that took nothing is woken again.
+    if (!progress) this.wake(now, urgent, false);
   }
 
   private async deliverWake(url: string, key: Uint8Array, auth: Uint8Array, call = false): Promise<void> {
@@ -988,8 +1069,12 @@ export class Mailbox extends DurableObject<Env> {
     // One row: the moment the phone that was woken is looked for again, how
     // many times it has been woken, and whether what is waiting is a call.
     sql.exec(
-      "CREATE TABLE IF NOT EXISTS wake_retry (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL, count INTEGER NOT NULL, urgent INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS wake_retry (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL, count INTEGER NOT NULL, urgent INTEGER NOT NULL, seen INTEGER NOT NULL DEFAULT 0)",
     );
+    // A mailbox written to by the first build of the retry chain has no `seen`.
+    if (!sql.exec("SELECT name FROM pragma_table_info('wake_retry')").toArray().some((row) => row.name === "seen")) {
+      sql.exec("ALTER TABLE wake_retry ADD COLUMN seen INTEGER NOT NULL DEFAULT 0");
+    }
     // One row: the token for the file routes, and the day's uploads.
     sql.exec(
       `CREATE TABLE IF NOT EXISTS files (

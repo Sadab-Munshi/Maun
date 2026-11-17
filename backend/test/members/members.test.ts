@@ -32,7 +32,7 @@ beforeEach(async () => {
   mails = [];
   mailStatus = 200;
   // The tests of one file share a database: start each with an empty one.
-  const tables = ["users", "devices", "codes", "tickets", "sessions", "mail_days", "banned_devices", "admin_tries"];
+  const tables = ["users", "devices", "codes", "tickets", "sessions", "mail_days", "banned_devices", "admin_tries", "recovery"];
   await env.DB.batch(tables.map((table) => env.DB.prepare(`DROP TABLE IF EXISTS ${table}`)));
   forgetSchema();
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -71,6 +71,17 @@ async function ticketFor(email: string, username?: string): Promise<string> {
   expect(verified.status).toBe(200);
   const { ticket, username: existing } = (await verified.json()) as { ticket: string; username: string | null };
   if (username && !existing) expect((await post("/v1/auth/name", { ticket, username })).status).toBe(200);
+  return ticket;
+}
+
+/**
+ * The email login, plus the member's agreement — recorded on the ticket — to
+ * start a new ID in place of the one the address already has. Without that
+ * agreement a login never replaces an ID.
+ */
+async function replacingTicket(email: string): Promise<string> {
+  const ticket = await ticketFor(email);
+  expect((await post("/v1/auth/replace", { ticket })).status).toBe(200);
   return ticket;
 }
 
@@ -165,7 +176,12 @@ describe("the email login", () => {
 
     const right = await post("/v1/auth/verify", { email: "ASHA@example.com", code });
     expect(right.status).toBe(200);
-    expect(await right.json()).toEqual({ ticket: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/), username: null });
+    expect(await right.json()).toEqual({
+      ticket: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+      username: null,
+      id: null,
+      hasRecovery: false,
+    });
 
     // A code works once.
     const again = await post("/v1/auth/verify", { email: "asha@example.com", code });
@@ -356,7 +372,7 @@ describe("joining", () => {
     await hangUp(withTicket.inbox);
   });
 
-  it("moves a member to a newly set up phone, keeping their username and standing", async () => {
+  it("moves a member to a newly set up phone, once they say so, keeping their username and standing", async () => {
     const first = await member("zoya@example.com", "zoya");
     // Later: a second code is not sent within a minute of the first.
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
@@ -364,6 +380,8 @@ describe("joining", () => {
     const { ticket, username } = (await verified.json()) as { ticket: string; username: string };
     expect(username).toBe("zoya");
 
+    // Starting again over the ID the address already has is asked for first.
+    expect((await post("/v1/auth/replace", { ticket })).status).toBe(200);
     const second = await makeUser();
     const { inbox, answer } = await tryRegister(second, ticket);
     expect(answer).toMatchObject({ t: "ready", email: "zoya@example.com", name: "zoya" });
@@ -760,7 +778,7 @@ describe("the admin page", () => {
 
     // The same person on another phone is a different matter: the ban was on the phone.
     const moved = await makeUser();
-    const elsewhere = await tryRegister(moved, await ticketFor("asha@example.com"), other);
+    const elsewhere = await tryRegister(moved, await replacingTicket("asha@example.com"), other);
     expect(elsewhere.answer).toMatchObject({ t: "ready", name: "asha" });
     await hangUp(elsewhere.inbox);
 
@@ -862,7 +880,7 @@ describe("a member list made by an earlier version", () => {
   });
 });
 
-describe("a member who sets Maun up again", () => {
+describe("a member whose phone is gone", () => {
   /** Sends one message and returns the relay's answer to it. */
   async function send(inbox: Inbox, to: string): Promise<Record<string, unknown>> {
     const id = requestId();
@@ -872,28 +890,96 @@ describe("a member who sets Maun up again", () => {
     return answer;
   }
 
-  it("gets a new ID; the old one says it is gone, and the username leads to the new one", async () => {
+  /** How many messages are waiting in a mailbox. */
+  async function queued(mailboxId: string): Promise<number> {
+    return (await runInDurableObject(env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId)), (_, state) =>
+      state.storage.sql.exec("SELECT COUNT(*) AS n FROM queue").one().n,
+    )) as number;
+  }
+
+  it("is not given the existing ID's place by logging in, and nothing of it is touched", async () => {
+    const alice = await member("alice@example.com", "alice");
+    const bobOld = await member("bob@example.com", "bob");
+    await set("bob@example.com", "verified = 1");
+    const { inbox } = await tryLogin(alice);
+    expect(await send(inbox, bobOld.id)).toMatchObject({ t: "stored" });
+    expect(await queued(bobOld.id)).toBe(1);
+
+    // Bob sets Maun up again: same address, new keys, and no recovery backup.
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
+    const bobNew = await makeUser();
+    const again = await tryRegister(bobNew, await ticketFor("bob@example.com"));
+    expect(again.answer).toEqual({ t: "error", code: "identity_conflict" });
+    expect((await again.inbox.closed).code).toBe(4003);
+
+    // The account is exactly as it was: same ID, username, approval, badge.
+    expect(await row("bob@example.com")).toMatchObject({
+      maun_id: bobOld.id,
+      username: "bob",
+      status: "approved",
+      verified: 1,
+      reinstalls: 0,
+    });
+    // Nothing was retired: the old ID still takes messages, and what was
+    // waiting for it was not thrown away.
+    expect(await send(inbox, bobOld.id)).toMatchObject({ t: "stored" });
+    expect(await queued(bobOld.id)).toBe(2);
+    // Its keys are still there to be fetched, so a phone with its identity works.
+    // Its keys are still there to be fetched (this one never published any,
+    // which is a different answer from "gone"), so a phone that restores the
+    // identity keeps working.
+    const keysId = requestId();
+    inbox.sendJson({ t: "get_keys", id: keysId, of: bobOld.id });
+    expect(await inbox.nextJson()).toEqual({ t: "failed", id: keysId, code: "no_keys" });
+
+    // And the username still leads to the old ID, not to the new one.
+    const findId = requestId();
+    inbox.sendJson({ t: "find", id: findId, name: "bob" });
+    expect(await inbox.nextJson()).toEqual({ t: "found", id: findId, user: bobOld.id, name: "bob" });
+    await hangUp(inbox);
+  });
+
+  it("comes back as itself when the phone holds the old identity", async () => {
+    // What a restored phone does: it has the original key pair, so it logs in
+    // as that ID and is the same account, with everything waiting for it.
+    const alice = await member("alice@example.com", "alice");
+    const bob = await member("bob@example.com", "bob");
+    await set("bob@example.com", "verified = 1");
+    const { inbox } = await tryLogin(alice);
+    expect(await send(inbox, bob.id)).toMatchObject({ t: "stored" });
+
+    const back = await tryLogin(bob);
+    expect(back.answer).toMatchObject({ t: "ready", name: "bob", email: "bob@example.com", verified: true });
+    // The message that was waiting is still there to be taken.
+    expect(await back.inbox.nextJson()).toMatchObject({ t: "msg", from: alice.id });
+    expect(await row("bob@example.com")).toMatchObject({ maun_id: bob.id, reinstalls: 0 });
+    await hangUp(back.inbox);
+    await hangUp(inbox);
+  });
+
+  it("starts again only when the member says so on purpose", async () => {
     const alice = await member("alice@example.com", "alice");
     const bobOld = await member("bob@example.com", "bob");
     const { inbox } = await tryLogin(alice);
     expect(await send(inbox, bobOld.id)).toMatchObject({ t: "stored" });
 
-    // Bob deletes the app's data and logs in again: same address, new keys.
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
+    const ticket = await ticketFor("bob@example.com");
+    // Saying yes is a separate, recorded act, and it is what makes the
+    // replacement possible.
+    expect((await post("/v1/auth/replace", { ticket })).status).toBe(200);
     const bobNew = await makeUser();
-    const again = await tryRegister(bobNew, await ticketFor("bob@example.com"));
+    const again = await tryRegister(bobNew, ticket);
     expect(again.answer).toMatchObject({ t: "ready", fresh: true, name: "bob" });
     expect(await row("bob@example.com")).toMatchObject({ maun_id: bobNew.id, reinstalls: 1, status: "approved" });
 
-    // The old ID stops taking messages and keys, and says why.
+    // Only now is the old ID finished: it says so, and what was waiting there
+    // — which could never have been read — is gone.
     await vi.waitFor(async () => expect(await send(inbox, bobOld.id)).toMatchObject({ t: "failed", code: "gone" }));
     const keysId = requestId();
     inbox.sendJson({ t: "get_keys", id: keysId, of: bobOld.id });
     expect(await inbox.nextJson()).toEqual({ t: "failed", id: keysId, code: "gone" });
-    // What was waiting there could never have been read, and is not kept.
-    expect(await runInDurableObject(env.MAILBOX.get(env.MAILBOX.idFromName(bobOld.id)), (_, state) =>
-      state.storage.sql.exec("SELECT COUNT(*) AS n FROM queue").one().n,
-    )).toBe(0);
+    expect(await queued(bobOld.id)).toBe(0);
 
     // The username now leads to the new ID, which takes messages.
     const findId = requestId();
@@ -920,4 +1006,92 @@ describe("a member who sets Maun up again", () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 11 * 60_000);
     expect(await send(inbox, dave.id)).toMatchObject({ t: "stored" });
   });
+});
+
+describe("the sealed identity backup", () => {
+  const SEALED = { salt: btoa("0123456789abcdef"), kdf: "pbkdf2-sha256-600000", blob: btoa("sealed identity") };
+
+  async function store(inbox: Inbox, sealed: Record<string, string> = SEALED): Promise<Record<string, unknown>> {
+    const id = requestId();
+    inbox.sendJson({ t: "put_recovery", id, ...sealed });
+    const answer = await inbox.nextJson();
+    expect(answer.id).toBe(id);
+    return answer;
+  }
+
+  it("is kept as it was given, and handed back only to a ticket for its own address", async () => {
+    const asha = await member("asha@example.com", "asha");
+    const { inbox } = await tryLogin(asha);
+    expect(await store(inbox)).toMatchObject({ t: "saved" });
+
+    // What is on the relay is exactly the ciphertext the phone sent: no key,
+    // no passphrase, nothing the relay could open.
+    const stored = await env.DB.prepare("SELECT salt, kdf, blob FROM recovery WHERE maun_id = ?").bind(asha.id).first();
+    expect(stored).toEqual(SEALED);
+
+    // The ticket says the address already has an ID, and that it can be recovered.
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+    const verified = await post("/v1/auth/verify", { email: "asha@example.com", code: await codeFor("asha@example.com") });
+    const answer = (await verified.json()) as Record<string, unknown>;
+    expect(answer).toMatchObject({ id: asha.id, username: "asha", hasRecovery: true });
+
+    const given = await post("/v1/auth/recovery", { ticket: answer.ticket });
+    expect(given.status).toBe(200);
+    expect(await given.json()).toEqual({ ...SEALED, id: asha.id, username: "asha" });
+
+    // Which ID is handed back is decided by the ticket, not by the caller: it
+    // cannot be pointed at somebody else's account.
+    const pointed = await post("/v1/auth/recovery", { ticket: answer.ticket, id: "a".repeat(64) });
+    expect(await pointed.json()).toMatchObject({ id: asha.id });
+
+    // A ticket that does not exist gets nothing at all.
+    expect((await post("/v1/auth/recovery", { ticket: "A".repeat(43) })).status).toBe(401);
+    await hangUp(inbox);
+  });
+
+  it("is refused when it is not the shape of a backup", async () => {
+    const asha = await member("asha@example.com", "asha");
+    const { inbox } = await tryLogin(asha);
+    expect(await store(inbox, { salt: "not base64!", kdf: "pbkdf2", blob: btoa("x") })).toMatchObject({
+      t: "failed",
+      code: "bad_recovery",
+    });
+    expect(await store(inbox, { salt: btoa("0123456789abcdef"), kdf: "pbkdf2", blob: "" })).toMatchObject({
+      t: "failed",
+      code: "bad_recovery",
+    });
+    // Bigger than any identity backup could be.
+    expect(await store(inbox, { ...SEALED, blob: btoa("x".repeat(9000)) })).toMatchObject({ t: "failed" });
+    expect(await env.DB.prepare("SELECT 1 FROM recovery WHERE maun_id = ?").bind(asha.id).first()).toBeNull();
+    await hangUp(inbox);
+  });
+
+  it("is forgotten when the member starts a new ID over it", async () => {
+    const bob = await member("bob@example.com", "bob");
+    const { inbox } = await tryLogin(bob);
+    expect(await store(inbox)).toMatchObject({ t: "saved" });
+    await hangUp(inbox);
+
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
+    const ticket = await ticketFor("bob@example.com");
+    expect((await post("/v1/auth/replace", { ticket })).status).toBe(200);
+    const bobNew = await makeUser();
+    const again = await tryRegister(bobNew, ticket);
+    expect(again.answer).toMatchObject({ t: "ready" });
+    // There is no old account left to recover, so its sealed copy goes too.
+    expect(await env.DB.prepare("SELECT 1 FROM recovery WHERE maun_id = ?").bind(bob.id).first()).toBeNull();
+    await hangUp(again.inbox);
+  });
+
+  it("can be taken away by the account that left it", async () => {
+    const asha = await member("asha@example.com", "asha");
+    const { inbox } = await tryLogin(asha);
+    expect(await store(inbox)).toMatchObject({ t: "saved" });
+    const id = requestId();
+    inbox.sendJson({ t: "drop_recovery", id });
+    expect(await inbox.nextJson()).toMatchObject({ t: "saved", id });
+    expect(await env.DB.prepare("SELECT 1 FROM recovery WHERE maun_id = ?").bind(asha.id).first()).toBeNull();
+    await hangUp(inbox);
+  });
+
 });

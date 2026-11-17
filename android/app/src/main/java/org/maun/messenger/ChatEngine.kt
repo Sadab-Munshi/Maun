@@ -473,6 +473,38 @@ class ChatEngine(
      */
     suspend fun withdrawPush(): Boolean = syncPush()
 
+    /**
+     * Leaves the sealed copy of this account's identity on the relay, or (with
+     * null) has the relay throw away the one it has. Returns why it could not,
+     * in words for the screen, or null.
+     *
+     * The relay is given ciphertext and nothing else: it cannot open it, check
+     * the passphrase, or tell whether what it was handed is a backup at all.
+     */
+    suspend fun putRecovery(salt: String, kdf: String, blob: String): String? = recoveryFrame(
+        JSONObject().put("t", "put_recovery").put("salt", salt).put("kdf", kdf).put("blob", blob),
+    )
+
+    suspend fun dropRecovery(): String? = recoveryFrame(JSONObject().put("t", "drop_recovery"))
+
+    private suspend fun recoveryFrame(frame: JSONObject): String? {
+        val link = link ?: return "Maun is not connected to the relay. Try again in a moment."
+        return try {
+            val answer = link.request(frame)
+            if (answer.optString("t") == "saved") {
+                null
+            } else {
+                when (answer.optString("code")) {
+                    "bad_recovery" -> "The relay would not take that backup: it is not the shape of one."
+                    "no_members" -> "This relay has no accounts to recover."
+                    else -> "The relay could not keep the backup just now."
+                }
+            }
+        } catch (e: Exception) {
+            e.message ?: "The relay could not keep the backup just now."
+        }
+    }
+
     // ---- Called by the app ---------------------------------------------------
 
     /** Queues [text] for [peer], who must be a contact. Returns as soon as it is saved. */

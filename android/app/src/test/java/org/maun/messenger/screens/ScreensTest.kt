@@ -50,6 +50,7 @@ import org.maun.messenger.ui.MaunTheme
 import org.maun.messenger.ui.PermissionSetupState
 import org.maun.messenger.ui.PermissionsScreen
 import org.maun.messenger.ui.PrivacyUi
+import org.maun.messenger.Messenger
 import org.maun.messenger.ui.ProfileScreen
 import org.maun.messenger.ui.SettingsScreen
 import org.maun.messenger.ui.SignedOutScreen
@@ -515,6 +516,7 @@ class ScreensTest {
             sharingPending = !hasPhoto,
             onShowCode = {},
             onBack = {},
+            recovery = Messenger.RecoveryUi(on = true, at = 1),
             onLogOut = {},
         )
     }
@@ -523,6 +525,28 @@ class ScreensTest {
     // Tall enough for the whole page, including Log out, in one picture.
     @Config(qualifiers = "w360dp-h1500dp-xhdpi")
     fun profile() = shoot("profile") { Profile() }
+
+    @Test
+    fun loginExistingAccount() = shoot("login-existing") {
+        LoginScreen(
+            relayName = "maun.example.workers.dev",
+            ui = LoginUi(step = LoginUi.Step.Existing, email = "asha@example.com", existing = LoginUi.Existing("ab12".repeat(16), "asha", true)),
+            checking = false,
+            onEmail = {}, onCode = {}, onUsername = {}, onStartOver = {},
+            onRestore = {}, onStartNewIdentity = {},
+        )
+    }
+
+    @Test
+    fun loginWithoutABackup() = shoot("login-no-backup") {
+        LoginScreen(
+            relayName = "maun.example.workers.dev",
+            ui = LoginUi(step = LoginUi.Step.Existing, email = "asha@example.com", existing = LoginUi.Existing("ab12".repeat(16), "asha", false)),
+            checking = false,
+            onEmail = {}, onCode = {}, onUsername = {}, onStartOver = {},
+            onRestore = {}, onStartNewIdentity = {},
+        )
+    }
 
     @Test
     fun signedOut() = shoot("signed-out") {

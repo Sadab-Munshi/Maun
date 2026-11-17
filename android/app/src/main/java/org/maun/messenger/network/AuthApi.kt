@@ -1,6 +1,7 @@
 package org.maun.messenger.network
 
 import java.io.IOException
+import java.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
@@ -35,9 +36,30 @@ class AuthApi(relayUrl: HttpUrl, private val http: OkHttpClient = RelayClient.de
     private val base = relayUrl.newBuilder().encodedPath("/").build()
 
     sealed interface Verified {
-        /** [username] is the one this address already has, or null for a new member. */
-        data class Ok(val ticket: String, val username: String?) : Verified
+        /**
+         * [username] is the one this address already has, or null for a new
+         * member of this relay. [id] is the Maun ID the address is tied to, when
+         * it already has one: a phone with new keys is not that ID, so it has
+         * to either restore it or say it is starting again. [hasRecovery] says
+         * whether that ID left a sealed backup that could be restored.
+         */
+        data class Ok(
+            val ticket: String,
+            val username: String?,
+            val id: String? = null,
+            val hasRecovery: Boolean = false,
+        ) : Verified
         data class Problem(val message: String) : Verified
+    }
+
+    /** A sealed identity backup, as the relay keeps it. */
+    data class Backup(val salt: ByteArray, val kdf: String, val blob: ByteArray, val id: String)
+
+    sealed interface Found {
+        data class Ok(val backup: Backup) : Found
+        /** This address has an ID, and that ID left no backup. */
+        data object NoBackup : Found
+        data class Problem(val message: String) : Found
     }
 
     /** Asks for a code to be sent to [email]. Returns null when it is on its way. */
@@ -52,7 +74,37 @@ class AuthApi(relayUrl: HttpUrl, private val http: OkHttpClient = RelayClient.de
         val ticket = body.optString("ticket")
         if (status != 200 || !TICKET.matches(ticket)) return Verified.Problem(explain(status, body))
         val username = if (body.isNull("username")) null else body.optString("username").ifEmpty { null }
-        return Verified.Ok(ticket, username)
+        val id = if (body.isNull("id")) null else body.optString("id").ifEmpty { null }
+        return Verified.Ok(ticket, username, id, body.optBoolean("hasRecovery"))
+    }
+
+    /** Fetches the sealed backup of the ID this ticket's address is tied to. */
+    suspend fun recovery(ticket: String): Found {
+        val (status, body) = post("v1/auth/recovery", JSONObject().put("ticket", ticket)) ?: return Found.Problem(UNREACHABLE)
+        if (status == 404) return Found.NoBackup
+        if (status != 200) return Found.Problem(explain(status, body))
+        return try {
+            Found.Ok(
+                Backup(
+                    salt = Base64.getDecoder().decode(body.getString("salt")),
+                    kdf = body.optString("kdf"),
+                    blob = Base64.getDecoder().decode(body.getString("blob")),
+                    id = body.getString("id"),
+                ),
+            )
+        } catch (_: Exception) {
+            Found.Problem("That backup is not one this version of Maun can open.")
+        }
+    }
+
+    /**
+     * Says, in as many words, that a new ID is to take the place of the one
+     * this address already has. Nothing on the relay changes until the login
+     * that follows it, and that login is the last thing the old ID sees.
+     */
+    suspend fun replace(ticket: String): String? {
+        val (status, body) = post("v1/auth/replace", JSONObject().put("ticket", ticket)) ?: return UNREACHABLE
+        return if (status == 200) null else explain(status, body)
     }
 
     /** Puts [username] on the ticket. Returns null when it is theirs. */

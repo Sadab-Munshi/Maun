@@ -39,6 +39,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.maun.messenger.crypto.ContactCode
 import org.maun.messenger.crypto.DeviceKey
 import org.maun.messenger.crypto.Identity
+import org.maun.messenger.crypto.Recovery
 import org.maun.messenger.crypto.SignalSessions
 import org.maun.messenger.data.AccountEntity
 import org.maun.messenger.data.AppDatabase
@@ -187,6 +188,14 @@ class Messenger(context: Context) {
      */
     @Volatile
     private var accessToken: String? = null
+
+    /**
+     * The ticket of a login that turned out to be for an address that already
+     * has a Maun ID. What happens next — restoring it, or starting again over
+     * it — is decided with the person before it is shown to the relay.
+     */
+    @Volatile
+    private var restoreTicket: String? = null
 
     @Volatile
     private var files: FileTransfers? = null
@@ -407,6 +416,10 @@ class Messenger(context: Context) {
         }
         accessToken = savedToken
         _signedOut.value = withContext(Dispatchers.IO) { db.meta().get(KEY_SIGNED_OUT) == "1" }
+        _recovery.value = withContext(Dispatchers.IO) {
+            val at = db.meta().get(KEY_RECOVERY_SEALED_AT)?.toLongOrNull() ?: 0
+            RecoveryUi(on = at > 0, at = at)
+        }
         _memberEmail.value = savedEmail
         _banned.value = wasBanned
         _username.value = withContext(Dispatchers.IO) { db.meta().get(KEY_USERNAME)?.ifEmpty { null } }
@@ -590,8 +603,30 @@ class Messenger(context: Context) {
         /** A new member: a username has to be picked first. */
         data object NeedsUsername : LoginStep
 
+        /**
+         * This email address already has a Maun ID ([id], called [username] on
+         * the relay), and this phone is not it. Nothing has been changed yet.
+         * [hasRecovery] says whether that ID left a sealed backup that can be
+         * opened with its passphrase; if it did not, the only way on is to say
+         * on purpose that a new ID is to take its place.
+         */
+        data class ExistingAccount(
+            val id: String,
+            val username: String?,
+            val hasRecovery: Boolean,
+        ) : LoginStep
+
+        /** How restoring the existing ID went. [problem] is null when it worked. */
+        data class Restored(val problem: String? = null) : LoginStep
+
+        /** How starting a new ID over the existing one went. */
+        data class Replaced(val problem: String? = null) : LoginStep
+
         data class Problem(val message: String) : LoginStep
     }
+
+    /** Where this account stands with a sealed backup, for the profile screen. */
+    data class RecoveryUi(val on: Boolean = false, /** When the last backup was left on the relay, in millis. */ val at: Long = 0)
 
     /** Asks the relay to send a login code to [email]. Returns why it could not, or null. */
     suspend fun requestLoginCode(email: String): String? =
@@ -602,15 +637,163 @@ class Messenger(context: Context) {
         val api = auth ?: return LoginStep.Problem(NOT_READY)
         return when (val answer = api.verify(email.trim(), code.filter { it.isDigit() })) {
             is AuthApi.Verified.Problem -> LoginStep.Problem(answer.message)
-            is AuthApi.Verified.Ok ->
-                if (answer.username == null) {
-                    unnamedTicket = answer.ticket
-                    LoginStep.NeedsUsername
-                } else {
-                    presentTicket(answer.ticket)
-                    LoginStep.Done
+            is AuthApi.Verified.Ok -> {
+                val own = (_account.value as? AccountState.Present)?.code?.id
+                when {
+                    // The address has an ID, and this phone is not that ID. It
+                    // is offered the sealed backup, and nothing else happens
+                    // until the person answers: no account is touched, no
+                    // mailbox is retired, nothing waiting is thrown away.
+                    answer.id != null && answer.id != own -> {
+                        restoreTicket = answer.ticket
+                        LoginStep.ExistingAccount(answer.id, answer.username, answer.hasRecovery)
+                    }
+                    answer.username == null -> {
+                        unnamedTicket = answer.ticket
+                        LoginStep.NeedsUsername
+                    }
+                    else -> {
+                        presentTicket(answer.ticket)
+                        LoginStep.Done
+                    }
                 }
+            }
         }
+    }
+
+    /**
+     * Restores the ID this address already has, from the sealed backup on the
+     * relay, and signs in as it.
+     *
+     * The relay is never asked to hand the ID over: what is fetched is
+     * ciphertext, and the passphrase is tried here, on the phone. Only if the
+     * backup opens *and* is the ID the relay named for this address is it
+     * installed; anything else is refused, and this phone stays as it was.
+     */
+    suspend fun restoreAccount(passphrase: CharArray): LoginStep {
+        val api = auth ?: return LoginStep.Restored(NOT_READY)
+        val ticket = restoreTicket ?: return LoginStep.Restored("That login has run out. Please start again.")
+        val found = api.recovery(ticket)
+        val backup = when (found) {
+            is AuthApi.Found.Problem -> return LoginStep.Restored(found.message)
+            AuthApi.Found.NoBackup -> return LoginStep.Restored(
+                "There is no recovery backup for this account, so its keys cannot be brought to this phone.",
+            )
+            is AuthApi.Found.Ok -> found.backup
+        }
+        val contents = try {
+            Recovery.open(passphrase, backup.salt, backup.blob, backup.id)
+        } catch (_: Recovery.WrongPassphrase) {
+            return LoginStep.Restored("That passphrase does not open this backup.")
+        } catch (_: Recovery.NotMine) {
+            return LoginStep.Restored("That backup belongs to a different account.")
+        }
+        installIdentity(contents)
+        restoreTicket = null
+        // The relay is shown the ticket again, this time from the old ID: the
+        // account, its username, its badge and its picture are all still its.
+        presentTicket(ticket)
+        return LoginStep.Restored()
+    }
+
+    /**
+     * Says on purpose that a new ID is to take the place of the one this
+     * address has. Everything the old ID had — its username, its badge, its
+     * picture, anything waiting for it — goes with it, and the people who write
+     * to it are told it is gone. Nothing here can bring its messages back.
+     */
+    suspend fun startNewIdentity(): LoginStep {
+        val api = auth ?: return LoginStep.Replaced(NOT_READY)
+        val ticket = restoreTicket ?: return LoginStep.Replaced("That login has run out. Please start again.")
+        api.replace(ticket)?.let { return LoginStep.Replaced(it) }
+        restoreTicket = null
+        presentTicket(ticket)
+        return LoginStep.Replaced()
+    }
+
+    /**
+     * Puts a restored identity in place of the one this phone made for itself.
+     * The database is empty at this point (the account is being set up), so the
+     * sessions and pre-keys made for the new ID are thrown away with it.
+     */
+    private suspend fun installIdentity(contents: Recovery.Contents) = setup.withLock {
+        val db = database ?: throw RelayException(NOT_READY)
+        val current = _account.value
+        check(current is AccountState.Present) { NOT_READY }
+        closeConnection()
+        val row = AccountEntity(
+            relayUrl = current.relayUrl,
+            identityKeyPair = contents.identity,
+            registered = false,
+            createdAt = System.currentTimeMillis(),
+        )
+        withContext(Dispatchers.IO) {
+            db.inTransaction {
+                db.signal().clearSessions()
+                db.signal().clearPreKeys()
+                db.signal().clearKyberUses()
+            }
+            db.meta().put(MetaEntry(KEY_REGISTRATION_ID, contents.registrationId.toString()))
+            // A mailbox this phone has not been woken on yet.
+            db.meta().put(MetaEntry(KEY_PUSH_UPLOADED, ""))
+            // The picture this account already has on the relay: its record is
+            // what opens it, and it came inside the backup.
+            db.meta().put(MetaEntry(ProfilePictures.KEY_SELF, contents.avatar))
+            db.account().put(row)
+        }
+        open(db, row)
+    }
+
+    // ---- Sealed identity backup ------------------------------------------------
+
+    private val _recovery = MutableStateFlow(RecoveryUi())
+
+    /** Whether this account can be recovered on another phone, and when it last could. */
+    val recovery: StateFlow<RecoveryUi> = _recovery.asStateFlow()
+
+    /**
+     * Leaves a sealed copy of this account on the relay. The passphrase is used
+     * here and nowhere else: what the relay gets is ciphertext, and it is told
+     * nothing that would let it open it. Returns why it could not, or null.
+     */
+    suspend fun enableRecovery(passphrase: CharArray): String? {
+        if (!Recovery.isStrongEnough(passphrase)) {
+            return "Use a passphrase of at least ${Recovery.MIN_PASSPHRASE} characters. It is the only thing " +
+                "that can open this backup."
+        }
+        val db = database ?: return NOT_READY
+        val account = _account.value as? AccountState.Present ?: return NOT_READY
+        val contents = withContext(Dispatchers.IO) {
+            Recovery.Contents(
+                maunId = account.code.id,
+                identity = db.account().get()?.identityKeyPair ?: return@withContext null,
+                registrationId = db.meta().get(KEY_REGISTRATION_ID)?.toIntOrNull() ?: 0,
+                avatar = db.meta().get(ProfilePictures.KEY_SELF).orEmpty(),
+            )
+        } ?: return NOT_READY
+        if (contents.identity.isEmpty()) return NOT_READY
+        val sealed = Recovery.seal(passphrase, contents)
+        val encoder = java.util.Base64.getEncoder()
+        val problem = engine?.putRecovery(
+            encoder.encodeToString(sealed.salt),
+            sealed.kdf,
+            encoder.encodeToString(sealed.blob),
+        )
+        if (problem != null) return problem
+        val at = System.currentTimeMillis()
+        withContext(Dispatchers.IO) { db.meta().put(MetaEntry(KEY_RECOVERY_SEALED_AT, at.toString())) }
+        _recovery.value = RecoveryUi(on = true, at = at)
+        return null
+    }
+
+    /** Has the relay throw the sealed copy away: this account is not recoverable any more. */
+    suspend fun disableRecovery(): String? {
+        val db = database ?: return NOT_READY
+        val problem = engine?.dropRecovery()
+        if (problem != null) return problem
+        withContext(Dispatchers.IO) { db.meta().put(MetaEntry(KEY_RECOVERY_SEALED_AT, "")) }
+        _recovery.value = RecoveryUi()
+        return null
     }
 
     /** A new member's choice of username. */
@@ -1207,6 +1390,7 @@ class Messenger(context: Context) {
         private const val KEY_USERNAME = "username"
         private const val KEY_AWAITING = "awaiting_approval"
         private const val KEY_SIGNED_OUT = "signed_out"
+        private const val KEY_RECOVERY_SEALED_AT = "recovery_sealed_at"
         private const val TICKET_SHOWN_WAIT_MILLIS = 3_000L
         /** Five minutes of speech are well under a megabyte; nothing bigger is played from memory. */
         private const val MAX_VOICE_BYTES = 4_000_000L

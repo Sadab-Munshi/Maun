@@ -209,6 +209,9 @@ export type OneTimeKey = { id: number; key: Uint8Array };
 /** What someone needs to start an encrypted session with a mailbox's owner. */
 export type KeyBundle = { regId: number; spk: SignedKey; kpk: SignedKey; otk: OneTimeKey | null };
 
+/** The most a sealed identity backup may be: a key pair and a few small records. */
+export const MAX_RECOVERY_BYTES = 8192;
+
 export type ClientFrame =
   /** `access`: a ticket from the email login, for a member-only relay that does not know this ID yet. */
   /** `dev`: which phone this is. A member-only relay looks at it before letting the phone in. */
@@ -230,6 +233,15 @@ export type ClientFrame =
   /** `key` and `auth` are the Web Push keys the phone's push app handed out. */
   | { t: "put_push"; id: string; url: string; key: Uint8Array; auth: Uint8Array }
   | { t: "drop_push"; id: string }
+  /**
+   * Leaves a sealed copy of this account's identity on the relay, so that a
+   * phone that is gone can be recovered. `salt`, `kdf` and `blob` are the
+   * ciphertext and the recipe for the key that opens it; the passphrase is
+   * never sent anywhere. Member-only relays.
+   */
+  | { t: "put_recovery"; id: string; salt: string; kdf: string; blob: string }
+  /** Throws that copy away: this account is not to be recoverable any more. */
+  | { t: "drop_recovery"; id: string }
   /** Looks a member up, by username (`name`) or by ID (`user`). Member-only relays. */
   | { t: "find"; id: string; name: string | null; user: string | null }
   /**
@@ -321,7 +333,11 @@ export type FailureCode =
   /** The ID written to is no longer anybody's: its owner set Maun up again, or left. */
   | "gone"
   /** The wake-up address or its keys are not ones the relay will use. */
-  | "bad_push";
+  | "bad_push"
+  /** The sealed backup is not the shape of one, or is too big to be one. */
+  | "bad_recovery"
+  /** This relay has no member list, so it has no account to recover. */
+  | "no_members";
 
 export type ErrorCode =
   | "bad_frame"
@@ -336,7 +352,13 @@ export type ErrorCode =
   | "access_required"
   /** Member-only relay: the administrator has not approved this member yet. */
   | "pending"
-  | "banned";
+  | "banned"
+  /**
+   * Member-only relay: this address already has a Maun ID, and this phone is
+   * not it. The app restores that ID from its sealed backup, or asks to start
+   * a new one (see `replace` on the auth routes). Nothing was changed.
+   */
+  | "identity_conflict";
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
@@ -451,6 +473,20 @@ export function parseClientFrame(raw: string | ArrayBuffer): ClientFrame | Error
     case "drop_push":
       if (!isRequestId(frame.id)) return "bad_frame";
       return { t: "drop_push", id: frame.id };
+    case "put_recovery": {
+      // Only the shape is checked here; whether it is a backup at all is
+      // answered with a reason, so the app can say so.
+      if (!isRequestId(frame.id)) return "bad_frame";
+      const { salt, kdf, blob } = frame;
+      // The size and the base64 are the mailbox's business: it answers
+      // `bad_recovery`, which the app can put into words. The frame limit
+      // already keeps an absurd body from reaching this point.
+      if (typeof salt !== "string" || typeof kdf !== "string" || typeof blob !== "string") return "bad_frame";
+      return { t: "put_recovery", id: frame.id, salt, kdf, blob };
+    }
+    case "drop_recovery":
+      if (!isRequestId(frame.id)) return "bad_frame";
+      return { t: "drop_recovery", id: frame.id };
     case "find": {
       if (!isRequestId(frame.id)) return "bad_frame";
       const name = typeof frame.name === "string" ? frame.name.trim().toLowerCase().replace(/^@/, "") : null;
