@@ -222,7 +222,9 @@ private fun ChatRowItem(row: ChatRow, verified: Boolean, onClick: () -> Unit) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    VerifiedBadge(verified)
+                    // A mark, not a button: a tap anywhere on the row, the
+                    // tick included, opens the conversation.
+                    VerifiedBadge(verified, explainable = false)
                 }
                 if (last != null) {
                     Text(

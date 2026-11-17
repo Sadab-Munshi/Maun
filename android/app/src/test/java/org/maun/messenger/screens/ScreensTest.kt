@@ -391,8 +391,8 @@ class ScreensTest {
     ) = CallUi(asha.id, incoming, phase, connectedAt, muted, route, routes, ended, video, canVideo = true)
 
     @Composable
-    private fun Call(call: CallUi) {
-        CallScreen(call = call, name = asha.name, actions = CallActions(), now = { 1_000_000 })
+    private fun Call(call: CallUi, verified: Boolean = false) {
+        CallScreen(call = call, name = asha.name, actions = CallActions(), verified = verified, now = { 1_000_000 })
     }
 
     @Test
@@ -407,6 +407,22 @@ class ScreensTest {
     // The pictures of a video call cannot be drawn here; what can is the screen that asks to take one.
     @Test
     fun callIncomingVideo() = shoot("call-incoming-video") { Call(call(incoming = true, phase = CallUi.Phase.Ringing, video = true)) }
+
+    // The administrators' tick is on the call screen too, beside the name, for
+    // an account that has one.
+    @Test
+    fun callIncomingVerified() = shoot("call-incoming-verified") {
+        Call(call(incoming = true, phase = CallUi.Phase.Ringing), verified = true)
+    }
+
+    @Test
+    @Config(qualifiers = "+night")
+    fun callActiveVerifiedDark() = shoot("call-active-verified-dark") {
+        Call(
+            call(incoming = false, phase = CallUi.Phase.Active, connectedAt = 1_000_000 - 41_000),
+            verified = true,
+        )
+    }
 
     @Test
     fun callOutgoing() = shoot("call-outgoing") { Call(call(incoming = false, phase = CallUi.Phase.Ringing, route = AudioRoute.Speaker)) }

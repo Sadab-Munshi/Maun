@@ -73,9 +73,13 @@ import org.maun.messenger.crypto.QrCodec
  * It is drawn only when the relay says so, and it is a different thing from
  * the safety number having been checked. Tapping it says what it does and does
  * not mean, in as many words, because a tick invites more trust than it carries.
+ *
+ * [explainable] is false where a tap belongs to something else: in a list of
+ * chats, a tap on the row opens the conversation, so the tick must not take
+ * that tap and do nothing with it. There it is a mark, not a button.
  */
 @Composable
-fun VerifiedBadge(verified: Boolean, modifier: Modifier = Modifier) {
+fun VerifiedBadge(verified: Boolean, modifier: Modifier = Modifier, explainable: Boolean = true) {
     if (!verified) return
     var explaining by remember { mutableStateOf(false) }
     // Image, not Icon: an Icon would paint the whole shape in one colour and
@@ -83,12 +87,16 @@ fun VerifiedBadge(verified: Boolean, modifier: Modifier = Modifier) {
     Image(
         painter = rememberVectorPainter(MaunIcons.Verified),
         contentDescription = "Verified account",
-        modifier = modifier
-            .size(16.dp)
-            .clip(CircleShape)
-            .clickable(onClickLabel = "What this tick means") { explaining = true },
+        modifier = if (explainable) {
+            modifier
+                .size(16.dp)
+                .clip(CircleShape)
+                .clickable(onClickLabel = "What this tick means") { explaining = true }
+        } else {
+            modifier.size(16.dp)
+        },
     )
-    if (explaining) {
+    if (explainable && explaining) {
         AlertDialog(
             onDismissRequest = { explaining = false },
             icon = {

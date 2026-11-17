@@ -75,6 +75,8 @@ fun CallScreen(
     name: String,
     actions: CallActions,
     video: CallVideo? = null,
+    /** The relay says this account carries Maun's administrators' tick. */
+    verified: Boolean = false,
     now: () -> Long = SystemClock::elapsedRealtime,
 ) {
     var clock by remember { mutableLongStateOf(now()) }
@@ -97,14 +99,21 @@ fun CallScreen(
     val pictures = call.video && video != null && !ringingHere && call.phase != CallUi.Phase.Ended
 
     if (pictures && video != null) {
-        VideoCall(call, name, status, actions, video)
+        VideoCall(call, name, status, actions, video, verified)
     } else {
-        VoiceCall(call, name, status, ringingHere, actions)
+        VoiceCall(call, name, status, ringingHere, actions, verified)
     }
 }
 
 @Composable
-private fun VoiceCall(call: CallUi, name: String, status: String, ringingHere: Boolean, actions: CallActions) {
+private fun VoiceCall(
+    call: CallUi,
+    name: String,
+    status: String,
+    ringingHere: Boolean,
+    actions: CallActions,
+    verified: Boolean,
+) {
     val colors = MaterialTheme.colorScheme
     Surface(modifier = Modifier.fillMaxSize(), color = colors.background) {
         Column(
@@ -113,15 +122,27 @@ private fun VoiceCall(call: CallUi, name: String, status: String, ringingHere: B
         ) {
             Spacer(modifier = Modifier.weight(1f))
             Avatar(id = call.peer, name = name, size = 112.dp)
-            Text(
-                text = name,
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.SemiBold,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 24.dp),
-            )
+            // Who it is, with the tick if the administrators gave the account
+            // one: a call is no place to leave the tick behind. It is a mark
+            // here, not a button, so a tap cannot open anything mid-call.
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 24.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = name,
+                    modifier = Modifier.weight(1f, fill = false),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (verified) {
+                    VerifiedBadge(true, modifier = Modifier.padding(start = 8.dp), explainable = false)
+                }
+            }
             Text(
                 text = status,
                 style = MaterialTheme.typography.titleMedium,
@@ -221,7 +242,14 @@ private fun RouteButton(
  * sits small in a corner, and the name, the time and the buttons lie over it.
  */
 @Composable
-private fun VideoCall(call: CallUi, name: String, status: String, actions: CallActions, video: CallVideo) {
+private fun VideoCall(
+    call: CallUi,
+    name: String,
+    status: String,
+    actions: CallActions,
+    video: CallVideo,
+    verified: Boolean,
+) {
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         VideoView(video, video.remote, mirror = false, onTop = false, modifier = Modifier.fillMaxSize())
         if (!call.remoteVideo) {
@@ -235,14 +263,20 @@ private fun VideoCall(call: CallUi, name: String, status: String, actions: CallA
         ) {
             Row(verticalAlignment = Alignment.Top) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = name,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = name,
+                            modifier = Modifier.weight(1f, fill = false),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (verified) {
+                            VerifiedBadge(true, modifier = Modifier.padding(start = 6.dp), explainable = false)
+                        }
+                    }
                     Text(text = status, style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.85f))
                 }
                 if (call.cameraOn) {

@@ -54,6 +54,10 @@ class MainActivity : ComponentActivity() {
                 val screens = rememberSaveableStateHolder()
                 val call by messenger.calls.state.collectAsStateWithLifecycle()
                 val contacts by messenger.contacts.collectAsStateWithLifecycle()
+                // The administrators' tick, as the relay last said it: the
+                // call screen shows it beside the name, the same mark the
+                // conversation shows.
+                val verified by messenger.verified.collectAsStateWithLifecycle()
                 val current = call
                 if (current != null) {
                     // A call comes before everything, the app lock included:
@@ -63,6 +67,7 @@ class MainActivity : ComponentActivity() {
                     CallScreen(
                         call = current,
                         name = contacts.firstOrNull { it.id == current.peer }?.name ?: "Unknown",
+                        verified = verified[current.peer] == true,
                         actions = remember {
                             CallActions(
                                 onAccept = ::answer,
