@@ -49,9 +49,9 @@ object SoundSettings {
 
     /** The notification channel that carries the incoming sound this account chose. */
     fun incomingChannel(context: Context): String = when (incoming(context)) {
-        INCOMING_SYSTEM -> Channel.SYSTEM
-        INCOMING_SILENT -> Channel.SILENT
-        else -> Channel.MAUN
+        INCOMING_SYSTEM -> Channel.SYSTEM.id
+        INCOMING_SILENT -> Channel.SILENT.id
+        else -> Channel.MAUN.id
     }
 
     /** The three channels a message notification can arrive on, one for each choice. */

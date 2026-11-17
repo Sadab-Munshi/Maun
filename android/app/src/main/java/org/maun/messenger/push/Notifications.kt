@@ -48,7 +48,7 @@ class Notifications(context: Context) {
         // this app never puts it back.
         for (channel in messageChannels()) {
             if (manager.getNotificationChannelCompat(channel.id) == null) {
-                manager.createNotificationChannelCompat(channel)
+                manager.createNotificationChannel(channel)
             }
         }
         manager.createNotificationChannelsCompat(
@@ -142,7 +142,7 @@ class Notifications(context: Context) {
     @SuppressLint("MissingPermission")
     fun showMessages(announcement: Announcement, alert: Boolean) {
         if (!allowed) return
-        val channel = SoundSettings.incomingChannel(context).id
+        val channel = SoundSettings.incomingChannel(context)
         val onLockScreen = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Maun")

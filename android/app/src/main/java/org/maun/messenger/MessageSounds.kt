@@ -3,9 +3,9 @@ package org.maun.messenger
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioManager
+import android.media.Ringtone
 import android.media.RingtoneManager
 import android.media.SoundPool
-import android.net.Uri
 import android.util.Log
 
 /**
@@ -16,8 +16,12 @@ import android.util.Log
  *
  * [SoundPool] is what a short sound wants: it is decoded once, mixed without
  * taking the audio focus away from whatever the phone is playing, and plays
- * again immediately when asked. Both sounds are a few kilobytes. Everything it
- * holds is freed by [release], which is called when the app closes.
+ * again immediately when asked. Both of Maun's sounds are a few kilobytes.
+ * The phone's own notification sound is not Maun's to decode, so it is played
+ * as a ringtone on the notification stream instead.
+ *
+ * Everything held here is freed by [release], which is called when the app
+ * closes.
  *
  * Nothing here overrides the phone. Silent mode, Do Not Disturb and a muted
  * notification stream all win over a choice made in Settings.
@@ -29,7 +33,9 @@ class MessageSounds(context: Context) {
     private var pool: SoundPool? = null
     private var sentSample = 0
     private var maunIncoming = 0
-    private var systemIncoming = 0
+
+    /** The phone's own notification sound, played as a ringtone rather than decoded here. */
+    private var systemTone: Ringtone? = null
 
     /**
      * A message was handed to the local sending queue: one short sound, once.
@@ -46,15 +52,8 @@ class MessageSounds(context: Context) {
 
     /** A message arrived while the app is on screen. Once for each that arrives. */
     fun playIncoming() {
-        when (SoundSettings.incoming(app)) {
-            SoundSettings.INCOMING_SILENT -> return
-            else -> Unit
-        }
         if (!audible()) return
-        val pool = pool() ?: return
-        val sample = if (SoundSettings.incoming(app) == SoundSettings.INCOMING_SYSTEM) systemIncoming else maunIncoming
-        if (sample == 0) return
-        play(pool, sample)
+        playChoice(SoundSettings.incoming(app))
     }
 
     /** Plays the sound the user is trying out in Settings, whether or not it is the one in use. */
@@ -64,20 +63,59 @@ class MessageSounds(context: Context) {
     }
 
     fun previewIncoming(choice: String = SoundSettings.incoming(app)) {
-        if (choice == SoundSettings.INCOMING_SILENT) return
-        val pool = pool() ?: return
-        val sample = if (choice == SoundSettings.INCOMING_SYSTEM) systemIncoming else maunIncoming
-        if (sample != 0) play(pool, sample)
+        playChoice(choice)
+    }
+
+    private fun playChoice(choice: String) {
+        when (choice) {
+            SoundSettings.INCOMING_SILENT -> Unit
+            SoundSettings.INCOMING_SYSTEM -> playSystemTone()
+            else -> {
+                val pool = pool() ?: return
+                if (maunIncoming != 0) play(pool, maunIncoming)
+            }
+        }
+    }
+
+    /**
+     * The phone's own notification sound, which is a file somewhere on the
+     * phone rather than one of Maun's own, so Android plays it as a ringtone
+     * on the notification stream. It stops being asked for after a few
+     * seconds, the way a notification sound does.
+     */
+    private fun playSystemTone() {
+        try {
+            val tone = systemTone ?: RingtoneManager
+                .getRingtone(app, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION))
+                ?.also {
+                    it.audioAttributes = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                    synchronized(this) { systemTone = it }
+                }
+            if (tone == null) return
+            if (tone.isPlaying) tone.stop()
+            tone.play()
+        } catch (e: Exception) {
+            // A sound is never worth a crash.
+            Log.w(TAG, "the phone's notification sound could not be played", e)
+        }
     }
 
     /** Frees the decoded sounds. Called when the app closes; playing again loads them again. */
     fun release() {
         synchronized(this) {
+            try {
+                systemTone?.stop()
+            } catch (_: Exception) {
+                // Nothing to stop, or the phone has taken it away.
+            }
+            systemTone = null
             pool?.release()
             pool = null
             sentSample = 0
             maunIncoming = 0
-            systemIncoming = 0
         }
     }
 
@@ -103,14 +141,6 @@ class MessageSounds(context: Context) {
                 .build()
             sentSample = made.load(app, R.raw.message_sent_sound, 1)
             maunIncoming = made.load(app, R.raw.incoming_message_ringtone1, 1)
-            // The phone's own notification sound, if it has one. Playing it
-            // through the same pool keeps both sounds on one mechanism.
-            systemIncoming = try {
-                val ringtone: Uri? = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-                if (ringtone == null) 0 else made.load(app, ringtone, 1)
-            } catch (_: Exception) {
-                0
-            }
             pool = made
             made
         } catch (e: Exception) {
