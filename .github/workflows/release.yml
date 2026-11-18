@@ -46,7 +46,16 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - uses: gradle/actions/setup-gradle@v5
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Install the NDK
+        # Only to strip debug symbols from libsignal, SQLCipher and WebRTC.
+        # Without it the build still succeeds, and the APK is three times the
+        # size: 92 MB against 30 MB.
+        run: |
+          ndk=$(sed -n 's/.*ndkVersion = "\(.*\)".*/\1/p' app/build.gradle.kts)
+          echo "Installing NDK $ndk"
+          echo y | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$ndk" > /dev/null
 
       - name: Write the signing key
         env:
