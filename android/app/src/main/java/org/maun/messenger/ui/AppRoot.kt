@@ -358,6 +358,9 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                         viewModel.cachedConversation(chatPeer) ?: Conversation(loaded = false)
                                     },
                                 )
+                            // A notification named a message: go to it, in the
+                            // conversation it was about and no other.
+                            val openMessage by viewModel.openMessage.collectAsStateWithLifecycle()
                             val scrollTo = openMessage.takeIf { wanted == chatPeer }
                             val isContact = contacts.any { it.id == chatPeer }
                             // Someone who wrote without being a contact: at least say what they call themselves.
@@ -368,8 +371,6 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             // What each message of this conversation carries, by message ID.
                             val reactions by remember(chatPeer) { viewModel.reactions(chatPeer) }
                                 .collectAsStateWithLifecycle(emptyMap())
-                            // A notification named a message of this conversation: go to it.
-                            val openMessage by viewModel.openMessage.collectAsStateWithLifecycle()
                             val fileProgress by viewModel.fileProgress.collectAsStateWithLifecycle()
                             val fileProblem by viewModel.fileProblem.collectAsStateWithLifecycle()
                             val fileNotice by viewModel.fileNotice.collectAsStateWithLifecycle()
