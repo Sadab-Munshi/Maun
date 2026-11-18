@@ -35,7 +35,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.unit.Dp
@@ -297,23 +296,20 @@ internal fun MaunLogo(size: Dp, modifier: Modifier = Modifier) {
     Canvas(modifier = modifier.size(size)) {
         val w = this.size.width
         val h = this.size.height
-        val body = Path().apply {
-            addRoundRect(
-                RoundRect(
-                    left = w * 0.06f,
-                    top = h * 0.12f,
-                    right = w * 0.94f,
-                    bottom = h * 0.72f,
-                    radius = CornerRadius(w * 0.16f, w * 0.16f),
-                ),
-            )
-            // The tail, below the body on the left.
-            moveTo(w * 0.26f, h * 0.70f)
+        // The body of the bubble, and the tail under its left side.
+        drawRoundRect(
+            color = bubble,
+            topLeft = Offset(w * 0.06f, h * 0.12f),
+            size = Size(w * 0.88f, h * 0.60f),
+            cornerRadius = CornerRadius(w * 0.16f, w * 0.16f),
+        )
+        val tail = Path().apply {
+            moveTo(w * 0.26f, h * 0.68f)
             lineTo(w * 0.26f, h * 0.93f)
-            lineTo(w * 0.46f, h * 0.71f)
+            lineTo(w * 0.47f, h * 0.70f)
             close()
         }
-        drawPath(body, bubble)
+        drawPath(tail, bubble)
         // One line, a hole in the bubble.
         drawRoundRect(
             color = line,
