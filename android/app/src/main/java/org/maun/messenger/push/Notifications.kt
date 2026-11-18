@@ -151,7 +151,7 @@ class Notifications(context: Context) {
                 DeliveryTrace.noticed(DeliveryTrace.CHANNEL_SILENT, "channel=$id")
                 continue
             }
-            if (canRead(sound)) continue
+            if (!needsRepair(sound, canRead(sound))) continue
             if (!repaired.add(id)) {
                 DeliveryTrace.noticed(DeliveryTrace.CHANNEL_REPAIRED, "channel=$id sound=$sound alreadyRepaired=true")
                 continue
@@ -420,6 +420,14 @@ class Notifications(context: Context) {
         const val ID_RINGING = 5
         private const val CHANNEL_RING = "incoming_calls"
         private const val CHANNEL_CALL_ONGOING = "call_ongoing"
+
+        /**
+         * Whether a channel that should make a sound has to be made again: it
+         * has a sound, and that sound cannot be opened. A channel with no
+         * sound at all is not repaired — it is either the silent channel this
+         * app made on purpose or a choice made in Android's own settings.
+         */
+        fun needsRepair(sound: Uri?, readable: Boolean): Boolean = sound != null && !readable
 
         /**
          * The sound a message makes: one of Maun's own, named in the URI so

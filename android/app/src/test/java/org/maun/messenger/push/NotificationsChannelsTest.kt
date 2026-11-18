@@ -4,6 +4,7 @@ import android.app.NotificationManager
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -77,34 +78,18 @@ class NotificationsChannelsTest {
     }
 
     @Test
-    fun `a channel pointing at a sound that cannot be opened is made again`() {
-        // What an install carried through several versions can end up with: a
-        // channel whose sound is a file that is no longer there. A file path
-        // is used rather than a resource number so that the test says what it
-        // means on any machine - what matters is that the sound cannot be
-        // opened, not which kind of address it is.
-        val id = SoundSettings.Channel.MAUN.id
-        val gone = "file:///nowhere/incoming_message_ringtone1.ogg"
-        val attributes = android.media.AudioAttributes.Builder()
-            .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)
-            .build()
-        fun makeSilentChannel() = manager().createNotificationChannel(
-            android.app.NotificationChannel(id, "Messages", NotificationManager.IMPORTANCE_HIGH).apply {
-                setSound(android.net.Uri.parse(gone), attributes)
-            },
-        )
-        makeSilentChannel()
-
-        Notifications(context).createChannels()
-
-        assertEquals(Notifications.maunSoundUri(context.packageName), manager().getNotificationChannel(id).sound.toString())
-
-        // And only once: a phone whose channels cannot be opened for some
-        // other reason must not have them thrown away on every start.
-        manager().deleteNotificationChannel(id)
-        makeSilentChannel()
-        Notifications(context).createChannels()
-        assertEquals("already dealt with, this one is left alone", gone, manager().getNotificationChannel(id).sound.toString())
+    fun `a channel is only made again when its sound is there and cannot be opened`() {
+        // A channel keeps its sound for ever, so an install that has been
+        // through several versions can end up pointing at a sound that no
+        // longer exists: that one is made again, once.
+        val sound = android.net.Uri.parse(Notifications.maunSoundUri("org.maun.messenger"))
+        assertTrue(Notifications.needsRepair(sound, readable = false))
+        // A sound that opens is not touched.
+        assertFalse(Notifications.needsRepair(sound, readable = true))
+        // No sound at all is a choice — the silent channel, or the user's own —
+        // and is never overridden.
+        assertFalse(Notifications.needsRepair(null, readable = false))
+        assertFalse(Notifications.needsRepair(null, readable = true))
     }
 
     @Test

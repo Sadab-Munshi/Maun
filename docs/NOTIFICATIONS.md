@@ -289,6 +289,10 @@ Two real defects were found and fixed:
    ever. It is now addressed by name —
    `android.resource://<package>/raw/incoming_message_ringtone1` — which cannot
    drift between builds.
+   (The decision itself is tested; that deleting and re-creating a channel
+   really does give it the new sound is not something the test environment
+   models — Robolectric keeps the old sound when a channel is made again — so
+   on the phone it is the `channel-repaired` line that says it happened.)
 2. **Nothing noticed when a channel went quiet.** `createChannels` now checks
    the two channels that carry a sound: if the channel's sound cannot be opened,
    that channel is made again, once, and `channel-repaired` is written to
