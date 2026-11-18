@@ -33,12 +33,12 @@ unzip -l maun-release-apk.zip                                 # what is inside t
 On the phone, Settings → Apps → Maun shows the version; a debug install appears
 as a separate entry, Maun (debug).
 
-A release-workflow APK built from a commit after v0.24.0 still carries
-`versionCode 29`, because the version is only raised when a release is made. It
-is an upgrade in content, not in version, so nothing on the phone can tell it
-apart from the published v0.24.0 — and Play Protect will treat it exactly the
-same way. That is expected, and it is why a new build does not change the
-warning.
+A release-workflow APK built from a commit after the newest release still
+carries that release's `versionCode`, because the version is only raised when a
+release is made. It is a change in content, not in version, so nothing on the
+phone can tell it apart from the published build — and Play Protect will treat
+it exactly the same way. That is expected, and it is why a fresh artifact does
+not change the warning.
 
 ## Second: read the message
 
@@ -67,9 +67,9 @@ Facts to paste, all of which are true of this repository:
 ```
 App name:      Maun
 Package name:  org.maun.messenger
-Version:       0.24.0 (versionCode 29), targetSdkVersion 36, minSdkVersion 29
-Binary:        https://github.com/Sadab-Munshi/Maun/releases/download/v0.24.0/maun-0.24.0-29-arm64-v8a.apk
-               sha256 2119e617d7d5732da86db96c979deea3c4d656366a58f279dfaac3702c470cc8
+Version:       0.24.1 (versionCode 30), targetSdkVersion 36, minSdkVersion 29
+Binary:        https://github.com/Sadab-Munshi/Maun/releases/download/v0.24.1/maun-0.24.1-30-arm64-v8a.apk
+               sha256 29dbe9f10a41833be78b835c7d26813f640bdf9fa9fb3821a13021a3a1f724f0
 Source:        https://github.com/Sadab-Munshi/Maun
 Signing cert  35564CDE8213C64B4354421DC57523E7591979A466FD5E0EA81CF4D91C5B41FD
               (the same key for every release; apksigner verify --print-certs)

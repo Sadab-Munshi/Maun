@@ -112,12 +112,16 @@ With that answer:
 ## Verifying a download before installing it
 
 Every release publishes both APKs. These are the checksums of the two files
-attached to v0.24.0, taken from the downloaded assets:
+attached to the newest release, taken from the published assets:
 
 ```
-2119e617d7d5732da86db96c979deea3c4d656366a58f279dfaac3702c470cc8  maun-0.24.0-29-arm64-v8a.apk
-b7bd40a620c1c34f74485a988c036957d458ad182bd118da7c9be9b72a32d8ce  maun-0.24.0-29-armeabi-v7a.apk
+29dbe9f10a41833be78b835c7d26813f640bdf9fa9fb3821a13021a3a1f724f0  maun-0.24.1-30-arm64-v8a.apk
+fb832c2e749550ac5d43d358a7b0b1d61e5344212c51b1c19c9652eb5d46863d  maun-0.24.1-30-armeabi-v7a.apk
 ```
+
+(0.24.0, still installable from its own release page:
+`2119e617…2c470cc8` for `maun-0.24.0-29-arm64-v8a.apk` and `b7bd40a6…a32d8ce`
+for `-armeabi-v7a`.)
 
 On a phone, a file manager that shows a checksum, or `sha256sum` on a computer,
 confirms the file is the one the project published. The signing certificate is
