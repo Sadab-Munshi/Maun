@@ -66,6 +66,44 @@ class NotificationsChannelsTest {
     }
 
     @Test
+    fun `the message sound is named, not numbered`() {
+        // A channel keeps the URI it was made with for ever. A number in it
+        // would point at whatever holds that number in a later build.
+        assertEquals("android.resource://org.maun.messenger/raw/incoming_message_ringtone1", Notifications.maunSoundUri("org.maun.messenger"))
+        Notifications(context).createChannels()
+        val sound = manager().getNotificationChannel(SoundSettings.Channel.MAUN.id).sound
+        assertEquals(Notifications.maunSoundUri(context.packageName), sound.toString())
+        assertTrue("a resource number is not stable across builds", sound.toString().contains("/raw/"))
+    }
+
+    @Test
+    fun `a channel pointing at a sound that cannot be opened is made again`() {
+        // What an install carried through several versions can end up with.
+        val id = SoundSettings.Channel.MAUN.id
+        manager().createNotificationChannel(
+            android.app.NotificationChannel(id, "Messages", NotificationManager.IMPORTANCE_HIGH).apply {
+                setSound(android.net.Uri.parse("android.resource://org.maun.messenger/999999"), null)
+            },
+        )
+        assertEquals("android.resource://org.maun.messenger/999999", manager().getNotificationChannel(id).sound.toString())
+
+        Notifications(context).createChannels()
+
+        assertEquals(Notifications.maunSoundUri(context.packageName), manager().getNotificationChannel(id).sound.toString())
+    }
+
+    @Test
+    fun `a good channel is not thrown away, and the phone sound is never touched`() {
+        Notifications(context).createChannels()
+        val id = SoundSettings.Channel.MAUN.id
+        val before = manager().getNotificationChannel(id).sound.toString()
+        Notifications(context).createChannels()
+        assertEquals(before, manager().getNotificationChannel(id).sound.toString())
+        // The ringing channel is the phone's own ringtone, which is the user's to choose.
+        assertNotNull(manager().getNotificationChannel("incoming_calls").sound)
+    }
+
+    @Test
     fun `each channel says what it is, and never what the message says`() {
         Notifications(context).createChannels()
         for (id in messageChannelIds) {

@@ -121,6 +121,42 @@ Android's own checks still apply on top: Maun never installs anything itself,
 the user may cancel, the package name cannot change, and an update signed with a
 different key is rejected by the system regardless.
 
+## Why an update download stopped partway (Round 18)
+
+"Check for updates" downloaded, and then failed partway through, every time.
+
+The cause was in the download client, not in GitHub and not in the file: the
+OkHttp client used for the update was built with
+`callTimeout(60, TimeUnit.SECONDS)`. A call timeout covers the whole call,
+including reading the body, so every download that took longer than a minute
+was aborted — and 28 MB over a phone network routinely takes longer than a
+minute (28 MB at 3 Mbit/s is about 75 s). The failure had nothing to do with the
+APK, the signature, the ABI or the version code; it was the client stopping
+itself.
+
+What the download does now:
+
+* **No call timeout for the file.** A second client, used only for the APK, has
+  connect 20 s, read 45 s, write 45 s and no overall limit. The read timeout
+  still catches a connection that has genuinely gone quiet. The small API call
+  keeps its one-minute limit.
+* **It carries on where it stopped.** The bytes go into `<name>.apk.part`; a
+  retry asks for `Range: bytes=<have>-` and appends, and only a `206` whose
+  `Content-Range` starts exactly at the end of the file is appended to. A plain
+  `200` means the whole file again (`resumeFrom`, `contentRangeStart`).
+* **A few tries, then a message.** Three attempts, waiting 2 s and then 4 s. A
+  refusal (`4xx`), a file that is not an APK, or a phone with no room stops at
+  once rather than trying again — those do not answer differently in a moment.
+* **Whole, or not at all.** The file is renamed into place only when the last
+  byte arrived *and* the length equals the size GitHub published for that asset.
+  A cut-off download therefore cannot reach the installer, and the signer and
+  version checks in front of the installer are unchanged.
+* **The reason is said in words**: no room on the phone, GitHub refused the
+  file, the file is not Maun's, or the connection dropped and trying again
+  carries on from where it stopped. Each attempt also logs its stage to
+  `adb logcat -s MaunUpdate`: `stage=download-start from=… total=… http=…`,
+  `stage=download-failed attempt=… have=… error=…`, `stage=download-whole`.
+
 ## Play Protect and attribution
 
 Two release-time issues have their own documents:

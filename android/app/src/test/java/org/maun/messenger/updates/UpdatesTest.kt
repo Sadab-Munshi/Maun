@@ -96,6 +96,56 @@ class UpdatesTest {
     }
 
     @Test
+    fun `a download that broke off carries on where it stopped`() {
+        // 206 with the range that was asked for: the rest of the file, appended.
+        assertEquals(1000L, resumeFrom(have = 1000, answered = 206, rangeStartsAt = 1000))
+        // A plain 200 is the whole file again, whatever is on disk.
+        assertEquals(0L, resumeFrom(have = 1000, answered = 200, rangeStartsAt = null))
+        // A range that starts somewhere else is an answer to another question.
+        assertEquals(0L, resumeFrom(have = 1000, answered = 206, rangeStartsAt = 0))
+        assertEquals(0L, resumeFrom(have = 1000, answered = 206, rangeStartsAt = null))
+        // Nothing on disk: nothing to carry on from.
+        assertEquals(0L, resumeFrom(have = 0, answered = 200, rangeStartsAt = null))
+    }
+
+    @Test
+    fun `the range header is read for what it says`() {
+        assertEquals(1000L, contentRangeStart("bytes 1000-2999/3000"))
+        assertEquals(0L, contentRangeStart("bytes 0-2999/3000"))
+        assertNull(contentRangeStart(null))
+        assertNull(contentRangeStart("items 1-2/3"))
+        assertNull(contentRangeStart("bytes */3000"))
+    }
+
+    @Test
+    fun `a download is only whole when it is the size GitHub published`() {
+        assertTrue(isWhole(3000, 3000))
+        assertFalse(isWhole(2999, 3000))
+        assertTrue("GitHub said nothing: nothing to compare", isWhole(3000, null))
+        assertTrue(isWhole(3000, 0))
+        assertFalse("an empty file is never an update", isWhole(0, null))
+    }
+
+    @Test
+    fun `a download is tried a few times, then not for ever`() {
+        assertTrue(shouldTryAgain(attempt = 0, maxAttempts = 3))
+        assertTrue(shouldTryAgain(attempt = 1, maxAttempts = 3))
+        assertFalse(shouldTryAgain(attempt = 2, maxAttempts = 3))
+        assertFalse(shouldTryAgain(attempt = 3, maxAttempts = 3))
+    }
+
+    @Test
+    fun `the size of the file is read from the release`() {
+        val json = """{"tag_name":"v0.24.1","body":"x","assets":[""" +
+            """{"name":"maun-0.24.1-30-arm64-v8a.apk","browser_download_url":"https://example.org/a.apk","size":29806857}]}"""
+        val found = parseRelease(json, listOf("arm64-v8a"))
+        assertEquals(29806857L, found!!.size)
+        // A release that does not say: zero, and the size check then says nothing.
+        val quiet = parseRelease(release(assets = listOf(arm64)), listOf("arm64-v8a"))
+        assertEquals(0L, quiet!!.size)
+    }
+
+    @Test
     fun `only a higher version code is an update`() {
         assertTrue(isNewer(30, 29))
         assertFalse(isNewer(29, 29))

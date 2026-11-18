@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.media.AudioAttributes
+import java.io.File
 import android.media.RingtoneManager
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
@@ -51,6 +52,7 @@ class Notifications(context: Context) {
                 manager.createNotificationChannel(channel)
             }
         }
+        repairSilentChannels()
         manager.createNotificationChannelsCompat(
             listOf(
                 // The ringing itself: the phone's own ringtone, and a vibration, for as long as the call rings.
@@ -94,7 +96,10 @@ class Notifications(context: Context) {
             .setName("Messages")
             .setDescription("Tells you that a message has arrived. Never shows the message.")
             .setSound(
-                Uri.parse("android.resource://${context.packageName}/${R.raw.incoming_message_ringtone1}"),
+                // Named rather than numbered: a channel keeps the URI it was
+                // given for ever, and a number that moves between builds would
+                // leave the notification pointing at a sound that is not there.
+                android.net.Uri.parse(maunSoundUri(context.packageName)),
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -124,6 +129,51 @@ class Notifications(context: Context) {
     }
 
     /**
+     * A channel's sound is fixed when the channel is made and can never be
+     * changed again, so a channel that points at a sound the app can no longer
+     * read stays silent for the life of the install — a notification that
+     * appears with no noise, and nothing anywhere saying why. This looks for
+     * exactly that and makes the channel again, once, when it finds it.
+     *
+     * A channel with no sound at all is left alone: that is either the user
+     * turning the sound off in Android's own settings, or the silent channel
+     * this app made on purpose, and neither is Maun's to override.
+     */
+    private fun repairSilentChannels() {
+        // Each channel is made again at most once, ever: a phone whose
+        // content resolver refuses to open a sound that is perfectly good
+        // would otherwise have its channels thrown away on every start, and
+        // with them whatever the user had set on them.
+        val repaired = settings.getStringSet(KEY_SOUND_CHECKED, emptySet()).orEmpty().toMutableSet()
+        for (id in listOf(SoundSettings.Channel.MAUN.id, SoundSettings.Channel.SYSTEM.id)) {
+            val channel = manager.getNotificationChannelCompat(id) ?: continue
+            val sound = channel.sound ?: run {
+                DeliveryTrace.noticed(DeliveryTrace.CHANNEL_SILENT, "channel=$id")
+                continue
+            }
+            if (canRead(sound)) continue
+            if (!repaired.add(id)) {
+                DeliveryTrace.noticed(DeliveryTrace.CHANNEL_REPAIRED, "channel=$id sound=$sound alreadyRepaired=true")
+                continue
+            }
+            DeliveryTrace.noticed(DeliveryTrace.CHANNEL_REPAIRED, "channel=$id sound=$sound")
+            settings.edit().putStringSet(KEY_SOUND_CHECKED, repaired).apply()
+            manager.deleteNotificationChannel(id)
+            messageChannels().firstOrNull { it.id == id }?.let { manager.createNotificationChannel(it) }
+        }
+    }
+
+    /** Whether the sound a channel points at can actually be opened. The alarm stream cannot: it is not a file. */
+    private fun canRead(uri: Uri): Boolean {
+        if (uri.scheme == "file") return File(uri.path.orEmpty()).isFile
+        return try {
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
      * Whether notifications quote the newest message. On unless the user
      * turned it off; a locked screen never shows the text either way.
      */
@@ -142,8 +192,19 @@ class Notifications(context: Context) {
     @SuppressLint("MissingPermission")
     fun showMessages(announcement: Announcement, alert: Boolean) {
         if (!allowed) return
-        DeliveryTrace.stepped(context, DeliveryTrace.SHOWN, "alert=$alert count=${announcement.total}")
         val channel = SoundSettings.incomingChannel(context)
+        // What Android was told, and what it will therefore do about the sound.
+        // The line that answers "it showed up but made no noise" on a phone
+        // that cannot be attached to anything.
+        val made = manager.getNotificationChannelCompat(channel)
+        DeliveryTrace.stepped(
+            context,
+            DeliveryTrace.SHOWN,
+            "alert=$alert count=${announcement.total} channel=$channel" +
+                " importance=${made?.importance ?: -1}" +
+                " sound=${made?.sound ?: "none"}" +
+                (made?.sound?.let { " readable=${canRead(it)}" } ?: ""),
+        )
         val onLockScreen = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Maun")
@@ -349,6 +410,9 @@ class Notifications(context: Context) {
 
     companion object {
         private const val KEY_SHOW_TEXT = "notify_text"
+
+        /** The channels whose sound has already been looked at, so none is thrown away twice. */
+        private const val KEY_SOUND_CHECKED = "sound_checked"
         const val ID_MESSAGES = 1
         const val ID_CONNECTED = 2
         const val ID_FETCH = 3
@@ -356,6 +420,13 @@ class Notifications(context: Context) {
         const val ID_RINGING = 5
         private const val CHANNEL_RING = "incoming_calls"
         private const val CHANNEL_CALL_ONGOING = "call_ongoing"
+
+        /**
+         * The sound a message makes: one of Maun's own, named in the URI so
+         * that it is still found after the numbers in a new build move.
+         */
+        fun maunSoundUri(packageName: String): String =
+            "android.resource://$packageName/raw/incoming_message_ringtone1"
 
         private const val LEGACY_MESSAGES = "messages"
         private const val CHANNEL_BACKGROUND = "background"

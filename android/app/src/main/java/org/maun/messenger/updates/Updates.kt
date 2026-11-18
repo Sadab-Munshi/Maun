@@ -15,6 +15,8 @@ data class PublishedRelease(
     /** The release notes as written, in plain text. */
     val notes: String,
     val apkUrl: String,
+    /** What GitHub says the file weighs. Zero when it did not say; used to tell a whole download from a cut-off one. */
+    val size: Long = 0L,
 )
 
 /** What the check has found so far, and what can be done about it. */
@@ -66,7 +68,7 @@ fun parseRelease(json: String, abis: List<String>): PublishedRelease? {
             val match = APK_NAME.matchEntire(name) ?: continue
             if (url.isEmpty()) continue
             val (version, code, abi) = match.destructured
-            add(PublishedRelease(version, code.toIntOrNull() ?: continue, notes, url) to abi)
+            add(PublishedRelease(version, code.toIntOrNull() ?: continue, notes, url, asset.optLong("size", 0L)) to abi)
         }
     }
     if (candidates.isEmpty()) return null
@@ -77,6 +79,41 @@ fun parseRelease(json: String, abis: List<String>): PublishedRelease? {
     } ?: candidates.firstOrNull { (_, assetAbi) -> assetAbi == UNIVERSAL }?.first
     return chosen
 }
+
+/**
+ * Where an interrupted download starts from. [have] bytes are already on disk;
+ * [answered] is what the server said to the request that asked for the rest.
+ * Only a 206 that starts exactly where the file stops may be appended to — a
+ * plain 200 is the whole file again, and a range that starts anywhere else is
+ * an answer to a different question.
+ */
+fun resumeFrom(have: Long, answered: Int, rangeStartsAt: Long?): Long = when {
+    have <= 0 -> 0L
+    answered == 206 && rangeStartsAt == have -> have
+    else -> 0L
+}
+
+/** The first byte position in a `Content-Range: bytes 100-799/800` header; null when there is none. */
+fun contentRangeStart(header: String?): Long? {
+    val text = header?.trim() ?: return null
+    if (!text.startsWith("bytes", ignoreCase = true)) return null
+    val first = text.removePrefix("bytes").removePrefix(" ").substringBefore('-', "").trim()
+    return first.toLongOrNull()
+}
+
+/**
+ * Whether a download that has finished is whole. [expected] is the size GitHub
+ * published; nothing can be said when it published none, and a file of no size
+ * at all is never whole.
+ */
+fun isWhole(have: Long, expected: Long?): Boolean = when {
+    have <= 0L -> false
+    expected == null || expected <= 0L -> true
+    else -> have == expected
+}
+
+/** Whether another try is worth making: [attempt] counts the failures so far. */
+fun shouldTryAgain(attempt: Int, maxAttempts: Int): Boolean = attempt + 1 < maxAttempts
 
 /** What the downloaded APK turned out to be, before it is offered to Android's installer. */
 enum class InstallCheck {

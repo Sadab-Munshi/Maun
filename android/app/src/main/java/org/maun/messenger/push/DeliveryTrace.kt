@@ -36,6 +36,12 @@ object DeliveryTrace {
     const val FETCH_WAITING = "fetch-waiting-for-network"
     const val SHOWN = "shown"
 
+    /** A notification channel's sound could not be read, and the channel was made again. */
+    const val CHANNEL_REPAIRED = "channel-repaired"
+
+    /** A notification channel has no sound, which is either the user's choice or the phone's. */
+    const val CHANNEL_SILENT = "channel-silent"
+
     /**
      * A wake-up has arrived, and it was for [kind] ([WAKE] for a message,
      * [CALL] for a call that is ringing). Returns the name of the event, which
@@ -61,6 +67,17 @@ object DeliveryTrace {
         val after = if (since > 0) now - since else 0
         val extra = if (detail.isEmpty()) "" else " $detail"
         Log.i(TAG, "event=$id step=$step at=$now afterWake=${after}ms$extra")
+    }
+
+    /**
+     * A point of its own, outside any wake-up: a notification channel that was
+     * repaired, a sound that cannot be read from the app. Logged all the same,
+     * because these are exactly the things that are invisible when a sound
+     * goes missing on a phone nobody can attach a debugger to.
+     */
+    fun noticed(step: String, detail: String = "") {
+        val extra = if (detail.isEmpty()) "" else " $detail"
+        Log.i(TAG, "step=$step at=${System.currentTimeMillis()}$extra")
     }
 
     /** The newest event, for whoever is looking into a delay. Null when nothing has been woken yet. */

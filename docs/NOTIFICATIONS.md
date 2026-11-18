@@ -259,6 +259,71 @@ in the code rather than left to the hourly fetch:
 `fetch-done`, `fetch-again` and `fetch-waiting-for-network` in
 `adb logcat -s MaunDelivery` say which of the three happened.
 
+## A notification that appears with no sound (Round 18)
+
+Reported on Android 14 with Maun closed: the notification and the incoming-call
+screen both appeared, and neither made a noise. The same APKs were audible on
+Android 12.
+
+What could be read from the code:
+
+* Message sounds when Maun is closed are **not** played by Maun at all. The
+  notification carries them: `announceUnread` posts on the channel the user's
+  choice picks (`messages_maun`, `messages_system`, `messages_silent`), and
+  Android's own notification service plays the sound. `MessageSounds` is only
+  used while the app is on screen, and the call screen's ringing tone comes from
+  the `incoming_calls` channel. So a silent notification is a silent channel, or
+  Android deciding not to play it — never Maun "forgetting" to play something.
+* Nothing in the app behaves differently by Android version along these paths:
+  the only `UPSIDE_DOWN_CAKE` checks are the full-screen-intent permission and
+  the connected-service type. So a difference between Android 12 and 14 comes
+  from the platform, not from a branch Maun took.
+
+Two real defects were found and fixed:
+
+1. **The message sound was addressed by resource number.** A channel keeps the
+   URI it was created with and can never be given a new one, so
+   `android.resource://<package>/<number>` stays in place for the life of the
+   install even after a later build assigns that number to something else. The
+   sound then cannot be opened, and Android plays nothing, silently and for
+   ever. It is now addressed by name —
+   `android.resource://<package>/raw/incoming_message_ringtone1` — which cannot
+   drift between builds.
+2. **Nothing noticed when a channel went quiet.** `createChannels` now checks
+   the two channels that carry a sound: if the channel's sound cannot be opened,
+   that channel is made again, once, and `channel-repaired` is written to
+   `adb logcat -s MaunDelivery`. A channel with *no* sound is left alone — that
+   is either the silent channel Maun made on purpose or the user turning the
+   sound off in Android's settings, and neither is Maun's to override.
+
+Each notification now also logs where its sound comes from, which is the line
+that answers this question on a phone nobody can attach a debugger to:
+
+```
+adb logcat -s MaunDelivery
+step=shown ... alert=true count=1 channel=messages_maun importance=4 sound=android.resource://org.maun.messenger/raw/incoming_message_ringtone1 readable=true
+```
+
+Read it like this:
+
+| What the line says | What it means |
+| --- | --- |
+| `readable=true`, importance 4, still silent | Android has been told to play it and did not. Next: the phone's own settings — channel sound, Do Not Disturb, ringer, per-app volume |
+| `readable=false` | the sound the channel points at cannot be opened; `channel-repaired` follows on the next start |
+| `sound=none` with importance 4 | the channel has been silenced by someone — Maun leaves that as it is |
+| `importance=2` or lower | the channel is not set to make a sound at all |
+| `alert=false` | this notification was an update to one already shown, not a new arrival |
+
+For the ringing, `CallAudio.ringIncoming` now takes the audio focus for the
+ringtone and gives it back when the ringing stops. A ringtone played by an app
+that is not in front is the kind of playback newer Android versions silence in
+favour of whoever holds the focus, and Maun was ringing without asking for it.
+
+What is still needed to close this: the log line above from the Android 14
+phone, taken while a message arrives with Maun closed. It distinguishes "the
+channel is broken" from "Android is refusing to play it", and those two have
+nothing in common beyond the symptom.
+
 ## What a device test should look at
 
 For each case, `adb logcat -s MaunDelivery` gives the four steps; compare the

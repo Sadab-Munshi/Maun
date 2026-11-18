@@ -28,6 +28,9 @@ class CallAudio(context: Context) {
     private val power = appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
 
     private var ringtone: Ringtone? = null
+
+    /** The focus held while the phone rings, taken and given back with the ringing. */
+    private var ringFocus: AudioFocusRequest? = null
     private var ringback: ToneGenerator? = null
     private var vibrating = false
     private var focus: AudioFocusRequest? = null
@@ -39,6 +42,22 @@ class CallAudio(context: Context) {
         stopRinging()
         val mode = audio.ringerMode
         if (mode == AudioManager.RINGER_MODE_NORMAL) {
+            // A ringtone played by an app that is not in front needs the audio
+            // focus to be heard: without it, newer Android versions leave the
+            // sound to whoever holds it, and a phone that is ringing looks
+            // exactly like one that is not.
+            runCatching {
+                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build(),
+                    )
+                    .build()
+                audio.requestAudioFocus(request)
+                ringFocus = request
+            }
             runCatching {
                 val tone = RingtoneManager.getRingtone(appContext, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
                 tone?.audioAttributes = AudioAttributes.Builder()
@@ -78,6 +97,8 @@ class CallAudio(context: Context) {
     fun stopRinging() {
         runCatching { ringtone?.stop() }
         ringtone = null
+        ringFocus?.let { held -> runCatching { audio.abandonAudioFocusRequest(held) } }
+        ringFocus = null
         runCatching {
             ringback?.stopTone()
             ringback?.release()

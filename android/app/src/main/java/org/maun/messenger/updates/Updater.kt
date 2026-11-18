@@ -5,12 +5,15 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,10 +42,27 @@ class Updater(private val context: Context) {
     private val _state = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val state: StateFlow<UpdateState> = _state.asStateFlow()
 
+    /**
+     * For the small API call: a minute is generous for one JSON answer.
+     */
     private val http: OkHttpClient = RelayClient.defaultHttp.newBuilder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(60, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * For the APK itself, which is 28 MB: no call timeout at all. A call
+     * timeout covers reading the body as well, so the one above ended every
+     * download that took longer than a minute — which on a phone network is an
+     * ordinary download of this size, not a broken one. The read timeout still
+     * catches a connection that has genuinely gone quiet.
+     */
+    private val files: OkHttpClient = RelayClient.defaultHttp.newBuilder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .writeTimeout(45, TimeUnit.SECONDS)
+        .callTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
     /** Asks whether there is a newer Maun than this one. */
@@ -95,9 +115,9 @@ class Updater(private val context: Context) {
             val target = File(updatesDirectory(), "maun-${release.versionCode}.apk")
             try {
                 fetchTo(release, target)
-            } catch (_: IOException) {
+            } catch (e: IOException) {
                 target.delete()
-                _state.value = UpdateState.Failed("The download did not finish. Try again when the connection is better.")
+                _state.value = UpdateState.Failed(downloadFailure(e))
                 return@launch
             } catch (_: Exception) {
                 target.delete()
@@ -108,44 +128,133 @@ class Updater(private val context: Context) {
         }
     }
 
+    /**
+     * Downloads the APK, carrying on from what is already on disk when an
+     * earlier try was cut off. The file is written under another name and only
+     * renamed when it is whole and the size is the one GitHub published, so
+     * half a download can never be offered to the installer; when a try fails
+     * the part that arrived stays, and the next one begins there.
+     *
+     * A few tries, each after a short wait, because a phone that changes from
+     * Wi-Fi to mobile data in the middle of 28 MB is ordinary and should not
+     * cost the whole download.
+     */
     private suspend fun fetchTo(release: PublishedRelease, target: File) = withContext(Dispatchers.IO) {
+        val part = File(target.path + ".part")
+        var attempt = 0
+        var failure: IOException? = null
+        while (true) {
+            try {
+                val wrote = oneAttempt(release, part)
+                val length = part.length()
+                if (!wrote || !isWhole(length, release.size)) {
+                    throw IOException("The download stopped at $length of ${release.size} bytes")
+                }
+                if (target.exists()) target.delete()
+                if (!part.renameTo(target)) throw IOException("Could not keep the download")
+                Log.i(TAG, "stage=download-whole bytes=$length attempt=$attempt")
+                return@withContext
+            } catch (e: IOException) {
+                // Only what is worth another try gets one: a file that is not
+                // an APK, a phone with no room, or a refusal from GitHub will
+                // not answer differently in a moment.
+                failure = e
+                Log.w(TAG, "stage=download-failed attempt=$attempt have=${part.length()} error=$e")
+                val noRoom = e.message.orEmpty().contains("ENOSPC")
+                if (e is PermanentFailure || noRoom || !shouldTryAgain(attempt, MAX_ATTEMPTS)) break
+                attempt++
+                delay(RETRY_WAIT_MILLIS * attempt)
+            }
+        }
+        throw failure ?: IOException("The download failed")
+    }
+
+    /**
+     * One attempt, appended to whatever is already in [part]. Returns whether
+     * the body ended where the size of the file says it should; the caller
+     * checks that against the size GitHub published.
+     */
+    private fun oneAttempt(release: PublishedRelease, part: File): Boolean {
+        val have = part.length()
         val request = Request.Builder()
             .url(release.apkUrl)
             .header("Accept", "application/octet-stream")
             .header("User-Agent", "Maun/${BuildConfig.VERSION_NAME}")
+            .apply { if (have > 0) header("Range", "bytes=$have-") }
             .build()
-        http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("GitHub answered ${response.code}")
+        files.newCall(request).execute().use { response ->
+            val code = response.code
+            // 416: the file on disk is already as long as the one on the
+            // other end, or longer. Whatever it is, it is not the rest of it.
+            if (code == 416) {
+                part.delete()
+                throw IOException("GitHub answered 416; the download starts again")
+            }
+            if (code in 400..499) throw PermanentFailure("GitHub answered $code")
+            if (!response.isSuccessful) throw IOException("GitHub answered $code")
+            val from = resumeFrom(have, code, contentRangeStart(response.header("Content-Range")))
             val body = response.body ?: throw IOException("No answer")
-            val total = body.contentLength().takeIf { it > 0 }
-            if (total != null && total > MAX_DOWNLOAD_BYTES) throw IOException("Too large")
-            target.parentFile?.mkdirs()
-            // Written under another name and renamed when whole, so that a
-            // download cut off halfway can never be offered to the installer.
-            val part = File(target.path + ".part")
+            val bodyLength = body.contentLength().takeIf { it > 0 }
+            val total = when {
+                from > 0 && bodyLength != null -> from + bodyLength
+                from == 0 -> bodyLength
+                else -> null
+            }
+            if (total != null && total > MAX_DOWNLOAD_BYTES) {
+                part.delete()
+                throw PermanentFailure("That file is $total bytes, which is not an APK of Maun's")
+            }
+            part.parentFile?.mkdirs()
+            Log.i(TAG, "stage=download-start from=$from total=$total http=$code")
+            var done = from
             body.byteStream().use { input ->
-                part.outputStream().use { output ->
+                FileOutputStream(part, from > 0).use { output ->
                     val buffer = ByteArray(64 * 1024)
-                    var done = 0L
                     var reported = -1
                     while (true) {
                         val read = input.read(buffer)
                         if (read < 0) break
                         output.write(buffer, 0, read)
                         done += read
-                        if (done > MAX_DOWNLOAD_BYTES) throw IOException("Too large")
-                        if (total != null) {
-                            val percent = ((done * 100) / total).toInt()
+                        if (done > MAX_DOWNLOAD_BYTES) {
+                            part.delete()
+                            throw PermanentFailure("That file is larger than any Maun APK")
+                        }
+                        val size = total
+                        if (size != null) {
+                            val percent = ((done * 100) / size).toInt()
                             if (percent != reported) {
                                 reported = percent
                                 _state.value = UpdateState.Downloading(release, percent / 100f)
                             }
                         }
                     }
+                    output.fd.sync()
                 }
             }
-            if (target.exists()) target.delete()
-            if (!part.renameTo(target)) throw IOException("Could not keep the download")
+            return total == null || done == total
+        }
+    }
+
+    /** A failure that another try will not change: a refusal, a file that is not Maun's, a full phone. */
+    private class PermanentFailure(message: String) : IOException(message)
+
+    /**
+     * Why the download did not work, in words that say what to do about it.
+     * The part that arrived is kept, so trying again carries on rather than
+     * starting over.
+     */
+    private fun downloadFailure(e: IOException): String {
+        val text = e.message.orEmpty()
+        return when {
+            text.contains("ENOSPC") || text.contains("space", ignoreCase = true) ->
+                "There is no room on this phone for the update. Free some space and try again."
+            text.contains("not an APK of Maun's") || text.contains("larger than any Maun APK") ->
+                "The file GitHub offered is not an APK of Maun's. Nothing was downloaded."
+            text.matches(Regex("GitHub answered [45]\\d\\d.*")) ->
+                "GitHub would not give the file ($text). Try again later."
+            else ->
+                "The download stopped partway ($text). Trying again carries on from where it stopped."
         }
     }
 
@@ -255,9 +364,16 @@ class Updater(private val context: Context) {
     private fun updatesDirectory(): File = File(context.cacheDir, "updates").apply { mkdirs() }
 
     private companion object {
+        const val TAG = "MaunUpdate"
         const val APK_MIME = "application/vnd.android.package-archive"
 
         /** A release APK is about 30 MB; anything of this size is not one. */
         const val MAX_DOWNLOAD_BYTES = 120L * 1024 * 1024
+
+        /** How many times a download that broke off is picked up again, from where it stopped. */
+        const val MAX_ATTEMPTS = 3
+
+        /** Longer after each failure: the second try waits this long, the third twice as long. */
+        const val RETRY_WAIT_MILLIS = 2_000L
     }
 }
