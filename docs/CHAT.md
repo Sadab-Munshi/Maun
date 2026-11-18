@@ -19,6 +19,10 @@ bar that does something with it:
 * **Copy**, in time order, oldest first, for every text message selected — one
   message or ten, in the order they were written rather than the order the list
   shows them.
+* **Forward** the selected words to somebody else: a list of the people one
+  talks to, with the conversation they are already in left out, and nothing is
+  sent until a name is tapped. Only words travel — a file is handed over with
+  Share instead, which needs no copy of it and no second upload.
 * **Share** for a selected file: the same read-only, short-lived content URI the
   file bubble already hands to another app, so nothing is copied or re-saved.
 * **Save**, when the single selected message is a file: the same one-tap save to
@@ -90,7 +94,18 @@ Three things were making a long conversation heavy, and all three are fixed:
 
 What is still not measured on a device is in `docs/PERFORMANCE.md`.
 
+## Opening at a message (Round 10)
+
+A notification about one conversation now names the newest message it is about
+(`Announcement.message`, taken from the message's own ID in `ChatSummary`), and
+tapping it opens that conversation and scrolls to that message. A notification
+about several conversations names none — there is no single place to go. The
+request is used once and then put down, so the list does not jump again later
+while the reader is looking at something else; a message older than what the
+conversation has loaded cannot be reached without loading history up to it, so
+in that case the conversation opens at its newest message instead.
+
 ## What is not built yet
 
-Forwarding to another conversation, and opening a conversation at a particular
-message (from a notification). They are the next steps of the same plan.
+Nothing from the eight-step plan is left except its report: forwarding covers
+words only, and a forwarded message is not marked as one.

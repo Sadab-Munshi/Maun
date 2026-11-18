@@ -585,6 +585,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** The conversation a tapped notification was about, until the screen has gone there. */
     val openChat = messenger.openChat
 
+    /** The message in it that the notification named, until the conversation has gone there. */
+    val openMessage = messenger.openMessage
+
     fun chatOpened() = messenger.requestChat(null)
 
     fun setTelecomCalls(on: Boolean) {

@@ -185,6 +185,14 @@ fun ChatScreen(
     reactions: Map<String, Reactions> = emptyMap(),
     /** Puts an emoji on a message, or takes it off when the emoji is empty. */
     onReact: (messageId: String, emoji: String) -> Unit = { _, _ -> },
+    /** A notification named this message: the list goes to it once. */
+    scrollTo: String? = null,
+    /** Called once the list has gone there, so it does not happen again. */
+    onScrolledThere: () -> Unit = {},
+    /** Who a message can be forwarded to. */
+    contacts: List<org.maun.messenger.data.ContactEntity> = emptyList(),
+    /** Forwards the texts to [peer], in the order they were written. */
+    onForward: (peer: String, texts: List<String>) -> Unit = { _, _ -> },
     onLoadOlder: () -> Unit,
     onDelete: (Long) -> Unit,
     onBack: () -> Unit,
@@ -206,6 +214,8 @@ fun ChatScreen(
     var selection by remember(peerId) { mutableStateOf<Set<Long>>(emptySet()) }
     // The message the composer is answering, until it is sent or put down.
     var replying by remember(peerId) { mutableStateOf<MessageEntity?>(null) }
+    // What the forward picker would send, until it is sent or put down.
+    var forwarding by remember(peerId) { mutableStateOf<List<MessageEntity>>(emptyList()) }
     // The quotes are drawn from this phone's own copy of the conversation.
     val byId = remember(messages) { messages.associateBy { it.id } }
     var showAttachSheet by rememberSaveable { mutableStateOf(false) }
@@ -282,6 +292,19 @@ fun ChatScreen(
         val notice = files.notice ?: return@LaunchedEffect
         Toast.makeText(context, notice, Toast.LENGTH_SHORT).show()
         files.onNoticeShown()
+    }
+
+    // A notification named a message: the list goes to it, once. A message
+    // older than what is loaded cannot be reached without loading history to
+    // it, so the conversation simply opens at the newest instead of jumping
+    // somewhere else entirely.
+    LaunchedEffect(scrollTo, items) {
+        val wanted = scrollTo ?: return@LaunchedEffect
+        val index = messages.indexOfFirst { it.id == wanted }
+        if (index >= 0) listState.animateScrollToItem(index.coerceAtLeast(0))
+        // Asked once, whether or not it was found: jumping again later, while
+        // the reader is somewhere else in the conversation, would be worse.
+        onScrolledThere()
     }
 
     // Keep the newest message in view: always for one's own, and for an
@@ -460,6 +483,12 @@ fun ChatScreen(
                                         replying = one
                                         selection = emptySet()
                                     },
+                                    onForward = {
+                                        // Only words travel: a file is handed over by Share, which
+                                        // needs no copy of it and no second upload.
+                                        forwarding = picked.filter { it.kind == MessageKind.TEXT }.sortedBy { it.seq }
+                                        selection = emptySet()
+                                    },
                                     onShare = {
                                         val file = one?.let { message ->
                                             Attachment.fromLocal(message.text)?.takeIf { message.kind == MessageKind.FILE }
@@ -524,6 +553,20 @@ fun ChatScreen(
                 onShare = { files.onShare(seq, file) },
             )
         }
+    }
+
+    if (forwarding.isNotEmpty()) {
+        ForwardPicker(
+            contacts = contacts.filter { it.id != peerId },
+            count = forwarding.size,
+            onPick = { target ->
+                val texts = forwarding.map { it.text }
+                forwarding = emptyList()
+                onForward(target.id, texts)
+                Toast.makeText(context, "Forwarded to ${target.name}", Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { forwarding = emptyList() },
+        )
     }
 
     if (deleting.isNotEmpty()) {
@@ -650,6 +693,51 @@ private fun QuotedStrip(quoted: MessageEntity, onCancel: () -> Unit) {
     }
 }
 
+/**
+ * Asks who a message should go to: the people one talks to, by name, with the
+ * one whose conversation this is left out. Nothing is sent until a name is
+ * tapped, and the question can be put down without sending anything.
+ */
+@Composable
+internal fun ForwardPicker(
+    contacts: List<org.maun.messenger.data.ContactEntity>,
+    count: Int,
+    onPick: (org.maun.messenger.data.ContactEntity) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (count == 1) "Forward to…" else "Forward $count messages to…") },
+        text = {
+            if (contacts.isEmpty()) {
+                Text("There is nobody else to forward to yet.")
+            } else {
+                LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
+                    items(contacts, key = { it.id }) { contact ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onPick(contact) }
+                                .padding(vertical = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Avatar(id = contact.id, name = contact.name, size = 36.dp)
+                            Text(
+                                text = contact.name,
+                                style = MaterialTheme.typography.bodyLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
 /** Adds or removes one message from the selection. */
 private fun toggle(selection: Set<Long>, seq: Long): Set<Long> =
     if (seq in selection) selection - seq else selection + seq
@@ -670,6 +758,8 @@ internal fun SelectionBar(
     onClose: () -> Unit,
     /** Answer the one selected message. */
     onReply: () -> Unit = {},
+    /** Send the selected words to somebody else. */
+    onForward: () -> Unit = {},
     /** Hand the selected file to another app on this phone, read-only. */
     onShare: () -> Unit = {},
 ) {
@@ -716,6 +806,9 @@ internal fun SelectionBar(
                 )
                 if (one != null) {
                     TextButton(onClick = onReply) { Text("Reply") }
+                }
+                if (text) {
+                    TextButton(onClick = onForward) { Text("Forward") }
                 }
                 if (text) {
                     TextButton(onClick = onCopy) { Text("Copy") }

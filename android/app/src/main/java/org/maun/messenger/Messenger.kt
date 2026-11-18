@@ -1085,7 +1085,12 @@ class Messenger(context: Context) {
     private val _openChat = MutableStateFlow<String?>(null)
     val openChat: StateFlow<String?> = _openChat.asStateFlow()
 
-    fun requestChat(peer: String?) {
+    /** The message in that conversation to open at, when the notification named one. */
+    private val _openMessage = MutableStateFlow<String?>(null)
+    val openMessage: StateFlow<String?> = _openMessage.asStateFlow()
+
+    fun requestChat(peer: String?, message: String? = null) {
+        _openMessage.value = message
         _openChat.value = peer
     }
 

@@ -46,7 +46,9 @@ class MainActivity : ComponentActivity() {
         AppLock.onCreate(this)
         lifecycleScope.launch { messenger.calls.state.collect { showOverLockScreen(it != null) } }
         if (savedInstanceState == null && intent?.action == ACTION_ANSWER) answer()
-        if (savedInstanceState == null && intent?.action == ACTION_OPEN_CHAT) messenger.requestChat(intent.getStringExtra(EXTRA_CHAT))
+        if (savedInstanceState == null && intent?.action == ACTION_OPEN_CHAT) {
+            messenger.requestChat(intent.getStringExtra(EXTRA_CHAT), intent.getStringExtra(EXTRA_MESSAGE))
+        }
         setContent {
             MaunTheme {
                 // While locked, none of the app is drawn, and no conversation
@@ -133,8 +135,11 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         // "Answer" on the notification of a call that is ringing.
         if (intent.action == ACTION_ANSWER) answer()
-        // A message notification: go to the conversation it was about.
-        if (intent.action == ACTION_OPEN_CHAT) messenger.requestChat(intent.getStringExtra(EXTRA_CHAT))
+        // A message notification: go to the conversation it was about, and to
+        // the message it named when it named one.
+        if (intent.action == ACTION_OPEN_CHAT) {
+            messenger.requestChat(intent.getStringExtra(EXTRA_CHAT), intent.getStringExtra(EXTRA_MESSAGE))
+        }
     }
 
     override fun onDestroy() {
@@ -186,6 +191,9 @@ class MainActivity : ComponentActivity() {
         /** Sent by a message notification: open, at the conversation named in [EXTRA_CHAT]. */
         const val ACTION_OPEN_CHAT = "org.maun.messenger.OPEN_CHAT"
         const val EXTRA_CHAT = "chat"
+
+        /** The message in that conversation to open at, when the notification named one. */
+        const val EXTRA_MESSAGE = "message"
         private const val REVEAL_AFTER_MILLIS = 500L
     }
 }

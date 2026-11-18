@@ -358,6 +358,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                         viewModel.cachedConversation(chatPeer) ?: Conversation(loaded = false)
                                     },
                                 )
+                            val scrollTo = openMessage.takeIf { wanted == chatPeer }
                             val isContact = contacts.any { it.id == chatPeer }
                             // Someone who wrote without being a contact: at least say what they call themselves.
                             val peerUsername by produceState<String?>(null, chatPeer, isContact, username) {
@@ -367,6 +368,8 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             // What each message of this conversation carries, by message ID.
                             val reactions by remember(chatPeer) { viewModel.reactions(chatPeer) }
                                 .collectAsStateWithLifecycle(emptyMap())
+                            // A notification named a message of this conversation: go to it.
+                            val openMessage by viewModel.openMessage.collectAsStateWithLifecycle()
                             val fileProgress by viewModel.fileProgress.collectAsStateWithLifecycle()
                             val fileProblem by viewModel.fileProblem.collectAsStateWithLifecycle()
                             val fileNotice by viewModel.fileNotice.collectAsStateWithLifecycle()
@@ -384,6 +387,12 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 peerVerified = chatPeer in badges,
                                 reactions = reactions,
                                 onReact = { messageId, emoji -> viewModel.react(chatPeer, messageId, emoji) },
+                                scrollTo = scrollTo,
+                                onScrolledThere = viewModel::chatOpened,
+                                contacts = contacts,
+                                onForward = { target, texts ->
+                                    texts.forEach { text -> viewModel.sendText(target, text) }
+                                },
                                 loading = !conversation.loaded,
                                 messages = conversation.messages,
                                 hasOlder = conversation.hasOlder,

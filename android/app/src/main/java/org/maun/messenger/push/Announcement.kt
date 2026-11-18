@@ -18,6 +18,8 @@ data class Announcement(
     val total: Int,
     val lines: List<String> = emptyList(),
     val peer: String? = null,
+    /** The newest message of that one conversation, to open at it. */
+    val message: String? = null,
 )
 
 /**
@@ -50,10 +52,18 @@ fun announce(chats: List<ChatSummary>, names: Map<String, String>, showText: Boo
         )
         only.peer in names -> {
             val name = names.getValue(only.peer)
+            val message = only.id.takeIf { it.isNotEmpty() }
             if (showText) {
-                Announcement(if (total == 1) name else "$name ($total new)", previewOf(only), discreet, total, peer = only.peer)
+                Announcement(
+                    if (total == 1) name else "$name ($total new)",
+                    previewOf(only),
+                    discreet,
+                    total,
+                    peer = only.peer,
+                    message = message,
+                )
             } else {
-                Announcement(name, count(total), discreet, total, peer = only.peer)
+                Announcement(name, count(total), discreet, total, peer = only.peer, message = message)
             }
         }
         else -> Announcement(
@@ -62,6 +72,7 @@ fun announce(chats: List<ChatSummary>, names: Map<String, String>, showText: Boo
             discreet,
             total,
             peer = only.peer,
+            message = only.id.takeIf { it.isNotEmpty() },
         )
     }
 }

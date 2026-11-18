@@ -53,6 +53,7 @@ import org.maun.messenger.ui.PermissionsScreen
 import org.maun.messenger.ui.PrivacyUi
 import org.maun.messenger.Messenger
 import org.maun.messenger.ui.ProfileScreen
+import org.maun.messenger.ui.ForwardPicker
 import org.maun.messenger.ui.SelectionBar
 import org.maun.messenger.ui.SettingsScreen
 import org.maun.messenger.ui.SignedOutScreen
@@ -447,6 +448,20 @@ class ScreensTest {
     // own copy, so nothing extra is sent to draw it.
     @Test
     fun chatReplying() = shoot("chat-reply") { Chat(replying = true) }
+
+    // Forwarding asks who, by name, leaving out the conversation the message is
+    // already in.
+    @Test
+    fun forwardPicker() = shoot("forward-picker") {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            ForwardPicker(
+                contacts = listOf(asha, rohan, zoya),
+                count = 2,
+                onPick = {},
+                onDismiss = {},
+            )
+        }
+    }
 
     @Test
     fun chatWithReactions() = shoot("chat-reactions") {

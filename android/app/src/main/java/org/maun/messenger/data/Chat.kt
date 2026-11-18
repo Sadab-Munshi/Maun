@@ -147,6 +147,8 @@ data class ChatSummary(
     val status: Int,
     val at: Long,
     val unread: Int,
+    /** The message's own ID, chosen by whoever sent it: what a notification names to open at it. */
+    val id: String = "",
 )
 
 /**
@@ -199,7 +201,7 @@ interface ChatDao {
     @Query(
         """
         SELECT m.peer AS peer, m.seq AS seq, m.kind AS kind, m.text AS text, m.outgoing AS outgoing,
-               m.status AS status, m.at AS at,
+               m.status AS status, m.at AS at, m.id AS id,
                (SELECT COUNT(*) FROM messages u WHERE u.peer = m.peer AND u.unread = 1) AS unread
         FROM messages m
         WHERE m.seq IN (SELECT MAX(seq) FROM messages GROUP BY peer)
