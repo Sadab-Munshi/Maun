@@ -427,7 +427,7 @@ private fun SwitchRow(
             // The whole row is the switch, for fingers and for screen readers alike.
             .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
             .padding(vertical = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RowIcon(icon)
@@ -466,7 +466,7 @@ private fun LinkRow(icon: ImageVector, title: String, text: String, onClick: () 
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
             .padding(vertical = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RowIcon(icon)

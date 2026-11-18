@@ -96,6 +96,20 @@ What is still not measured on a device is in `docs/PERFORMANCE.md`.
 
 ## The look, before release (Round 11)
 
+The login screen is a mark, a welcome, one address and one button. What the
+service keeps, and who can read what, is still said in full — one tap away
+under **Privacy**, and reachable again from Settings under About. The name of
+the server Maun talks to is not shown anywhere a member can see it: not on the
+login screen, not in Settings, not on a profile or a signed-out screen.
+
+Settings keeps every switch it had, in the same order of importance, under
+seven headings with room between them: Profile, Notifications, Calls, Chats and
+media, Message sounds, Privacy, About. The address and username block that used
+to sit under About is gone — it belongs to Your Profile, and that is where it
+lives. About is the app's name, its version, whether it is connected, the setup
+check and the privacy note, and nothing else. Every switch, choice and link is
+the same one, wired to the same setting as before.
+
 The selection asked for a bar and got a small page of it: the count in a column
 of its own, and every action spelled out, which on a narrow phone pushed the
 last of them off the edge. It is now the conversation's header turned into a
