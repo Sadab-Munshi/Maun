@@ -105,6 +105,30 @@ keys, session — belongs to the debug app and does not follow.
 - This is the same reason the debug key is committed and the release key is not:
   the debug app is for testing, the release app is for keeping.
 
+## A downloaded update is checked before it is offered
+
+"Check for updates" downloads an APK over the internet and hands it to Android's
+installer, so the file is read as an app first (`updates/Updates.kt`,
+`checkUpdate`, called from `Updater.kt`). It must be this application ID, a
+higher version code than the installed one, and signed by the same certificate
+as the running Maun — that last check is the only thing that makes an installed
+update trustworthy. Anything else is refused with a message and deleted or
+dropped, and never reaches Android's installer. Without this, a corrupted
+download, a replaced file, or a redirect somewhere unexpected would have been
+offered as an "update".
+
+Android's own checks still apply on top: Maun never installs anything itself,
+the user may cancel, the package name cannot change, and an update signed with a
+different key is rejected by the system regardless.
+
+## Play Protect and attribution
+
+Two release-time issues have their own documents:
+`docs/PLAY_PROTECT.md` (what a Play Protect warning on a sideloaded release APK
+means, what was verified, what is not done about it) and `docs/AUTHORS.md` (why
+an unrelated GitHub account appeared in the contributors list, and the one
+operation available to change it).
+
 ## What a device test should check
 
 None of this can be established on a build machine:
@@ -122,3 +146,5 @@ None of this can be established on a build machine:
 | Update, then cancel at Android's prompt | No change; the download stays, Install can be tapped again |
 | Update, then confirm | The app restarts with the same chats, contacts, settings and login |
 | Old release installed, new release installed over it | Everything above survives; no login |
+| A different app's APK named like Maun's, put where the download goes | Refused before Android's installer appears |
+| The release APK opened from a browser download | Play Protect's wording recorded, per `docs/PLAY_PROTECT.md` |

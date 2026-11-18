@@ -77,6 +77,25 @@ class UpdatesTest {
     }
 
     @Test
+    fun `a download is only offered to the installer when it is this app, newer, and signed by the same key`() {
+        val pkg = "org.maun.messenger"
+        val signer = "35564cde8213c64b4354421dc57523e7591979a466fd5e0ea81cf4d91c5b41fd"
+
+        assertEquals(InstallCheck.Ok, checkUpdate(pkg, 30, signer, pkg, 29, signer.uppercase()))
+        // Another app's APK, however it is named.
+        assertEquals(InstallCheck.WrongApp, checkUpdate("org.example.other", 30, signer, pkg, 29, signer))
+        // The right app signed by somebody else: Android would refuse it, and it
+        // is not something Maun should hand to the installer in the first place.
+        assertEquals(InstallCheck.WrongSigner, checkUpdate(pkg, 30, "00".repeat(32), pkg, 29, signer))
+        assertEquals(InstallCheck.WrongSigner, checkUpdate(pkg, 30, null, pkg, 29, signer))
+        // Same version, or older: not an update.
+        assertEquals(InstallCheck.NotNewer, checkUpdate(pkg, 29, signer, pkg, 29, signer))
+        assertEquals(InstallCheck.NotNewer, checkUpdate(pkg, 28, signer, pkg, 29, signer))
+        // Not an app at all.
+        assertEquals(InstallCheck.NotAnApk, checkUpdate(null, 0, null, pkg, 29, signer))
+    }
+
+    @Test
     fun `only a higher version code is an update`() {
         assertTrue(isNewer(30, 29))
         assertFalse(isNewer(29, 29))

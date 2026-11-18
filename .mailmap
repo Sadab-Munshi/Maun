@@ -1,0 +1,16 @@
+# Who wrote what.
+#
+# Sadab-Munshi is the author of this project. Two noreply addresses that look
+# like other people's were used by mistake: GitHub resolves a bare
+# "<name>@users.noreply.github.com" to whichever account owns that name, and
+# "sadab" belongs to a different account, which is why it appears in the
+# contributors list. This file maps those commits back to the author in
+# git log, git shortlog and git blame.
+#
+# It changes what git prints, and nothing else: no commit, no tag, no
+# signature, no object in the repository is touched. The contributors list on
+# GitHub is built from the author address in each commit, so it keeps showing
+# the wrong account until the history itself is rewritten — which is a decision
+# for the repository owner, not something to do quietly. See docs/AUTHORS.md.
+Sadab-Munshi <237267786+Sadab-Munshi@users.noreply.github.com> Sadab Munshi <sadab@users.noreply.github.com>
+Sadab-Munshi <237267786+Sadab-Munshi@users.noreply.github.com> Sadab Munshi <sadabmunshi@users.noreply.github.com>

@@ -31,6 +31,9 @@ object DeliveryTrace {
     const val FETCH_START = "fetch-start"
     const val FETCH_DONE = "fetch-done"
     const val FETCH_AGAIN = "fetch-again"
+
+    /** The tries are over and something is still waiting: one fetch is left for when there is a network. */
+    const val FETCH_WAITING = "fetch-waiting-for-network"
     const val SHOWN = "shown"
 
     /**

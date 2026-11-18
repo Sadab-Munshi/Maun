@@ -78,6 +78,47 @@ fun parseRelease(json: String, abis: List<String>): PublishedRelease? {
     return chosen
 }
 
+/** What the downloaded APK turned out to be, before it is offered to Android's installer. */
+enum class InstallCheck {
+    /** The same app, newer, signed by the same key: an update. */
+    Ok,
+
+    /** Not readable as an app at all. */
+    NotAnApk,
+
+    /** Another application's APK, or a renamed copy of something else. */
+    WrongApp,
+
+    /** Not newer than what is installed: nothing to gain, and a downgrade may lose data. */
+    NotNewer,
+
+    /** A different signing key. Android would refuse it, and it could be anything. */
+    WrongSigner,
+}
+
+/**
+ * Whether [apk] is an update of this app and nothing else. A download is a file
+ * from the internet that is about to be handed to Android's installer, so it is
+ * checked first: same application ID, a higher version code, and the same
+ * signing certificate as the app running now — the last of which is the only
+ * thing that makes an installed update trustworthy.
+ */
+fun checkUpdate(
+    packageName: String?,
+    versionCode: Int,
+    signer: String?,
+    expectedPackage: String,
+    installedCode: Int,
+    expectedSigner: String?,
+): InstallCheck = when {
+    packageName == null -> InstallCheck.NotAnApk
+    packageName != expectedPackage -> InstallCheck.WrongApp
+    signer == null || expectedSigner == null || !signer.equals(expectedSigner, ignoreCase = true) ->
+        InstallCheck.WrongSigner
+    versionCode <= installedCode -> InstallCheck.NotNewer
+    else -> InstallCheck.Ok
+}
+
 /** maun-0.24.0-29-arm64-v8a.apk */
 private val APK_NAME = Regex("""maun-(.+)-(\d+)-(arm64-v8a|armeabi-v7a|x86_64|universal)\.apk""")
 

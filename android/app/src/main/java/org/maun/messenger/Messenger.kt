@@ -1080,6 +1080,16 @@ class Messenger(context: Context) {
      * finished within [timeoutMillis]; whatever was not fetched stays on the
      * relay. Used when the phone is woken up while Maun is closed.
      */
+    /**
+     * The phone has a network again. A connection that is waiting out a retry
+     * tries now instead: that wait was measured while there was no network at
+     * all, so it says nothing about how quickly the relay would answer now.
+     * Nothing is started if nothing was running.
+     */
+    fun onNetworkAvailable() {
+        synchronized(this) { connection }?.nudge()
+    }
+
     /** Starts fetching right away, without waiting for anything to be scheduled. For the moment a wake-up arrives. */
     fun fetchSoon() {
         scope.launch { fetch() }

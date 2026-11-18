@@ -2,6 +2,7 @@ package org.maun.messenger.updates
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -159,6 +160,30 @@ class Updater(private val context: Context) {
             _state.value = UpdateState.Failed("The download is gone. Download it again.")
             return
         }
+        when (checkDownload(file)) {
+            InstallCheck.Ok -> Unit
+            InstallCheck.NotAnApk -> {
+                _state.value = UpdateState.Failed("The download is not a usable app. Try again.")
+                file.delete()
+                return
+            }
+            InstallCheck.WrongApp -> {
+                _state.value = UpdateState.Failed("That file is not Maun. Nothing was installed.")
+                file.delete()
+                return
+            }
+            InstallCheck.WrongSigner -> {
+                _state.value = UpdateState.Failed(
+                    "That file is not signed with the key this copy of Maun was installed with, so it was " +
+                        "not offered to Android. Download the update from Maun's own release page.",
+                )
+                return
+            }
+            InstallCheck.NotNewer -> {
+                _state.value = UpdateState.Failed("That download is not newer than the Maun on this phone.")
+                return
+            }
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
             openInstallPermission()
             return
@@ -175,6 +200,40 @@ class Updater(private val context: Context) {
         }
         _state.value = UpdateState.ReadyToInstall(release)
     }
+
+    /**
+     * Reads the downloaded file as an app and compares it with the one running:
+     * the same application ID, a higher version code, and the same signing
+     * certificate. Nothing is handed to Android's installer that has not passed
+     * this, so a corrupted or substituted download cannot be installed, and the
+     * only APKs this ever offers are Maun's own.
+     */
+    private fun checkDownload(file: File): InstallCheck {
+        val packages = context.packageManager
+        val own = try {
+            packages.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+        } catch (_: Exception) {
+            null
+        } ?: return InstallCheck.NotAnApk
+        val archive = try {
+            packages.getPackageArchiveInfo(file.path, PackageManager.GET_SIGNING_CERTIFICATES)
+        } catch (_: Exception) {
+            null
+        }
+        return checkUpdate(
+            packageName = archive?.packageName,
+            versionCode = archive?.longVersionCode?.toInt() ?: 0,
+            signer = archive?.signingInfo?.apkContentsSigners?.firstOrNull()?.let(::digest),
+            expectedPackage = own.packageName,
+            installedCode = own.longVersionCode.toInt(),
+            expectedSigner = own.signingInfo?.apkContentsSigners?.firstOrNull()?.let(::digest),
+        )
+    }
+
+    private fun digest(signature: android.content.pm.Signature): String =
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest(signature.toByteArray())
+            .joinToString("") { "%02x".format(it) }
 
     private fun openInstallPermission() {
         val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))

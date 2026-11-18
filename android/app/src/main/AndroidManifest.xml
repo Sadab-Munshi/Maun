@@ -3,6 +3,10 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Read only, and only to hear that a network came back: Android tells us,
+         we never ask. That is what ends a wait for a retry the moment there is
+         something to retry on. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- Only to read another person's QR code. Asked for when the scanner opens. -->
     <uses-permission android:name="android.permission.CAMERA" />

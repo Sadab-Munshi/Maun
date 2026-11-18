@@ -226,6 +226,36 @@ already at its newest message when it appears, so there is no jump to see and no
 page of history to wait for. The reasoning is in `docs/CHAT.md`, under "What a
 notification opens".
 
+## What happens to a fetch that does not finish (Round 17)
+
+A wake-up starts `FetchWorker`, which connects, takes in what is waiting, and
+disconnects. Three things could stop that from catching up, and each was handled
+in the code rather than left to the hourly fetch:
+
+* **The relay did not answer in time.** `Messenger.fetch()` gives up after 60 s.
+  What was not fetched is still on the relay, so the worker asks for another
+  fetch, 20 s later, then 40 s later (`MAX_ATTEMPTS = 3`, `RETRY_WAIT_MILLIS`).
+  The repeat is a delay, not an urgent request, so it does not hold the phone
+  awake.
+* **The phone had no network at all.** The last try used to be the end of it,
+  and the message then waited for the hourly fetch — up to an hour late. Now the
+  last try leaves exactly one fetch behind that Android runs the moment a
+  network exists (`scheduleWhenOnline`, a `NetworkType.CONNECTED` constraint,
+  unique work kept, not appended). It is not a timer and not a loop: the fetch
+  that waited for a network does not arrange another after it, so a relay that
+  cannot be reached cannot keep a phone fetching.
+* **A connection was already down and waiting to try again.** `RelayConnection`
+  backs off up to 60 s, and a network that came back during that wait was not a
+  reason to stop waiting. The app now registers one
+  `registerDefaultNetworkCallback` for the life of the process
+  (`network/NetworkWatch.kt`) and, when the default network becomes usable,
+  tells a connection that is already waiting to try now (`RelayConnection.nudge`).
+  Nothing is started if nothing was waiting; there is no polling, no foreground
+  service, and the callback costs nothing while the network stays up.
+
+`fetch-done`, `fetch-again` and `fetch-waiting-for-network` in
+`adb logcat -s MaunDelivery` say which of the three happened.
+
 ## What a device test should look at
 
 For each case, `adb logcat -s MaunDelivery` gives the four steps; compare the
@@ -240,6 +270,8 @@ For each case, `adb logcat -s MaunDelivery` gives the four steps; compare the
 | Process killed (`adb shell am kill`) | `wake` cold-starts the process; `shown` follows |
 | Force-stop | nothing until the app is opened — Android's rule, documented |
 | Offline, then reconnect | phone logs in, mailbox pumps, one notification for the batch |
+| Offline when woken, network back later (Round 17) | `fetch-again` ×2, then `fetch-waiting-for-network`; the message arrives by itself in the same moment the network returns, not up to an hour later |
+| Network lost and regained while open (Round 17) | the retry follows at once instead of at the end of the backoff |
 | Written offline, app then closed (Round 10) | the hourly worker or the one asked for at the moment the message was queued connects, the outbox empties, and the message arrives once — no need to open the app |
 | Token refresh (new endpoint) | relay's `push` row replaced at next login; one wake-up per message still |
 | Many messages at once | one notification, counted; at most one wake-up per 5 s |

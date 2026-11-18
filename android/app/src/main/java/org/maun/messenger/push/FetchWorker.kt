@@ -16,6 +16,39 @@ import androidx.work.workDataOf
 import java.util.concurrent.TimeUnit
 import org.maun.messenger.MaunApp
 
+/** What a finished fetch leaves to be done, if anything. */
+internal enum class FetchStep {
+    /** Try again in a moment: the wait grows with each try. */
+    Again,
+
+    /** Leave one fetch behind for the moment a network exists. */
+    WaitForNetwork,
+
+    /** Nothing is waiting: put away the fetch that was waiting for a network. */
+    Stop,
+}
+
+/**
+ * What follows a fetch that has just finished. [attempt] counts from zero and
+ * [maxAttempts] is how many tries a wake-up is worth; after the last of them a
+ * fetch that still has something to do waits for a network instead of trying
+ * on a timer, and a fetch that was itself that waiting one stops rather than
+ * arranging another — otherwise a relay that cannot be reached would leave a
+ * phone fetching for ever.
+ */
+internal fun nextStep(
+    caughtUp: Boolean,
+    unsent: Int,
+    attempt: Int,
+    maxAttempts: Int,
+    waitingForNetwork: Boolean,
+): FetchStep = when {
+    caughtUp && unsent == 0 -> FetchStep.Stop
+    attempt + 1 < maxAttempts -> FetchStep.Again
+    waitingForNetwork -> FetchStep.Stop
+    else -> FetchStep.WaitForNetwork
+}
+
 /**
  * Connects to the relay, takes in whatever is waiting, confirms it, and
  * disconnects. Run when the phone is woken up, and about once an hour in case
@@ -26,6 +59,7 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
     override suspend fun doWork(): Result {
         DeliveryTrace.stepped(applicationContext, DeliveryTrace.FETCH_START)
         val attempt = inputData.getInt(KEY_ATTEMPT, 0)
+        val waitingForNetwork = inputData.getBoolean(KEY_WHEN_ONLINE, false)
         val messenger = (applicationContext as MaunApp).messenger
         val caughtUp = messenger.fetch()
         DeliveryTrace.stepped(applicationContext, DeliveryTrace.FETCH_DONE, "caughtUp=$caughtUp attempt=$attempt")
@@ -37,13 +71,25 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         // not woken every few seconds, and the hourly fetch is still there for
         // whatever is left after the last try.
         val unsent = messenger.unsentNow()
-        if ((!caughtUp || unsent > 0) && attempt + 1 < MAX_ATTEMPTS) {
-            schedule(applicationContext, attempt + 1, delayMillis = RETRY_WAIT_MILLIS * (attempt + 1))
-            DeliveryTrace.stepped(
-                applicationContext,
-                DeliveryTrace.FETCH_AGAIN,
-                "attempt=${attempt + 1} unsent=$unsent",
-            )
+        when (nextStep(caughtUp, unsent, attempt, MAX_ATTEMPTS, waitingForNetwork)) {
+            FetchStep.Again -> {
+                schedule(applicationContext, attempt + 1, delayMillis = RETRY_WAIT_MILLIS * (attempt + 1))
+                DeliveryTrace.stepped(
+                    applicationContext,
+                    DeliveryTrace.FETCH_AGAIN,
+                    "attempt=${attempt + 1} unsent=$unsent",
+                )
+            }
+            // The tries above are over and something is still waiting, which
+            // most often means the phone had no usable network while they ran.
+            // One fetch is left behind that Android runs the moment there is a
+            // network again — not on a timer, and not in a loop: what is left
+            // of the wait after that is the hourly fetch.
+            FetchStep.WaitForNetwork -> {
+                scheduleWhenOnline(applicationContext)
+                DeliveryTrace.stepped(applicationContext, DeliveryTrace.FETCH_WAITING, "unsent=$unsent")
+            }
+            FetchStep.Stop -> cancelWhenOnline(applicationContext)
         }
         return Result.success()
     }
@@ -55,7 +101,9 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
     companion object {
         private const val NOW = "fetch"
         private const val HOURLY = "fetch-hourly"
+        private const val WHEN_ONLINE = "fetch-when-online"
         private const val KEY_ATTEMPT = "attempt"
+        private const val KEY_WHEN_ONLINE = "when-online"
         private const val MAX_ATTEMPTS = 3
 
         /** How long the first repeat waits, before the second: grown by the attempt number. */
@@ -96,11 +144,29 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             WorkManager.getInstance(context).enqueueUniqueWork(NOW, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
         }
 
+        /**
+         * Leaves one fetch behind that runs as soon as there is a network: what
+         * a phone that was woken up with nothing to reach asks for. There is at
+         * most one of them, and a fetch that catches up takes it away again.
+         */
+        fun scheduleWhenOnline(context: Context) {
+            val request = OneTimeWorkRequestBuilder<FetchWorker>()
+                .setConstraints(online)
+                .setInputData(workDataOf(KEY_ATTEMPT to 0, KEY_WHEN_ONLINE to true))
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork(WHEN_ONLINE, ExistingWorkPolicy.KEEP, request)
+        }
+
+        fun cancelWhenOnline(context: Context) {
+            WorkManager.getInstance(context).cancelUniqueWork(WHEN_ONLINE)
+        }
+
         /** Stops every fetch, queued or running, and the hourly one: this phone is signed out. */
         fun cancel(context: Context) {
             val work = WorkManager.getInstance(context)
             work.cancelUniqueWork(NOW)
             work.cancelUniqueWork(HOURLY)
+            work.cancelUniqueWork(WHEN_ONLINE)
         }
 
         /** Safe to call every time the app starts: an existing schedule is kept. */

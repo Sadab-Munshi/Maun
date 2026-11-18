@@ -11,7 +11,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,6 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -227,6 +227,18 @@ class RelayConnection(
 
     override fun send(frame: JSONObject): Boolean = live?.send(frame.toString()) == true
 
+    /** The retry this connection is currently waiting out, if it is. */
+    private var waiting: CompletableDeferred<Unit>? = null
+
+    /**
+     * Tries again now rather than when the backoff ends. Called when the phone
+     * gets a network back, because a wait measured with no network at all says
+     * nothing about how long the relay will take to answer now.
+     */
+    fun nudge() {
+        synchronized(this) { waiting }?.complete(Unit)
+    }
+
     private suspend fun run() {
         var failures = 0
         while (true) {
@@ -259,7 +271,16 @@ class RelayConnection(
                     // A connection that got as far as logging in starts the count again.
                     if (end.wasOnline) failures = 0
                     _state.value = RelayState.Retrying(end.reason)
-                    delay(backoff.delayMillis(failures, end.rateLimited))
+                    // The wait can be cut short by [nudge]: a phone whose
+                    // network has just come back should not sit out a backoff
+                    // that grew while there was nothing to connect to.
+                    val nudge = CompletableDeferred<Unit>()
+                    synchronized(this@RelayConnection) { waiting = nudge }
+                    try {
+                        withTimeoutOrNull(backoff.delayMillis(failures, end.rateLimited)) { nudge.await() }
+                    } finally {
+                        synchronized(this@RelayConnection) { if (waiting === nudge) waiting = null }
+                    }
                     failures++
                 }
             }
