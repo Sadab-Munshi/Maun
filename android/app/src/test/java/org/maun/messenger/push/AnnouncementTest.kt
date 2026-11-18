@@ -15,27 +15,12 @@ class AnnouncementTest {
     private val names = mapOf(asha to "Asha", rohan to "Rohan")
 
     @Test
-    fun `a notification about one conversation names its newest message`() {
-        val said = announce(
-            listOf(
-                ChatSummary(
-                    peer = asha,
-                    seq = 1,
-                    kind = 0,
-                    text = "See you at six",
-                    outgoing = false,
-                    status = 0,
-                    at = 0,
-                    unread = 1,
-                    id = "3f2c9a1e-0000-4000-8000-000000000001",
-                ),
-            ),
-            names,
-        )!!
-        // Tapping it opens the conversation at that message, not at its bottom.
-        assertEquals("3f2c9a1e-0000-4000-8000-000000000001", said.message)
-        // Several conversations at once name none: there is nowhere single to go.
-        assertNull(announce(listOf(chat(asha, 1), chat(rohan, 1)), names)!!.message)
+    fun `a notification names the one conversation it is about, and only when there is one`() {
+        // Tapping it opens that conversation at its newest messages.
+        assertEquals(asha, announce(listOf(chat(asha, 1)), names)!!.peer)
+        // Several conversations at once name none: there is no single chat to open,
+        // so the tap goes to the list.
+        assertNull(announce(listOf(chat(asha, 1), chat(rohan, 1)), names)!!.peer)
     }
 
     private fun chat(peer: String, unread: Int, text: String = "the secret plan") =

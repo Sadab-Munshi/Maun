@@ -47,8 +47,9 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch { messenger.calls.state.collect { showOverLockScreen(it != null) } }
         if (savedInstanceState == null && intent?.action == ACTION_ANSWER) answer()
         if (savedInstanceState == null && intent?.action == ACTION_OPEN_CHAT) {
-            messenger.requestChat(intent.getStringExtra(EXTRA_CHAT), intent.getStringExtra(EXTRA_MESSAGE))
+            messenger.requestChat(intent.getStringExtra(EXTRA_CHAT))
         }
+        if (savedInstanceState == null && intent?.action == ACTION_OPEN_CHATS) messenger.requestChats()
         setContent {
             MaunTheme {
                 // While locked, none of the app is drawn, and no conversation
@@ -135,11 +136,13 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         // "Answer" on the notification of a call that is ringing.
         if (intent.action == ACTION_ANSWER) answer()
-        // A message notification: go to the conversation it was about, and to
-        // the message it named when it named one.
+        // A message notification: go to the conversation it was about. The
+        // conversation opens at its newest messages.
         if (intent.action == ACTION_OPEN_CHAT) {
-            messenger.requestChat(intent.getStringExtra(EXTRA_CHAT), intent.getStringExtra(EXTRA_MESSAGE))
+            messenger.requestChat(intent.getStringExtra(EXTRA_CHAT))
         }
+        // A notification about several conversations: go to the list.
+        if (intent.action == ACTION_OPEN_CHATS) messenger.requestChats()
     }
 
     override fun onDestroy() {
@@ -192,8 +195,8 @@ class MainActivity : ComponentActivity() {
         const val ACTION_OPEN_CHAT = "org.maun.messenger.OPEN_CHAT"
         const val EXTRA_CHAT = "chat"
 
-        /** The message in that conversation to open at, when the notification named one. */
-        const val EXTRA_MESSAGE = "message"
+        /** Sent by a notification about several conversations: open, at the list of them. */
+        const val ACTION_OPEN_CHATS = "org.maun.messenger.OPEN_CHATS"
         private const val REVEAL_AFTER_MILLIS = 500L
     }
 }

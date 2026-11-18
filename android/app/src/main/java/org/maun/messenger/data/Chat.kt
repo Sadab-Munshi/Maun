@@ -147,7 +147,7 @@ data class ChatSummary(
     val status: Int,
     val at: Long,
     val unread: Int,
-    /** The message's own ID, chosen by whoever sent it: what a notification names to open at it. */
+    /** The newest message's own ID, as its sender chose it. */
     val id: String = "",
 )
 

@@ -98,15 +98,6 @@ data class MessageItem(
     override val key: String get() = "m${message.seq}"
 }
 
-/**
- * Where the message whose ID is [id] sits among [items], or -1 when it is not
- * there at all. The list is numbered by items, and the day pills are items too,
- * so a message's place among the messages alone is not where it is drawn: the
- * difference is one line per day above it.
- */
-fun indexOfMessage(items: List<ChatItem>, id: String): Int =
-    items.indexOfFirst { it is MessageItem && it.message.id == id }
-
 /** Stands above the first message of [day]. [above] is that message's position in the database. */
 data class DayItem(val day: LocalDate, val above: Long) : ChatItem {
     override val key: String get() = "d$above"

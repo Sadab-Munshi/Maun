@@ -166,7 +166,7 @@ class Notifications(context: Context) {
             .setPublicVersion(onLockScreen)
             .setOnlyAlertOnce(!alert)
             .setAutoCancel(true)
-            .setContentIntent(announcement.peer?.let { peer -> openChat(peer, announcement.message) } ?: openApp())
+            .setContentIntent(announcement.peer?.let(::openChat) ?: openChats())
             .build()
         try {
             manager.notify(ID_MESSAGES, notification)
@@ -316,20 +316,28 @@ class Notifications(context: Context) {
             .setContentIntent(openApp())
             .build()
 
-    /** Opens Maun at the conversation with [peer], and at [message] in it when there is one. */
-    private fun openChat(peer: String, message: String?): PendingIntent {
-        val intent = Intent(context, MainActivity::class.java)
-            .setAction(MainActivity.ACTION_OPEN_CHAT)
-            .putExtra(MainActivity.EXTRA_CHAT, peer)
-            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        if (message != null) intent.putExtra(MainActivity.EXTRA_MESSAGE, message)
-        return PendingIntent.getActivity(
+    /** Opens Maun at the conversation with [peer], at its newest messages. */
+    private fun openChat(peer: String): PendingIntent =
+        PendingIntent.getActivity(
             context,
             10,
-            intent,
+            Intent(context, MainActivity::class.java)
+                .setAction(MainActivity.ACTION_OPEN_CHAT)
+                .putExtra(MainActivity.EXTRA_CHAT, peer)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-    }
+
+    /** Opens Maun at the list of conversations: a notification about several of them. */
+    private fun openChats(): PendingIntent =
+        PendingIntent.getActivity(
+            context,
+            11,
+            Intent(context, MainActivity::class.java)
+                .setAction(MainActivity.ACTION_OPEN_CHATS)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
 
     private fun openApp(): PendingIntent =
         PendingIntent.getActivity(

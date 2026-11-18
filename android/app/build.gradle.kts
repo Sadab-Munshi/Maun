@@ -26,8 +26,8 @@ android {
         applicationId = "org.maun.messenger"
         minSdk = 29 // Android 10: built-in Ogg/Opus recording, StrongBox API.
         targetSdk = 36
-        versionCode = 28
-        versionName = "0.23.0"
+        versionCode = 29
+        versionName = "0.24.0"
 
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
     }
@@ -53,6 +53,23 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        // The release key. It never enters the repository: the keystore and its
+        // passwords are GitHub Actions secrets, written to files for one job and
+        // handed to the build through these four variables. Without them the
+        // release APK is built unsigned, which is enough to check that it
+        // compiles, and cannot be installed over a signed release.
+        create("release") {
+            val storePath = providers.environmentVariable("MAUN_KEYSTORE_FILE").orNull
+            val storePass = providers.environmentVariable("MAUN_KEYSTORE_PASSWORD").orNull
+            val alias = providers.environmentVariable("MAUN_KEY_ALIAS").orNull ?: "maun"
+            val keyPass = providers.environmentVariable("MAUN_KEY_PASSWORD").orNull
+            if (storePath != null && storePass != null && keyPass != null) {
+                storeFile = file(storePath)
+                storePassword = storePass
+                keyAlias = alias
+                keyPassword = keyPass
+            }
+        }
     }
 
     buildTypes {
@@ -67,8 +84,16 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         release {
-            // Shrinking and the signed release pipeline arrive in Milestone 6.
-            isMinifyEnabled = false
+            // The release APK is what gets installed for good, so it is shrunk
+            // like the debug one: libsignal and SQLCipher carry code Maun never
+            // calls, and every megabyte of it is a megabyte to download.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Signed with the permanent key when the job has it; unsigned
+            // otherwise, which is a build check and not a release.
+            signingConfig = providers.environmentVariable("MAUN_KEYSTORE_FILE").orNull
+                ?.let { signingConfigs.getByName("release") }
         }
     }
 

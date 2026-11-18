@@ -44,6 +44,7 @@ import org.maun.messenger.push.Background
 import org.maun.messenger.SoundSettings
 import org.maun.messenger.push.Notifications
 import org.maun.messenger.push.PushApps
+import org.maun.messenger.updates.PublishedRelease
 
 /**
  * A conversation as its screen shows it: the newest messages first, and
@@ -585,10 +586,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** The conversation a tapped notification was about, until the screen has gone there. */
     val openChat = messenger.openChat
 
-    /** The message in it that the notification named, until the conversation has gone there. */
-    val openMessage = messenger.openMessage
-
     fun chatOpened() = messenger.requestChat(null)
+
+    /** The update check: its answer, and what can be done with it. */
+    val update = messenger.updates.state
+
+    fun checkForUpdates() = messenger.updates.check()
+
+    fun downloadUpdate(release: PublishedRelease) = messenger.updates.download(release)
+
+    fun installUpdate(release: PublishedRelease) = messenger.updates.install(release)
+
+    fun dismissUpdate() = messenger.updates.dismiss()
+
+    /** A notification about several conversations was tapped, until the list is shown. */
+    val openChats = messenger.openChats
+
+    fun chatsOpened() = messenger.chatsOpened()
 
     fun setTelecomCalls(on: Boolean) {
         TelecomBridge.setEnabled(getApplication(), on)

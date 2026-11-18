@@ -60,6 +60,7 @@ import org.maun.messenger.network.RelayState
 import org.maun.messenger.push.Background
 import org.maun.messenger.push.FetchWorker
 import org.maun.messenger.push.Notifications
+import org.maun.messenger.updates.Updater
 import org.maun.messenger.push.UnreadTracker
 import org.maun.messenger.push.announce
 
@@ -99,6 +100,9 @@ class Messenger(context: Context) {
     private val settingsPrefs = appContext.getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val relayClient = RelayClient()
+
+    /** The update check: asked for from Settings, never by itself. */
+    val updates = Updater(appContext)
 
     private val _needsPermissionSetup = MutableStateFlow(
         settingsPrefs.getBoolean(KEY_PERMISSIONS_SETUP_PENDING, false),
@@ -1081,17 +1085,33 @@ class Messenger(context: Context) {
         scope.launch { fetch() }
     }
 
-    /** A notification was tapped: the conversation it was about, until the screen has gone there. */
+    /**
+     * A notification was tapped: the conversation it was about, until the screen
+     * has gone there. A conversation always opens at its newest messages, so
+     * there is nothing else to carry: no message ID, no place to scroll to, and
+     * nothing that can arrive after the list has already been drawn.
+     */
     private val _openChat = MutableStateFlow<String?>(null)
     val openChat: StateFlow<String?> = _openChat.asStateFlow()
 
-    /** The message in that conversation to open at, when the notification named one. */
-    private val _openMessage = MutableStateFlow<String?>(null)
-    val openMessage: StateFlow<String?> = _openMessage.asStateFlow()
-
-    fun requestChat(peer: String?, message: String? = null) {
-        _openMessage.value = message
+    fun requestChat(peer: String?) {
         _openChat.value = peer
+    }
+
+    /**
+     * A notification about several conversations was tapped. There is no one
+     * conversation to open, so the list is shown, whatever screen Maun was left
+     * on last time.
+     */
+    private val _openChats = MutableStateFlow(false)
+    val openChats: StateFlow<Boolean> = _openChats.asStateFlow()
+
+    fun requestChats() {
+        _openChats.value = true
+    }
+
+    fun chatsOpened() {
+        _openChats.value = false
     }
 
     suspend fun fetch(timeoutMillis: Long = FETCH_TIMEOUT_MILLIS): Boolean {

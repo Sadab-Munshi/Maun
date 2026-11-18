@@ -32,7 +32,6 @@ import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -189,10 +188,6 @@ fun ChatScreen(
     reactions: Map<String, Reactions> = emptyMap(),
     /** Puts an emoji on a message, or takes it off when the emoji is empty. */
     onReact: (messageId: String, emoji: String) -> Unit = { _, _ -> },
-    /** A notification named this message: the list goes to it once. */
-    scrollTo: String? = null,
-    /** Called once the list has gone there, so it does not happen again. */
-    onScrolledThere: () -> Unit = {},
     /** Who a message can be forwarded to. */
     contacts: List<org.maun.messenger.data.ContactEntity> = emptyList(),
     /** Forwards the texts to [peer], in the order they were written. */
@@ -302,48 +297,17 @@ fun ChatScreen(
         files.onNoticeShown()
     }
 
-    // A notification named a message: the list goes to it, once. The index is
-    // the message's place among the list's items — the day pills are items too —
-    // and not among the messages alone, or the list would land somewhere else.
-    // The jump is immediate rather than animated: opening a conversation should
-    // show the message, not a journey to it.
-    var lit by remember { mutableStateOf<Long?>(null) }
-    var reached by remember(peerId) { mutableStateOf(false) }
-    LaunchedEffect(scrollTo, items, hasOlder) {
-        val wanted = scrollTo ?: return@LaunchedEffect
-        val index = indexOfMessage(items, wanted)
-        when {
-            index >= 0 -> {
-                listState.scrollToItem(index)
-                if (!reached) {
-                    reached = true
-                    onScrolledThere()
-                }
-                lit = (items[index] as MessageItem).message.seq
-            }
-            // Older than what this phone has loaded: bring in the next page and
-            // look again. This runs again when it arrives.
-            hasOlder -> onLoadOlder()
-            // Not here at all, and there is no more history to look through: the
-            // newest messages are the honest answer.
-            else -> {
-                listState.scrollToItem(0)
-                reached = true
-                onScrolledThere()
-            }
-        }
-    }
-    LaunchedEffect(lit) {
-        if (lit == null) return@LaunchedEffect
-        delay(1600)
-        lit = null
+    // A conversation opens at its newest messages, and stays there while the
+    // first page is read from storage. Nothing is scrolled to and nothing has to
+    // arrive first, so there is no jump to flicker and no race to lose: the list
+    // is drawn upside down, so its newest message is item 0.
+    LaunchedEffect(peerId, loading) {
+        if (!loading) listState.scrollToItem(0)
     }
 
     // Keep the newest message in view: always for one's own, and for an
-    // incoming one unless the reader has scrolled back to look at history. Not
-    // while a tapped notification is still finding its message.
+    // incoming one unless the reader has scrolled back to look at history.
     LaunchedEffect(newest?.seq) {
-        if (scrollTo != null) return@LaunchedEffect
         if (newest != null && (newest.outgoing || listState.firstVisibleItemIndex <= 1)) {
             listState.scrollToItem(0)
         }
@@ -470,7 +434,6 @@ fun ChatScreen(
                                                     quoted = item.message.replyTo?.let { byId[it] },
                                                     reactionBar = only != null && only.seq == item.message.seq,
                                                     onReactEmoji = reactToOnly,
-                                                    highlighted = lit == item.message.seq,
                                                     onTap = { selection = toggle(selection, item.message.seq) },
                                                     onLongPress = {
                                                         // A notice is not a message: nothing to do with it.
@@ -1190,8 +1153,6 @@ private fun MessageRow(
     reactionBar: Boolean = false,
     /** Puts this emoji on it, or takes it off when it is already on. */
     onReactEmoji: (String) -> Unit = {},
-    /** A notification named this message a moment ago. */
-    highlighted: Boolean = false,
     onTap: () -> Unit = {},
     onLongPress: () -> Unit = {},
     files: FileActions = FileActions(),
@@ -1280,13 +1241,7 @@ private fun MessageRow(
                 }
                 Surface(
                     color = bubbleColor,
-                    // The bubble a notification named is lit for a moment, so
-                    // the eye lands on it rather than on the top of the screen.
-                    border = if (highlighted && !selected) {
-                        BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
-                    } else {
-                        null
-                    },
+
                     shape = shape,
                     shadowElevation = 1.dp,
                     modifier = Modifier

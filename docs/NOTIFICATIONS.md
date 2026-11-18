@@ -217,6 +217,15 @@ with the same ID, and the receiving phone ignores a message ID it already has
   because Play services hands out the address; Google sees the timing, the size
   of the wake-up and the mailbox's VAPID key — never the message.
 
+## Where a tapped notification goes
+
+A message notification opens the conversation it is about, at that
+conversation's newest messages. One that covers several conversations opens the
+list. Nothing is scrolled to after the screen is drawn: the conversation is
+already at its newest message when it appears, so there is no jump to see and no
+page of history to wait for. The reasoning is in `docs/CHAT.md`, under "What a
+notification opens".
+
 ## What a device test should look at
 
 For each case, `adb logcat -s MaunDelivery` gives the four steps; compare the

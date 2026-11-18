@@ -88,6 +88,16 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
         }
     }
 
+    // A notification about several conversations was tapped: the list is where
+    // it leads, whatever was open before.
+    val wantedList by viewModel.openChats.collectAsStateWithLifecycle()
+    LaunchedEffect(wantedList, account) {
+        if (wantedList && (account as? AccountState.Present)?.registered == true) {
+            screen = HOME
+            viewModel.chatsOpened()
+        }
+    }
+
     // Someone whose conversation or details are open set Maun up again and
     // has a new ID: stay with the person, not with the old ID.
     LaunchedEffect(Unit) {
@@ -266,6 +276,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             val pushProblem by viewModel.pushProblem.collectAsStateWithLifecycle()
                             val privacy by viewModel.privacy.collectAsStateWithLifecycle()
                             val soundChoices by viewModel.soundChoices.collectAsStateWithLifecycle()
+                            val update by viewModel.update.collectAsStateWithLifecycle()
                             // Permissions, push apps and the screen lock change outside Maun.
                             LifecycleResumeEffect(Unit) {
                                 viewModel.refreshDelivery()
@@ -279,6 +290,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 privacy = privacy,
                                 blockedCount = blocked.size,
                                 sounds = soundChoices,
+                                update = update,
                                 onNotificationsChanged = viewModel::refreshDelivery,
                                 onAppLock = { on ->
                                     if (activity != null) AppLock.setEnabled(activity, on, viewModel::refreshPrivacy)
@@ -313,6 +325,10 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                         )
                                     }
                                 },
+                                onCheckForUpdates = viewModel::checkForUpdates,
+                                onDownloadUpdate = viewModel::downloadUpdate,
+                                onInstallUpdate = viewModel::installUpdate,
+                                onDismissUpdate = viewModel::dismissUpdate,
                                 onOpenBlocked = { screen = BLOCKED },
                                 onOpenSetupCheck = { screen = SETUP_CHECK },
                                 onBack = goHome,
@@ -351,10 +367,6 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                         viewModel.cachedConversation(chatPeer) ?: Conversation(loaded = false)
                                     },
                                 )
-                            // A notification named a message: go to it, in the
-                            // conversation it was about and no other.
-                            val openMessage by viewModel.openMessage.collectAsStateWithLifecycle()
-                            val scrollTo = openMessage.takeIf { wanted == chatPeer }
                             val isContact = contacts.any { it.id == chatPeer }
                             // Someone who wrote without being a contact: at least say what they call themselves.
                             val peerUsername by produceState<String?>(null, chatPeer, isContact, username) {
@@ -381,8 +393,6 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 peerVerified = chatPeer in badges,
                                 reactions = reactions,
                                 onReact = { messageId, emoji -> viewModel.react(chatPeer, messageId, emoji) },
-                                scrollTo = scrollTo,
-                                onScrolledThere = viewModel::chatOpened,
                                 contacts = contacts,
                                 onForward = { target, texts ->
                                     texts.forEach { text -> viewModel.sendText(target, text) }

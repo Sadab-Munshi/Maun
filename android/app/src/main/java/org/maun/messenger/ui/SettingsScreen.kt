@@ -1,11 +1,14 @@
 package org.maun.messenger.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.selectable
@@ -19,7 +22,10 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,6 +43,8 @@ import androidx.compose.ui.unit.dp
 import org.maun.messenger.Avatars
 import org.maun.messenger.SoundSettings
 import org.maun.messenger.network.RelayState
+import org.maun.messenger.updates.PublishedRelease
+import org.maun.messenger.updates.UpdateState
 
 /** Privacy, incoming media, and chat appearance switches, as the settings screen shows them. */
 data class PrivacyUi(
@@ -100,6 +108,12 @@ fun SettingsScreen(
     onIncomingSound: (String) -> Unit = {},
     onPreviewIncomingSound: (String) -> Unit = {},
     onOpenProfile: () -> Unit = {},
+    /** What the update check has found, if it has been asked. */
+    update: UpdateState = UpdateState.Idle,
+    onCheckForUpdates: () -> Unit = {},
+    onDownloadUpdate: (PublishedRelease) -> Unit = {},
+    onInstallUpdate: (PublishedRelease) -> Unit = {},
+    onDismissUpdate: () -> Unit = {},
     onOpenBlocked: () -> Unit,
     onOpenSetupCheck: () -> Unit,
     onBack: () -> Unit,
@@ -107,6 +121,11 @@ fun SettingsScreen(
     var choosingSent by remember { mutableStateOf(false) }
     var choosingIncoming by remember { mutableStateOf(false) }
     var privacyNote by remember { mutableStateOf(false) }
+    var showingUpdate by rememberSaveable { mutableStateOf(false) }
+    // The answer arrives after the row was tapped: show it as it comes.
+    LaunchedEffect(update) {
+        if (update !is UpdateState.Idle) showingUpdate = true
+    }
 
     val context = LocalContext.current
 
@@ -249,6 +268,27 @@ fun SettingsScreen(
                 },
             )
             LinkRow(
+                icon = MaunIcons.Download,
+                title = "Check for updates",
+                text = when (val state = update) {
+                    UpdateState.Idle -> "Maun $version"
+                    UpdateState.Checking -> "Checking…"
+                    is UpdateState.UpToDate -> "You're up to date."
+                    is UpdateState.Available -> "Maun ${state.release.versionName} is available."
+                    is UpdateState.Downloading -> "Downloading ${state.release.versionName}…"
+                    is UpdateState.ReadyToInstall -> "${state.release.versionName} is ready to install."
+                    is UpdateState.Failed -> "Couldn't check. Tap to try again."
+                },
+                onClick = {
+                    when (val state = update) {
+                        // Already answered: show the answer again rather than
+                        // asking GitHub the same question twice.
+                        UpdateState.Idle -> onCheckForUpdates()
+                        else -> showingUpdate = true
+                    }
+                },
+            )
+            LinkRow(
                 icon = MaunIcons.Check,
                 title = "Setup check",
                 text = "Test this phone's encryption, storage and connection.",
@@ -264,6 +304,19 @@ fun SettingsScreen(
     }
 
     if (privacyNote) PrivacyNote(onDismiss = { privacyNote = false })
+
+    if (showingUpdate) {
+        UpdateDialog(
+            state = update,
+            installed = "Maun $version",
+            onDownload = onDownloadUpdate,
+            onInstall = onInstallUpdate,
+            onDismiss = {
+                showingUpdate = false
+                onDismissUpdate()
+            },
+        )
+    }
 
     if (choosingSent) {
         SoundChoiceDialog(
@@ -303,6 +356,126 @@ fun SettingsScreen(
             onPreview = onPreviewIncomingSound,
         )
     }
+}
+
+/**
+ * What the update check has to say, and the one thing to do about it. Android
+ * installs the APK itself, with its own question; this only downloads it and
+ * points the way. Every state says something a person can act on, including
+ * the ones where nothing happened.
+ */
+@Composable
+internal fun UpdateDialog(
+    state: UpdateState,
+    installed: String,
+    onDownload: (PublishedRelease) -> Unit,
+    onInstall: (PublishedRelease) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val release = when (state) {
+        is UpdateState.Available -> state.release
+        is UpdateState.Downloading -> state.release
+        is UpdateState.ReadyToInstall -> state.release
+        else -> null
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                when (state) {
+                    UpdateState.Idle, UpdateState.Checking -> "Checking for updates"
+                    is UpdateState.UpToDate -> "You're up to date"
+                    is UpdateState.Available -> "Maun ${state.release.versionName} is available"
+                    is UpdateState.Downloading -> "Downloading Maun ${state.release.versionName}"
+                    is UpdateState.ReadyToInstall -> "Ready to install"
+                    is UpdateState.Failed -> "Couldn't check for updates"
+                },
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                when (state) {
+                    UpdateState.Idle, UpdateState.Checking -> Text(
+                        text = "Looking for a newer version of Maun…",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    is UpdateState.UpToDate -> Text(
+                        text = "$installed is the newest version there is.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    is UpdateState.Available -> {
+                        Text(
+                            text = "You have $installed.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (state.release.notes.isNotEmpty()) {
+                            Text(
+                                text = state.release.notes,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier
+                                    .heightIn(max = 260.dp)
+                                    .verticalScroll(rememberScrollState()),
+                            )
+                        }
+                        Text(
+                            text = "Your chats, contacts and settings stay as they are.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    is UpdateState.Downloading -> {
+                        val fraction = state.fraction
+                        if (fraction == null) {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        } else {
+                            LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                        }
+                        Text(
+                            text = if (fraction == null) {
+                                "Downloading…"
+                            } else {
+                                "${(fraction * 100).toInt()}% of the download done."
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    is UpdateState.ReadyToInstall -> Text(
+                        text = "Downloaded. Android will ask you to confirm the install; Maun cannot " +
+                            "install anything by itself.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    is UpdateState.Failed -> Text(
+                        text = state.reason,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            when (state) {
+                is UpdateState.Available -> TextButton(onClick = { onDownload(state.release) }) {
+                    Text(if (release == null) "Update" else "Update")
+                }
+                is UpdateState.ReadyToInstall -> TextButton(onClick = { onInstall(state.release) }) {
+                    Text("Install")
+                }
+                is UpdateState.Failed -> TextButton(onClick = onDismiss) { Text("Close") }
+                else -> {}
+            }
+        },
+        dismissButton = {
+            when (state) {
+                // Nothing to put away while the file is on its way.
+                is UpdateState.Downloading -> {}
+                is UpdateState.Available, is UpdateState.ReadyToInstall -> TextButton(onClick = onDismiss) {
+                    Text("Later")
+                }
+                else -> TextButton(onClick = onDismiss) { Text("Close") }
+            }
+        },
+    )
 }
 
 /**

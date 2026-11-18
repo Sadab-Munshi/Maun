@@ -127,16 +127,27 @@ immediately, lights the bubble it landed on for a moment, and pages older
 history in until it finds the message; if it is not there at all, the newest
 messages are shown.
 
-## Opening at a message (Round 10)
+## What a notification opens (Round 12)
 
-A notification about one conversation now names the newest message it is about
-(`Announcement.message`, taken from the message's own ID in `ChatSummary`), and
-tapping it opens that conversation and scrolls to that message. A notification
-about several conversations names none — there is no single place to go. The
-request is used once and then put down, so the list does not jump again later
-while the reader is looking at something else; a message older than what the
-conversation has loaded cannot be reached without loading history up to it, so
-in that case the conversation opens at its newest message instead.
+A message notification is a way back into the conversation, and nothing more.
+Tapping it opens that conversation at its newest messages; a notification that
+covers several conversations opens the list itself.
+
+What it used to do was jump to the newest message it named, and that was not
+worth what it cost. The list is numbered by items and the day pills are items
+too, so finding a message meant working out its place in a list that grows
+while pages of history are read — and a jump that lands before the page it
+needs has arrived is a jump to the wrong line. Adding to that, the message ID
+had to travel through the notification, the intent and the screen, and any one
+of those arriving late was a navigation race.
+
+None of it is needed to answer "what did they say?": the answer is at the
+bottom of the conversation. So the ID no longer travels, nothing is scrolled
+to, the conversation opens at item 0 — its newest message — and stays there
+while the first page is read from storage. The grouped case is handled on its
+own: `Announcement.peer` is null when several conversations are involved, and
+that notification carries a different intent, which shows the list whatever
+screen Maun was left on.
 
 ## What is not built yet
 

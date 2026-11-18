@@ -214,39 +214,6 @@ class ChatListsTest {
         assertEquals("Nov 15, 2026", dayLabel(today.plusDays(1), today, Locale.US))
     }
 
-    // ---- Finding a message in the list ----------------------------------------
-
-    @Test
-    fun `a message is found by its place among the items, not among the messages`() {
-        val day = LocalDate.of(2026, 11, 16)
-        val items = listOf(
-            // Newest first: the list is drawn upside down.
-            MessageItem(message(3, "c"), startsRun = true, endsRun = true),
-            MessageItem(message(2, "b"), startsRun = true, endsRun = true),
-            DayItem(day, above = 2),
-            MessageItem(message(1, "a"), startsRun = true, endsRun = true),
-        )
-        assertEquals(0, indexOfMessage(items, "c"))
-        assertEquals(1, indexOfMessage(items, "b"))
-        // The day pill above it is an item too: the message under it is at 3, not 2.
-        assertEquals(3, indexOfMessage(items, "a"))
-        assertEquals(3, items.indexOfFirst { it is MessageItem && it.message.id == "a" })
-        assertEquals(2, items.filterIsInstance<MessageItem>().indexOfFirst { it.message.id == "a" })
-        // Older than anything here, or gone: no place at all.
-        assertEquals(-1, indexOfMessage(items, "z"))
-    }
-
-    private fun message(seq: Long, id: String) = MessageEntity(
-        seq = seq,
-        peer = "ab12".repeat(16),
-        id = id,
-        outgoing = false,
-        kind = 0,
-        text = "hello",
-        at = 0,
-        status = 0,
-    )
-
     // ---- People ----------------------------------------------------------------
 
     @Test

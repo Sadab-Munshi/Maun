@@ -31,6 +31,12 @@
         android:name="android.hardware.camera"
         android:required="false" />
 
+    <!--
+        "Check for updates" hands a downloaded APK to Android's installer. Maun
+        never installs anything itself: Android asks, and the user may say no.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- To say that a message has arrived. Asked for at first login or from Settings. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 

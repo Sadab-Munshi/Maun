@@ -55,6 +55,9 @@ import org.maun.messenger.Messenger
 import org.maun.messenger.ui.ProfileScreen
 import org.maun.messenger.ui.ForwardPicker
 import org.maun.messenger.ui.SelectionBar
+import org.maun.messenger.ui.UpdateDialog
+import org.maun.messenger.updates.PublishedRelease
+import org.maun.messenger.updates.UpdateState
 import org.maun.messenger.ui.SettingsScreen
 import org.maun.messenger.ui.SignedOutScreen
 import org.maun.messenger.ui.SoundChoices
@@ -187,9 +190,13 @@ class ScreensTest {
     }
 
     @Composable
-    private fun Settings(sounds: SoundChoices = SoundChoices()) {
+    private fun Settings(
+        sounds: SoundChoices = SoundChoices(),
+        update: UpdateState = UpdateState.Idle,
+    ) {
         SettingsScreen(
             sounds = sounds,
+            update = update,
             version = "0.23.0",
             relay = RelayState.Online,
             delivery = DeliveryUi(pushApp = "Google's push service", google = true),
@@ -569,6 +576,51 @@ class ScreensTest {
 
     @Test
     fun settings() = shoot("settings") { Settings() }
+
+    // ---- The update check ------------------------------------------------------
+
+    private val newer = PublishedRelease(
+        versionName = "0.25.0",
+        versionCode = 30,
+        notes = "Calls ring on the locked screen again.\nSmaller download.\nFixes to the chat list.",
+        apkUrl = "https://example.org/maun-0.25.0-30-arm64-v8a.apk",
+    )
+
+    @Composable
+    private fun Update(state: UpdateState) {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            UpdateDialog(
+                state = state,
+                installed = "Maun 0.24.0",
+                onDownload = {},
+                onInstall = {},
+                onDismiss = {},
+            )
+        }
+    }
+
+    @Test
+    fun updateUpToDate() = shoot("update-uptodate") { Update(UpdateState.UpToDate("0.24.0")) }
+
+    @Test
+    fun updateAvailable() = shoot("update-available") { Update(UpdateState.Available(newer)) }
+
+    @Test
+    fun updateDownloading() = shoot("update-downloading") { Update(UpdateState.Downloading(newer, 0.42f)) }
+
+    @Test
+    fun updateReady() = shoot("update-ready") { Update(UpdateState.ReadyToInstall(newer)) }
+
+    @Test
+    fun updateOffline() = shoot("update-offline") {
+        Update(UpdateState.Failed("Could not reach GitHub. Check the connection and try again."))
+    }
+
+    // The row in Settings says which of those it is, without opening anything.
+    @Test
+    fun settingsWithAnUpdate() = shoot("settings-update-row") {
+        Settings(update = UpdateState.Available(newer))
+    }
 
     // ---- A narrow phone ---------------------------------------------------------
     // The smallest width Maun is expected on: nothing may wrap, clip or overlap.
