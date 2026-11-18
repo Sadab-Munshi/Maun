@@ -115,13 +115,12 @@ Every release publishes both APKs. These are the checksums of the two files
 attached to the newest release, taken from the published assets:
 
 ```
-29dbe9f10a41833be78b835c7d26813f640bdf9fa9fb3821a13021a3a1f724f0  maun-0.24.1-30-arm64-v8a.apk
-fb832c2e749550ac5d43d358a7b0b1d61e5344212c51b1c19c9652eb5d46863d  maun-0.24.1-30-armeabi-v7a.apk
+9153ec04cc00254b689b4ce29acad980164c2c44b77dc1561a5b1ab4cddc115e  maun-0.24.2-31-arm64-v8a.apk
+623ae0bab3a9125cd5cf9b78d9ade56c1a70758a90c34f273dfcd29ab746f14b  maun-0.24.2-31-armeabi-v7a.apk
 ```
 
-(0.24.0, still installable from its own release page:
-`2119e617…2c470cc8` for `maun-0.24.0-29-arm64-v8a.apk` and `b7bd40a6…a32d8ce`
-for `-armeabi-v7a`.)
+(0.24.1: `29dbe9f1…a1f724f0` and `fb832c2e…5d46863d`. 0.24.0: `2119e617…2c470cc8`
+and `b7bd40a6…a32d8ce`. Every release page keeps its own files.)
 
 On a phone, a file manager that shows a checksum, or `sha256sum` on a computer,
 confirms the file is the one the project published. The signing certificate is

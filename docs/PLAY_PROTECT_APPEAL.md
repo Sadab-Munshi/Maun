@@ -11,7 +11,7 @@ interchangeable:
 
 | Artifact | Contains | Package id | Signed with |
 | --- | --- | --- | --- |
-| `maun-release-apk` (Release workflow) | `maun-0.24.0-29-arm64-v8a.apk`, `…-armeabi-v7a.apk` | `org.maun.messenger` | the permanent release key |
+| `maun-release-apk` (Release workflow) | `maun-0.24.2-31-arm64-v8a.apk`, `…-armeabi-v7a.apk` | `org.maun.messenger` | the permanent release key |
 | `maun-debug-apk` (Android workflow) | `app-arm64-v8a-debug.apk`, `app-armeabi-v7a-debug.apk` | `org.maun.messenger.debug` | a debug key made on the build machine |
 
 Both artifacts are **zip files**. The `.apk` has to be extracted first; handing
@@ -25,8 +25,8 @@ file being tested is not the release at all.
 To tell what a file is, on a computer:
 
 ```
-apksigner verify --print-certs maun-0.24.0-29-arm64-v8a.apk   # the certificate
-sha256sum maun-0.24.0-29-arm64-v8a.apk                        # compare with PLAY_PROTECT.md
+apksigner verify --print-certs maun-0.24.2-31-arm64-v8a.apk   # the certificate
+sha256sum maun-0.24.2-31-arm64-v8a.apk                        # compare with PLAY_PROTECT.md
 unzip -l maun-release-apk.zip                                 # what is inside the artifact
 ```
 
@@ -67,9 +67,9 @@ Facts to paste, all of which are true of this repository:
 ```
 App name:      Maun
 Package name:  org.maun.messenger
-Version:       0.24.1 (versionCode 30), targetSdkVersion 36, minSdkVersion 29
-Binary:        https://github.com/Sadab-Munshi/Maun/releases/download/v0.24.1/maun-0.24.1-30-arm64-v8a.apk
-               sha256 29dbe9f10a41833be78b835c7d26813f640bdf9fa9fb3821a13021a3a1f724f0
+Version:       0.24.2 (versionCode 31), targetSdkVersion 36, minSdkVersion 29
+Binary:        https://github.com/Sadab-Munshi/Maun/releases/download/v0.24.2/maun-0.24.2-31-arm64-v8a.apk
+               sha256 9153ec04cc00254b689b4ce29acad980164c2c44b77dc1561a5b1ab4cddc115e
 Source:        https://github.com/Sadab-Munshi/Maun
 Signing cert  35564CDE8213C64B4354421DC57523E7591979A466FD5E0EA81CF4D91C5B41FD
               (the same key for every release; apksigner verify --print-certs)
