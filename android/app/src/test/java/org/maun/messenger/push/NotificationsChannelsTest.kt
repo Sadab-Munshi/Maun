@@ -78,18 +78,34 @@ class NotificationsChannelsTest {
 
     @Test
     fun `a channel pointing at a sound that cannot be opened is made again`() {
-        // What an install carried through several versions can end up with.
+        // What an install carried through several versions can end up with: a
+        // channel whose sound is a file that is no longer there. A file path
+        // is used rather than a resource number so that the test says what it
+        // means on any machine - what matters is that the sound cannot be
+        // opened, not which kind of address it is.
         val id = SoundSettings.Channel.MAUN.id
+        val gone = "file:///nowhere/incoming_message_ringtone1.ogg"
         manager().createNotificationChannel(
             android.app.NotificationChannel(id, "Messages", NotificationManager.IMPORTANCE_HIGH).apply {
-                setSound(android.net.Uri.parse("android.resource://org.maun.messenger/999999"), null)
+                setSound(android.net.Uri.parse(gone), null)
             },
         )
-        assertEquals("android.resource://org.maun.messenger/999999", manager().getNotificationChannel(id).sound.toString())
+        assertEquals(gone, manager().getNotificationChannel(id).sound.toString())
 
         Notifications(context).createChannels()
 
         assertEquals(Notifications.maunSoundUri(context.packageName), manager().getNotificationChannel(id).sound.toString())
+
+        // And only once: a phone whose channels cannot be opened for some
+        // other reason must not have them thrown away on every start.
+        manager().deleteNotificationChannel(id)
+        manager().createNotificationChannel(
+            android.app.NotificationChannel(id, "Messages", NotificationManager.IMPORTANCE_HIGH).apply {
+                setSound(android.net.Uri.parse(gone), null)
+            },
+        )
+        Notifications(context).createChannels()
+        assertEquals("already dealt with, this one is left alone", gone, manager().getNotificationChannel(id).sound.toString())
     }
 
     @Test
