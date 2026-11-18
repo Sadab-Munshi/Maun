@@ -17,9 +17,9 @@ class FetchStepTest {
 
     /**
      * Follows what the worker would do with each step: a retry comes back with
-     * the next attempt number and without the waiting mark, a wait-for-network
-     * fetch comes back as the first attempt of a fetch that waited. Returns the
-     * steps taken until one stops.
+     * the next attempt number and keeps the waiting mark it was given, and a
+     * wait-for-network fetch comes back as the first attempt of one that
+     * waited. Returns the steps taken until one stops.
      */
     private fun follow(caughtUp: Boolean, unsent: Int, waitingForNetwork: Boolean): List<FetchStep> {
         val steps = mutableListOf<FetchStep>()
@@ -29,10 +29,7 @@ class FetchStepTest {
             val step = nextStep(caughtUp, unsent, attempt, max, waiting)
             steps += step
             when (step) {
-                FetchStep.Again -> {
-                    attempt++
-                    waiting = false
-                }
+                FetchStep.Again -> attempt++
                 FetchStep.WaitForNetwork -> {
                     attempt = 0
                     waiting = true

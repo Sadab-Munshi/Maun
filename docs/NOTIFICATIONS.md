@@ -242,8 +242,11 @@ in the code rather than left to the hourly fetch:
   last try leaves exactly one fetch behind that Android runs the moment a
   network exists (`scheduleWhenOnline`, a `NetworkType.CONNECTED` constraint,
   unique work kept, not appended). It is not a timer and not a loop: the fetch
-  that waited for a network does not arrange another after it, so a relay that
-  cannot be reached cannot keep a phone fetching.
+  that waited for a network carries that mark through its own three tries and
+  then stops without leaving another behind (the first run of this check caught
+  exactly that — the mark was being dropped on the retry, which turned a relay
+  that cannot be reached into a fetch every minute), so an unreachable relay
+  cannot keep a phone fetching.
 * **A connection was already down and waiting to try again.** `RelayConnection`
   backs off up to 60 s, and a network that came back during that wait was not a
   reason to stop waiting. The app now registers one

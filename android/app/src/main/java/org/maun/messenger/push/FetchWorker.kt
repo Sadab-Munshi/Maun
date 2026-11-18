@@ -21,7 +21,7 @@ internal enum class FetchStep {
     /** Try again in a moment: the wait grows with each try. */
     Again,
 
-    /** Leave one fetch behind for the moment a network exists. */
+    /** Leave one fetch behind for the moment a network exists. Never asked for by that fetch itself. */
     WaitForNetwork,
 
     /** Nothing is waiting: put away the fetch that was waiting for a network. */
@@ -31,10 +31,11 @@ internal enum class FetchStep {
 /**
  * What follows a fetch that has just finished. [attempt] counts from zero and
  * [maxAttempts] is how many tries a wake-up is worth; after the last of them a
- * fetch that still has something to do waits for a network instead of trying
- * on a timer, and a fetch that was itself that waiting one stops rather than
- * arranging another — otherwise a relay that cannot be reached would leave a
- * phone fetching for ever.
+ * fetch that still has something to do leaves one fetch for the moment a
+ * network exists instead of trying on a timer. A fetch that was itself waiting
+ * for a network keeps that mark through its own tries and stops after them
+ * rather than leaving another one behind — otherwise a relay that cannot be
+ * reached would leave a phone fetching for ever.
  */
 internal fun nextStep(
     caughtUp: Boolean,
@@ -73,7 +74,17 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         val unsent = messenger.unsentNow()
         when (nextStep(caughtUp, unsent, attempt, MAX_ATTEMPTS, waitingForNetwork)) {
             FetchStep.Again -> {
-                schedule(applicationContext, attempt + 1, delayMillis = RETRY_WAIT_MILLIS * (attempt + 1))
+                // A fetch that waited for a network keeps the mark through its
+                // retries, so the end of them is the end of it: without it the
+                // last try would leave another wait-for-network fetch behind,
+                // and an unreachable relay would have this phone fetching for
+                // ever.
+                schedule(
+                    applicationContext,
+                    attempt + 1,
+                    delayMillis = RETRY_WAIT_MILLIS * (attempt + 1),
+                    whenOnline = waitingForNetwork,
+                )
                 DeliveryTrace.stepped(
                     applicationContext,
                     DeliveryTrace.FETCH_AGAIN,
@@ -125,10 +136,10 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
          * without bound: the relay wakes a phone at most once every five
          * seconds.
          */
-        fun schedule(context: Context, attempt: Int = 0, delayMillis: Long = 0L) {
+        fun schedule(context: Context, attempt: Int = 0, delayMillis: Long = 0L, whenOnline: Boolean = false) {
             val request = OneTimeWorkRequestBuilder<FetchWorker>()
                 .setConstraints(online)
-                .setInputData(workDataOf(KEY_ATTEMPT to attempt))
+                .setInputData(workDataOf(KEY_ATTEMPT to attempt, KEY_WHEN_ONLINE to whenOnline))
                 .apply {
                     if (delayMillis > 0) {
                         // A repeat that is waiting for its moment: it must not
