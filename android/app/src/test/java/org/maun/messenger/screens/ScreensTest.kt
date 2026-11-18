@@ -599,6 +599,11 @@ class ScreensTest {
     fun settingsOnATallScreen() = shoot("settings-tall") { Settings() }
 
     @Test
+    // Tall enough for About, the last group, and the note it opens.
+    @Config(qualifiers = "w360dp-h2100dp-xhdpi")
+    fun settingsAbout() = shoot("settings-about") { Settings() }
+
+    @Test
     fun settingsSoundsSilent() = shoot("settings-sounds-silent") {
         Settings(
             sounds = SoundChoices(

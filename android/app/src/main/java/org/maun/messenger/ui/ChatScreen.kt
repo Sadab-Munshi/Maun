@@ -311,7 +311,7 @@ fun ChatScreen(
     var reached by remember(peerId) { mutableStateOf(false) }
     LaunchedEffect(scrollTo, items, hasOlder) {
         val wanted = scrollTo ?: return@LaunchedEffect
-        val index = items.indexOfFirst { it is MessageItem && it.message.id == wanted }
+        val index = indexOfMessage(items, wanted)
         when {
             index >= 0 -> {
                 listState.scrollToItem(index)
