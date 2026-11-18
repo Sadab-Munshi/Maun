@@ -117,6 +117,13 @@ jobs:
           echo "VERSION_CODE=$version_code" >> "$GITHUB_ENV"
           echo "VERSION_NAME=$version_name" >> "$GITHUB_ENV"
 
+      - name: What is in the APK, largest first
+        run: |
+          for apk in app/build/outputs/apk/release/*.apk; do
+            echo "=== $apk"
+            unzip -l "$apk" | sort -k1 -n | tail -12
+          done
+
       - name: Name the APKs for the update check
         run: |
           set -euo pipefail
