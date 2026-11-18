@@ -94,6 +94,25 @@ Three things were making a long conversation heavy, and all three are fixed:
 
 What is still not measured on a device is in `docs/PERFORMANCE.md`.
 
+## The look, before release (Round 11)
+
+The selection asked for a bar and got a small page of it: the count in a column
+of its own, and every action spelled out, which on a narrow phone pushed the
+last of them off the edge. It is now the conversation's header turned into a
+toolbar — close, one number, and the actions as icons, scrolled only if the
+phone is narrower than five of them. The five emoji moved to the message they
+would go on: the bar hangs above that bubble and travels with it, so it is
+never somewhere else on the screen than the message it reacts to.
+
+The jump from a notification was counting the wrong things: it took the
+message's place among the messages, while the list is numbered by items, and
+the day pills are items too. Every message under the first day pill was
+therefore opened one line too early, and the jump was animated, which looked
+like a slow drift on a long conversation. It now counts in items, lands
+immediately, lights the bubble it landed on for a moment, and pages older
+history in until it finds the message; if it is not there at all, the newest
+messages are shown.
+
 ## Opening at a message (Round 10)
 
 A notification about one conversation now names the newest message it is about

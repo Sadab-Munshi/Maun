@@ -20,6 +20,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -31,7 +32,10 @@ import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -193,6 +197,8 @@ fun ChatScreen(
     contacts: List<org.maun.messenger.data.ContactEntity> = emptyList(),
     /** Forwards the texts to [peer], in the order they were written. */
     onForward: (peer: String, texts: List<String>) -> Unit = { _, _ -> },
+    /** Messages picked out already: for a screenshot of the selection look, and empty otherwise. */
+    startSelected: Set<Long> = emptySet(),
     onLoadOlder: () -> Unit,
     onDelete: (Long) -> Unit,
     onBack: () -> Unit,
@@ -211,7 +217,9 @@ fun ChatScreen(
     var deleting by remember { mutableStateOf<List<MessageEntity>>(emptyList()) }
     // What was long-pressed, or tapped while something is: the bar below does
     // for one message or for many what the old popup did for one.
-    var selection by remember(peerId) { mutableStateOf<Set<Long>>(emptySet()) }
+    // Seeded only when the screen is drawn for a picture of the selection look;
+    // in the app itself nothing is selected until a finger says so.
+    var selection by remember(peerId) { mutableStateOf(startSelected) }
     // The message the composer is answering, until it is sent or put down.
     var replying by remember(peerId) { mutableStateOf<MessageEntity?>(null) }
     // What the forward picker would send, until it is sent or put down.
@@ -294,22 +302,48 @@ fun ChatScreen(
         files.onNoticeShown()
     }
 
-    // A notification named a message: the list goes to it, once. A message
-    // older than what is loaded cannot be reached without loading history to
-    // it, so the conversation simply opens at the newest instead of jumping
-    // somewhere else entirely.
-    LaunchedEffect(scrollTo, items) {
+    // A notification named a message: the list goes to it, once. The index is
+    // the message's place among the list's items — the day pills are items too —
+    // and not among the messages alone, or the list would land somewhere else.
+    // The jump is immediate rather than animated: opening a conversation should
+    // show the message, not a journey to it.
+    var lit by remember { mutableStateOf<Long?>(null) }
+    var reached by remember(peerId) { mutableStateOf(false) }
+    LaunchedEffect(scrollTo, items, hasOlder) {
         val wanted = scrollTo ?: return@LaunchedEffect
-        val index = messages.indexOfFirst { it.id == wanted }
-        if (index >= 0) listState.animateScrollToItem(index.coerceAtLeast(0))
-        // Asked once, whether or not it was found: jumping again later, while
-        // the reader is somewhere else in the conversation, would be worse.
-        onScrolledThere()
+        val index = items.indexOfFirst { it is MessageItem && it.message.id == wanted }
+        when {
+            index >= 0 -> {
+                listState.scrollToItem(index)
+                if (!reached) {
+                    reached = true
+                    onScrolledThere()
+                }
+                lit = (items[index] as MessageItem).message.seq
+            }
+            // Older than what this phone has loaded: bring in the next page and
+            // look again. This runs again when it arrives.
+            hasOlder -> onLoadOlder()
+            // Not here at all, and there is no more history to look through: the
+            // newest messages are the honest answer.
+            else -> {
+                listState.scrollToItem(0)
+                reached = true
+                onScrolledThere()
+            }
+        }
+    }
+    LaunchedEffect(lit) {
+        if (lit == null) return@LaunchedEffect
+        delay(1600)
+        lit = null
     }
 
     // Keep the newest message in view: always for one's own, and for an
-    // incoming one unless the reader has scrolled back to look at history.
+    // incoming one unless the reader has scrolled back to look at history. Not
+    // while a tapped notification is still finding its message.
     LaunchedEffect(newest?.seq) {
+        if (scrollTo != null) return@LaunchedEffect
         if (newest != null && (newest.outgoing || listState.firstVisibleItemIndex <= 1)) {
             listState.scrollToItem(0)
         }
@@ -338,17 +372,69 @@ fun ChatScreen(
     val scrolledBack by remember { derivedStateOf { listState.firstVisibleItemIndex > 2 } }
     val chatColors = LocalChatColors.current
 
+    // What is selected, and what can be done with it. The toolbar at the top
+    // and the emoji bar at the message are two faces of the same choice.
+    val picked = messages.filter { it.seq in selection }.sortedBy { it.seq }
+    val only = picked.singleOrNull()
+    val onlyFile = only?.let { message ->
+        if (message.kind == MessageKind.FILE) Attachment.fromLocal(message.text) else null
+    }
+    val copyPicked = {
+        copyMessage(context, picked.joinToString("\n") { it.text })
+        selection = emptySet()
+    }
+    val saveOnly = {
+        if (only != null && onlyFile != null) files.onSave(only.seq, onlyFile)
+        selection = emptySet()
+    }
+    val shareOnly = {
+        if (only != null && onlyFile != null) files.onShare(only.seq, onlyFile)
+        selection = emptySet()
+    }
+    val replyToOnly = {
+        replying = only
+        selection = emptySet()
+    }
+    val forwardPicked = {
+        // Only words travel: a file is handed over by Share, which needs no
+        // copy of it and no second upload.
+        forwarding = picked.filter { it.kind == MessageKind.TEXT }
+        selection = emptySet()
+    }
+    val reactToOnly = { emoji: String ->
+        if (only != null) {
+            // The same emoji again takes it off.
+            val take = reactions[only.id]?.mine == emoji
+            onReact(only.id, if (take) "" else emoji)
+        }
+    }
+
     Scaffold(contentWindowInsets = WindowInsets.safeDrawing) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
             Column(modifier = Modifier.widthIn(max = 720.dp).fillMaxSize()) {
-                ChatHeader(
-                    peerId = peerId,
-                    name = contactName ?: (contactUsername ?: peerUsername)?.let { "@$it" },
-                    verified = peerVerified,
-                    onBack = onBack,
-                    onOpenDetails = if (isContact) onOpenDetails else null,
-                    onCall = if (isContact) onCall else null,
-                )
+                if (picked.isEmpty()) {
+                    ChatHeader(
+                        peerId = peerId,
+                        name = contactName ?: (contactUsername ?: peerUsername)?.let { "@$it" },
+                        verified = peerVerified,
+                        onBack = onBack,
+                        onOpenDetails = if (isContact) onOpenDetails else null,
+                        onCall = if (isContact) onCall else null,
+                    )
+                } else {
+                    // Count and actions where the contact's name was: nothing
+                    // covers the conversation, and nothing has to wrap.
+                    SelectionBar(
+                        picked = picked,
+                        onCopy = copyPicked,
+                        onSave = saveOnly,
+                        onDelete = { deleting = picked },
+                        onReply = replyToOnly,
+                        onForward = forwardPicked,
+                        onShare = shareOnly,
+                        onClose = { selection = emptySet() },
+                    )
+                }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -382,6 +468,9 @@ fun ChatScreen(
                                                     selectionActive = selection.isNotEmpty(),
                                                     reactions = reactions[item.message.id],
                                                     quoted = item.message.replyTo?.let { byId[it] },
+                                                    reactionBar = only != null && only.seq == item.message.seq,
+                                                    onReactEmoji = reactToOnly,
+                                                    highlighted = lit == item.message.seq,
                                                     onTap = { selection = toggle(selection, item.message.seq) },
                                                     onLongPress = {
                                                         // A notice is not a message: nothing to do with it.
@@ -439,67 +528,18 @@ fun ChatScreen(
 
                         if (waiting != null) Notice(waiting)
                         if (isContact) {
-                            if (selection.isEmpty()) {
-                                Composer(
-                                    peerId = peerId,
-                                    replyingTo = replying,
-                                    onCancelReply = { replying = null },
-                                    onSend = { text ->
-                                        onSend(text, replying?.id)
-                                        replying = null
-                                    },
-                                    onAttach = { showAttachSheet = true },
-                                    onCamera = triggerCamera,
-                                    onVoice = files.onVoice,
-                                )
-                            } else {
-                                // The same place as the composer: while something
-                                // is selected, that is what the bar is for.
-                                val picked = messages.filter { it.seq in selection }
-                                val one = picked.singleOrNull()
-                                SelectionBar(
-                                    picked = picked,
-                                    reactions = one?.let { reactions[it.id] },
-                                    onReact = { emoji ->
-                                        if (one != null) {
-                                            // The same emoji again takes it off.
-                                            val take = reactions[one.id]?.mine == emoji
-                                            onReact(one.id, if (take) "" else emoji)
-                                        }
-                                    },
-                                    onCopy = {
-                                        val text = picked.sortedBy { it.seq }.joinToString("\n") { it.text }
-                                        copyMessage(context, text)
-                                        selection = emptySet()
-                                    },
-                                    onSave = {
-                                        val file = one?.let { message ->
-                                            Attachment.fromLocal(message.text)?.takeIf { message.kind == MessageKind.FILE }
-                                        }
-                                        if (one != null && file != null) files.onSave(one.seq, file)
-                                        selection = emptySet()
-                                    },
-                                    onReply = {
-                                        replying = one
-                                        selection = emptySet()
-                                    },
-                                    onForward = {
-                                        // Only words travel: a file is handed over by Share, which
-                                        // needs no copy of it and no second upload.
-                                        forwarding = picked.filter { it.kind == MessageKind.TEXT }.sortedBy { it.seq }
-                                        selection = emptySet()
-                                    },
-                                    onShare = {
-                                        val file = one?.let { message ->
-                                            Attachment.fromLocal(message.text)?.takeIf { message.kind == MessageKind.FILE }
-                                        }
-                                        if (one != null && file != null) files.onShare(one.seq, file)
-                                        selection = emptySet()
-                                    },
-                                    onDelete = { deleting = picked },
-                                    onClose = { selection = emptySet() },
-                                )
-                            }
+                            Composer(
+                                peerId = peerId,
+                                replyingTo = replying,
+                                onCancelReply = { replying = null },
+                                onSend = { text ->
+                                    onSend(text, replying?.id)
+                                    replying = null
+                                },
+                                onAttach = { showAttachSheet = true },
+                                onCamera = triggerCamera,
+                                onVoice = files.onVoice,
+                            )
                         } else {
                             RequestBar(peerId = peerId, onAccept = onAccept, onBlock = onBlock)
                         }
@@ -750,8 +790,6 @@ private fun toggle(selection: Set<Long>, seq: Long): Set<Long> =
 @Composable
 internal fun SelectionBar(
     picked: List<MessageEntity>,
-    reactions: Reactions?,
-    onReact: (String) -> Unit,
     onCopy: () -> Unit,
     onSave: () -> Unit,
     onDelete: () -> Unit,
@@ -767,58 +805,58 @@ internal fun SelectionBar(
     val one = picked.singleOrNull()
     val text = one != null && one.kind == MessageKind.TEXT
     val file = one != null && one.kind == MessageKind.FILE
-    Surface(color = colors.surfaceContainerHigh, tonalElevation = 2.dp) {
-        Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars).padding(horizontal = 10.dp, vertical = 8.dp)) {
-            if (one != null) {
-                // Five, no more, each the same width: a row that fits any phone
-                // without a second page of emoji to open.
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Payload.REACTIONS.forEach { emoji ->
-                        val mine = reactions?.mine == emoji
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .then(
-                                    // The one this phone chose stands out.
-                                    if (mine) Modifier.background(colors.primary.copy(alpha = 0.20f)) else Modifier,
-                                )
-                                .clickable(onClickLabel = "React $emoji") { onReact(emoji) },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(text = emoji, fontSize = 22.sp)
-                        }
-                    }
-                }
+    val words = picked.any { it.kind == MessageKind.TEXT }
+
+    // What can be done, in the order a thumb expects. Icons, not words: the row
+    // is as wide as the phone, and a word that does not fit has to wrap or be
+    // cut. This is the same strip the conversation's own header occupies, so
+    // nothing of the messages is covered while it is up.
+    val actions = buildList {
+        if (one != null) add(Triple(MaunIcons.Reply, "Reply", onReply))
+        if (words) add(Triple(MaunIcons.Forward, "Forward", onForward))
+        if (words) add(Triple(MaunIcons.Copy, "Copy", onCopy))
+        if (file) add(Triple(MaunIcons.Download, "Save", onSave))
+        if (file) add(Triple(MaunIcons.Share, "Share", onShare))
+        add(Triple(MaunIcons.Delete, "Delete", onDelete))
+    }
+
+    Surface(color = colors.surfaceContainer, tonalElevation = 1.dp) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onClose) {
+                Icon(MaunIcons.Close, contentDescription = "Nothing selected")
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onClose) {
-                    Icon(MaunIcons.Close, contentDescription = "Nothing selected")
-                }
-                Text(
-                    text = if (picked.size == 1) "1 selected" else "${picked.size} selected",
-                    style = MaterialTheme.typography.labelLarge,
-                    modifier = Modifier.weight(1f),
-                )
-                if (one != null) {
-                    TextButton(onClick = onReply) { Text("Reply") }
-                }
-                if (text) {
-                    TextButton(onClick = onForward) { Text("Forward") }
-                }
-                if (text) {
-                    TextButton(onClick = onCopy) { Text("Copy") }
-                }
-                if (file) {
-                    TextButton(onClick = onSave) { Text("Save") }
-                    TextButton(onClick = onShare) { Text("Share") }
-                }
-                TextButton(onClick = onDelete) {
-                    Text("Delete", color = colors.error)
+            Text(
+                text = "${picked.size}",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                // One number, one line, whatever the count.
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier.padding(start = 2.dp, end = 8.dp),
+            )
+            Row(
+                // On a narrow phone the last action would be a sliver off the
+                // edge, so the strip gives way a little rather than clipping one.
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                actions.forEach { (icon, label, action) ->
+                    IconButton(onClick = action, modifier = Modifier.size(44.dp)) {
+                        Icon(
+                            icon,
+                            contentDescription = label,
+                            tint = if (label == "Delete") colors.error else colors.onSurfaceVariant,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
                 }
             }
         }
@@ -1060,6 +1098,46 @@ private fun ChatHeader(
     }
 }
 
+/**
+ * The five emoji, floating at the message they would go on. It sits directly
+ * above the bubble and moves with it, so it is never somewhere else on the
+ * screen than the message it reacts to. The emoji already on the message is
+ * marked, and tapping it again takes it off.
+ */
+@Composable
+private fun ReactionBar(reactions: Reactions?, onReact: (String) -> Unit, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        color = colors.surfaceContainerHigh,
+        shape = RoundedCornerShape(24.dp),
+        shadowElevation = 4.dp,
+        modifier = modifier,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Payload.REACTIONS.forEach { emoji ->
+                val mine = reactions?.mine == emoji
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .then(
+                            // The one this phone chose stands out.
+                            if (mine) Modifier.background(colors.primary.copy(alpha = 0.20f)) else Modifier,
+                        )
+                        .clickable(onClickLabel = "React $emoji") { onReact(emoji) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(text = emoji, fontSize = 20.sp)
+                }
+            }
+        }
+    }
+}
+
 /** A small centred label between messages: the day, or a note about the conversation. */
 @Composable
 private fun Pill(text: String, locked: Boolean = false) {
@@ -1108,6 +1186,12 @@ private fun MessageRow(
     reactions: Reactions? = null,
     /** The message this one answers, when this phone still has it. */
     quoted: MessageEntity? = null,
+    /** This is the one message selected, so the emoji bar hangs at it. */
+    reactionBar: Boolean = false,
+    /** Puts this emoji on it, or takes it off when it is already on. */
+    onReactEmoji: (String) -> Unit = {},
+    /** A notification named this message a moment ago. */
+    highlighted: Boolean = false,
     onTap: () -> Unit = {},
     onLongPress: () -> Unit = {},
     files: FileActions = FileActions(),
@@ -1187,8 +1271,22 @@ private fun MessageRow(
             contentAlignment = if (outgoing) Alignment.CenterEnd else Alignment.CenterStart,
         ) {
             Column(horizontalAlignment = if (outgoing) Alignment.End else Alignment.Start) {
+                if (reactionBar) {
+                    ReactionBar(
+                        reactions = reactions,
+                        onReact = onReactEmoji,
+                        modifier = Modifier.padding(bottom = 6.dp),
+                    )
+                }
                 Surface(
                     color = bubbleColor,
+                    // The bubble a notification named is lit for a moment, so
+                    // the eye lands on it rather than on the top of the screen.
+                    border = if (highlighted && !selected) {
+                        BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+                    } else {
+                        null
+                    },
                     shape = shape,
                     shadowElevation = 1.dp,
                     modifier = Modifier

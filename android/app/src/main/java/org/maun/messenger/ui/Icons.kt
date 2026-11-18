@@ -316,6 +316,15 @@ object MaunIcons {
     }
 
     /** Leads to another screen. */
+    /** Answer a message: an arrow turning back the way it came. */
+    val Reply: ImageVector by lazy {
+        icon(
+            "Reply",
+            "M10,9V5l-7,7 7,7v-4.1c5,0 8.5,1.6 11,5.1 -1,-5 -4,-10 -11,-11z",
+            mirrored = true,
+        )
+    }
+
     val Forward: ImageVector by lazy {
         icon(
             "Forward",

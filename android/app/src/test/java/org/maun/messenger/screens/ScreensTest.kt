@@ -148,8 +148,11 @@ class ScreensTest {
         reactions: Map<String, Reactions> = emptyMap(),
         /** The newest message answers the one before it. */
         replying: Boolean = false,
+        /** Messages already picked out, as a long press would leave them. */
+        selected: Set<Long> = emptySet(),
     ) {
         ChatScreen(
+            startSelected = selected,
             peerId = asha.id,
             contactName = contactName,
             contactUsername = "asha_k",
@@ -184,17 +187,10 @@ class ScreensTest {
     }
 
     @Composable
-    private fun Settings(
-        memberEmail: String? = null,
-        username: String? = null,
-        sounds: SoundChoices = SoundChoices(),
-    ) {
+    private fun Settings(sounds: SoundChoices = SoundChoices()) {
         SettingsScreen(
-            memberEmail = memberEmail,
-            username = username,
             sounds = sounds,
-            version = "0.13.0",
-            relayName = "maun.example.workers.dev",
+            version = "0.23.0",
             relay = RelayState.Online,
             delivery = DeliveryUi(pushApp = "Google's push service", google = true),
             privacy = PrivacyUi(appLock = true),
@@ -423,18 +419,14 @@ class ScreensTest {
         CallScreen(call = call, name = asha.name, actions = CallActions(), verified = verified, now = { 1_000_000 })
     }
 
-    // What is on a message, under it: this phone's emoji first, then theirs.
-    // The bar a long press puts in the composer's place: five emoji, no more,
-    // and one question's worth of actions. Shown on its own here because it
-    // lives in the conversation's own state.
+    // The bar a long press puts where the contact's name was: the count, and
+    // the actions that fit what is picked out, as icons, so nothing wraps.
     @Test
     fun selectionBar() = shoot("selection-bar") {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
+            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Top) {
                 SelectionBar(
                     picked = listOf(message(6, false, "Are we still on for today?", 5 * minute)),
-                    reactions = Reactions(mine = "\uD83D\uDC4D"),
-                    onReact = {},
                     onCopy = {},
                     onSave = {},
                     onDelete = {},
@@ -443,6 +435,16 @@ class ScreensTest {
             }
         }
     }
+
+    // One message picked out: the emoji bar hangs at that message, and the
+    // toolbar is where the header was.
+    @Test
+    fun chatSelecting() = shoot("chat-selection") { Chat(selected = setOf(8)) }
+
+    // Several picked out: one count, one set of actions, nothing wrapped.
+    @Test
+    fun chatSelectingMany() = shoot("chat-selection-many") { Chat(selected = setOf(8, 7, 6)) }
+
 
     // A message that answers an earlier one: the quote comes from this phone's
     // own copy, so nothing extra is sent to draw it.
@@ -529,11 +531,12 @@ class ScreensTest {
 
     // ---- A member-only relay ---------------------------------------------------
 
+    // Still needed to build a Maun ID for a picture; nowhere on the screen.
     private val relayName = "maun.example.workers.dev"
 
     @Composable
     private fun Login(ui: LoginUi, checking: Boolean = false) {
-        LoginScreen(relayName, ui, checking, onEmail = {}, onCode = {}, onUsername = {}, onStartOver = {})
+        LoginScreen(ui, checking, onEmail = {}, onCode = {}, onUsername = {}, onStartOver = {})
     }
 
     @Test
@@ -554,7 +557,7 @@ class ScreensTest {
     }
 
     @Test
-    fun pending() = shoot("pending") { PendingScreen(relayName, "asha", checking = false, onCheckAgain = {}) }
+    fun pending() = shoot("pending") { PendingScreen("asha", checking = false, onCheckAgain = {}) }
 
     @Test
     fun myCodeWithUsername() = shoot("my-code-member") {
@@ -562,13 +565,29 @@ class ScreensTest {
     }
 
     @Test
-    fun banned() = shoot("banned") { BannedScreen(relayName = "maun.example.workers.dev", onCheckAgain = {}) }
-
-    @Test
-    fun settingsOfAMember() = shoot("settings-member") { Settings(memberEmail = "asha@example.com", username = "asha") }
+    fun banned() = shoot("banned") { BannedScreen(onCheckAgain = {}) }
 
     @Test
     fun settings() = shoot("settings") { Settings() }
+
+    // ---- A narrow phone ---------------------------------------------------------
+    // The smallest width Maun is expected on: nothing may wrap, clip or overlap.
+
+    @Test
+    @Config(qualifiers = "w320dp-h640dp-xhdpi")
+    fun narrowSelection() = shoot("narrow-chat-selection") { Chat(selected = setOf(8)) }
+
+    @Test
+    @Config(qualifiers = "w320dp-h640dp-xhdpi")
+    fun narrowSelectionMany() = shoot("narrow-chat-selection-many") { Chat(selected = setOf(8, 7, 6)) }
+
+    @Test
+    @Config(qualifiers = "w320dp-h640dp-xhdpi")
+    fun narrowSettings() = shoot("narrow-settings") { Settings() }
+
+    @Test
+    @Config(qualifiers = "w320dp-h640dp-xhdpi")
+    fun narrowLogin() = shoot("narrow-login") { Login(LoginUi()) }
 
     @Test
     @Config(qualifiers = "+night")
@@ -603,7 +622,6 @@ class ScreensTest {
     private fun Profile(hasPhoto: Boolean = false) {
         ProfileScreen(
             code = asha.id,
-            relayName = "maun.example.workers.dev",
             username = "asha",
             memberEmail = "asha@example.com",
             onPhoto = {},
@@ -624,7 +642,6 @@ class ScreensTest {
     @Test
     fun loginExistingAccount() = shoot("login-existing") {
         LoginScreen(
-            relayName = "maun.example.workers.dev",
             ui = LoginUi(step = LoginUi.Step.Existing, email = "asha@example.com", existing = LoginUi.Existing("ab12".repeat(16), "asha", true)),
             checking = false,
             onEmail = {}, onCode = {}, onUsername = {}, onStartOver = {},
@@ -635,7 +652,6 @@ class ScreensTest {
     @Test
     fun loginWithoutABackup() = shoot("login-no-backup") {
         LoginScreen(
-            relayName = "maun.example.workers.dev",
             ui = LoginUi(step = LoginUi.Step.Existing, email = "asha@example.com", existing = LoginUi.Existing("ab12".repeat(16), "asha", false)),
             checking = false,
             onEmail = {}, onCode = {}, onUsername = {}, onStartOver = {},
@@ -645,7 +661,7 @@ class ScreensTest {
 
     @Test
     fun signedOut() = shoot("signed-out") {
-        SignedOutScreen(username = "asha", relayName = "maun.example.workers.dev", onLogIn = {})
+        SignedOutScreen(username = "asha", onLogIn = {})
     }
 
     @Test

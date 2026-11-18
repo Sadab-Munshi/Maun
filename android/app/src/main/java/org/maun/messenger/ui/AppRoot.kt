@@ -147,18 +147,16 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                 // A member-only relay comes first: nothing else is shown to
                 // someone it has shut out, or does not know yet.
                 current is AccountState.Present && banned ->
-                    BannedScreen(relayName = current.code.relay, onCheckAgain = viewModel::checkBanAgain)
+                    BannedScreen(onCheckAgain = viewModel::checkBanAgain)
 
                 // Signed out on this phone: nothing else is reachable until it signs in.
                 current is AccountState.Present && signedOut ->
                     SignedOutScreen(
                         username = username,
-                        relayName = current.code.relay,
                         onLogIn = viewModel::logIn,
                     )
 
                 current is AccountState.Present && awaiting -> PendingScreen(
-                    relayName = current.code.relay,
                     username = username,
                     checking = relay == RelayState.Connecting,
                     onCheckAgain = viewModel::reconnect,
@@ -167,7 +165,6 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                 current is AccountState.Present && loginNeeded -> {
                     val login by viewModel.login.collectAsStateWithLifecycle()
                     LoginScreen(
-                        relayName = current.code.relay,
                         // What the relay said about the last attempt, until something new is tried.
                         ui = if (login.problem == null && !login.working) login.copy(problem = loginProblem) else login,
                         checking = relay !is RelayState.LoginNeeded,
@@ -277,14 +274,11 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             }
                             SettingsScreen(
                                 version = BuildConfig.VERSION_NAME,
-                                relayName = current.code.relay,
                                 relay = relay,
                                 delivery = delivery,
                                 privacy = privacy,
                                 blockedCount = blocked.size,
                                 sounds = soundChoices,
-                                memberEmail = memberEmail,
-                                username = username,
                                 onNotificationsChanged = viewModel::refreshDelivery,
                                 onAppLock = { on ->
                                     if (activity != null) AppLock.setEnabled(activity, on, viewModel::refreshPrivacy)
@@ -327,7 +321,6 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
 
                         screen == PROFILE -> ProfileScreen(
                             code = current.code.id,
-                            relayName = current.code.relay,
                             username = username,
                             memberEmail = memberEmail,
                             onPhoto = { uri -> viewModel.setAvatar(uri) },

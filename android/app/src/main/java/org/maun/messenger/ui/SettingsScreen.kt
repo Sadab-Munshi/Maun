@@ -3,6 +3,7 @@ package org.maun.messenger.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
@@ -29,6 +30,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import org.maun.messenger.Avatars
@@ -78,14 +81,11 @@ data class SoundChoices(
 @Composable
 fun SettingsScreen(
     version: String,
-    relayName: String,
     relay: RelayState,
     delivery: DeliveryUi,
     privacy: PrivacyUi,
     blockedCount: Int,
     sounds: SoundChoices = SoundChoices(),
-    memberEmail: String? = null,
-    username: String? = null,
     onAppLock: (Boolean) -> Unit,
     onBlockScreenshots: (Boolean) -> Unit,
     onNotifyText: (Boolean) -> Unit = {},
@@ -106,21 +106,21 @@ fun SettingsScreen(
 ) {
     var choosingSent by remember { mutableStateOf(false) }
     var choosingIncoming by remember { mutableStateOf(false) }
+    var privacyNote by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
 
     ScreenFrame(title = "Settings", onBack = onBack) {
-        SectionTitle("Profile", modifier = Modifier.padding(bottom = 4.dp))
-        ProfileRow(onClick = onOpenProfile)
+        Group("Profile") {
+            ProfileRow(onClick = onOpenProfile)
+        }
 
-        Column {
-            SectionTitle("Notifications", modifier = Modifier.padding(bottom = 4.dp))
+        Group("Notifications") {
             NotificationsSection(delivery, onChanged = onNotificationsChanged)
             SwitchRow(
                 icon = MaunIcons.Bell,
                 title = "Show messages in notifications",
-                text = "A notification names who wrote and shows the message. Off, it only says that a " +
-                    "message arrived. A locked screen never shows either.",
+                text = "Name who wrote and show what they said. A locked screen never shows either.",
                 checked = privacy.notifyText,
                 enabled = true,
                 onChange = onNotifyText,
@@ -128,28 +128,24 @@ fun SettingsScreen(
             LinkRow(
                 icon = MaunIcons.Settings,
                 title = "This phone's notification settings",
-                text = "Sounds, vibration, pop-ups and what Maun may show on a locked screen, " +
-                    "as Android keeps them.",
+                text = "Sounds, vibration and pop-ups, as Android keeps them.",
                 onClick = { context.openAppNotificationSettings() },
             )
         }
 
-        Column {
-            SectionTitle("Calls", modifier = Modifier.padding(bottom = 4.dp))
+        Group("Calls") {
             if (privacy.lockScreenCallsBlocked) {
                 LinkRow(
                     icon = MaunIcons.Call,
                     title = "Let calls light up the locked screen",
-                    text = "Android is not letting Maun show a call over the lock screen, so a call only " +
-                        "rings and shows as a notification. Tap, then allow full-screen notifications for Maun.",
+                    text = "Android is not letting a call show over the lock screen. Tap and allow it.",
                     onClick = onLockScreenCalls,
                 )
             }
             SwitchRow(
                 icon = MaunIcons.Call,
                 title = "Treat Maun calls as phone calls",
-                text = "Android handles a Maun call like any call: a headset's or a car's buttons answer it, " +
-                    "and a phone call does not talk over it. Turn this off if a call sounds wrong or does not connect.",
+                text = "Answer from a headset or from the car, and a phone call does not talk over it.",
                 checked = privacy.telecomCalls,
                 enabled = true,
                 onChange = onTelecomCalls,
@@ -158,21 +154,19 @@ fun SettingsScreen(
                 LinkRow(
                     icon = MaunIcons.Bell,
                     title = "Let Maun run in the background",
-                    text = "This phone's battery saving may put Maun to sleep, so that calls do not ring and " +
-                        "messages come late. Tap to take Maun out of it. If calls still do not ring, also " +
-                        "allow Maun to start by itself in the phone's own settings (often called Auto-launch).",
+                    text = "Battery saving may put Maun to sleep, so calls do not ring and messages come late. " +
+                        "Tap to take Maun out of it.",
                     onClick = onBattery,
                 )
             }
         }
 
-        Column {
-            SectionTitle("Chats and media", modifier = Modifier.padding(bottom = 4.dp))
+        Group("Chats and media") {
             SwitchRow(
                 icon = MaunIcons.Download,
                 title = "Save arriving files automatically",
-                text = "Photos and videos go to Gallery under Pictures/Maun; documents and other files to " +
-                    "Download/Maun. Off: a file is saved only when you ask for it.",
+                text = "Photos and videos go to Gallery, everything else to Download. " +
+                    "Off: you save each one yourself.",
                 checked = privacy.saveIncomingFiles,
                 enabled = true,
                 onChange = onSaveIncomingFiles,
@@ -180,15 +174,14 @@ fun SettingsScreen(
             SwitchRow(
                 icon = MaunIcons.Wallpaper,
                 title = "Chat background pattern",
-                text = "Show a soft, subtle pattern behind conversations. Turn off for a solid background.",
+                text = "A soft pattern behind conversations. Off for a plain background.",
                 checked = privacy.chatPattern,
                 enabled = true,
                 onChange = onChatPattern,
             )
         }
 
-        Column {
-            SectionTitle("Message sounds", modifier = Modifier.padding(bottom = 4.dp))
+        Group("Message sounds") {
             ChoiceRow(
                 icon = MaunIcons.Send,
                 title = "Sound when you send",
@@ -206,20 +199,19 @@ fun SettingsScreen(
             )
         }
 
-        Column {
-            SectionTitle("Privacy", modifier = Modifier.padding(bottom = 4.dp))
+        Group("Privacy") {
             SwitchRow(
                 icon = MaunIcons.Lock,
                 title = "App lock",
                 text = when {
                     !privacy.canLock && !privacy.appLock ->
-                        "Set a screen lock on this phone first. The app lock asks for the same fingerprint, face, PIN or pattern."
+                        "Set a screen lock on this phone first; the app lock asks for the same one."
                     privacy.lockBlocksScreenshots ->
-                        "Ask for your fingerprint, face or screen lock every time Maun is opened. " +
+                        "Ask for your fingerprint, face or screen lock each time Maun opens. " +
                             "On this version of Android it also blocks screenshots."
                     else ->
-                        "Ask for your fingerprint, face or screen lock every time Maun is opened, " +
-                            "and hide Maun in the list of recent apps."
+                        "Ask for your fingerprint, face or screen lock each time Maun opens, " +
+                            "and hide Maun from the recent-apps list."
                 },
                 checked = privacy.appLock,
                 enabled = privacy.canLock || privacy.appLock,
@@ -228,8 +220,7 @@ fun SettingsScreen(
             SwitchRow(
                 icon = MaunIcons.Shield,
                 title = "Block screenshots",
-                text = "Keep Maun out of screenshots and screen recordings made on this phone. " +
-                    "It cannot stop the other person from capturing their own screen.",
+                text = "Keep Maun out of screenshots and screen recordings made on this phone.",
                 checked = privacy.blockScreenshots,
                 enabled = true,
                 onChange = onBlockScreenshots,
@@ -242,40 +233,37 @@ fun SettingsScreen(
             )
         }
 
-        Column {
-            SectionTitle("About", modifier = Modifier.padding(bottom = 4.dp))
+        Group("About") {
+            InfoRow(
+                icon = MaunIcons.Info,
+                title = "Maun $version",
+                text = when (relay) {
+                    RelayState.Online -> "Connected."
+                    RelayState.Connecting -> "Connecting…"
+                    RelayState.Offline -> "Not connected."
+                    is RelayState.Retrying -> "Not connected. Trying again…"
+                    is RelayState.Rejected -> "Not connected. ${relay.reason}"
+                    is RelayState.LoginNeeded -> "Not signed in."
+                    RelayState.Banned -> "This account no longer has access."
+                    RelayState.Pending -> "Waiting to be let in."
+                },
+            )
             LinkRow(
                 icon = MaunIcons.Check,
                 title = "Setup check",
                 text = "Test this phone's encryption, storage and connection.",
                 onClick = onOpenSetupCheck,
             )
-            if (memberEmail != null) {
-                InfoRow(
-                    icon = MaunIcons.Mail,
-                    title = if (username != null) "@$username" else "Logged in",
-                    text = "Logged in as $memberEmail. This relay is for members. Its administrator can see " +
-                        "this address, your username and ID, and which phone you use (its make, model and a " +
-                        "fingerprint of it). " +
-                        "Your messages stay unreadable to the relay and its owner.",
-                )
-            }
-            InfoRow(
-                icon = MaunIcons.Info,
-                title = "Maun $version",
-                text = "Relay: $relayName\n" + when (relay) {
-                    RelayState.Online -> "Connected and signed in."
-                    RelayState.Connecting -> "Connecting…"
-                    RelayState.Offline -> "Not connected."
-                    is RelayState.Retrying -> "${relay.reason} Trying again…"
-                    is RelayState.Rejected -> relay.reason
-                    is RelayState.LoginNeeded -> "The relay asks you to log in."
-                    RelayState.Banned -> "The relay no longer accepts this account."
-                    RelayState.Pending -> "Waiting for the relay's administrator."
-                },
+            LinkRow(
+                icon = MaunIcons.Shield,
+                title = "Privacy",
+                text = "What Maun keeps, and who can see it.",
+                onClick = { privacyNote = true },
             )
         }
     }
+
+    if (privacyNote) PrivacyNote(onDismiss = { privacyNote = false })
 
     if (choosingSent) {
         SoundChoiceDialog(
@@ -314,6 +302,23 @@ fun SettingsScreen(
             onDismiss = { choosingIncoming = false },
             onPreview = onPreviewIncomingSound,
         )
+    }
+}
+
+/**
+ * One heading and the rows under it. The gap above a heading is what separates
+ * the groups: a heading sits closer to its own rows than to the group before it.
+ */
+@Composable
+private fun Group(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(start = 2.dp, bottom = 6.dp),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp), content = content)
     }
 }
 
@@ -489,9 +494,19 @@ private fun RowIcon(icon: ImageVector) {
 
 @Composable
 private fun RowText(title: String, text: String, modifier: Modifier = Modifier) {
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(title, style = MaterialTheme.typography.titleMedium)
-        Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(1.dp)) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.Medium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -500,8 +515,7 @@ private fun RowText(title: String, text: String, modifier: Modifier = Modifier) 
 private fun SettingsPreview() {
     MaunTheme {
         SettingsScreen(
-            version = "0.4.0",
-            relayName = "maun.example.workers.dev",
+            version = "0.23.0",
             relay = RelayState.Online,
             delivery = DeliveryUi(pushApp = "Google's push service", google = true),
             privacy = PrivacyUi(appLock = true),

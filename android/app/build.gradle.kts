@@ -26,8 +26,8 @@ android {
         applicationId = "org.maun.messenger"
         minSdk = 29 // Android 10: built-in Ogg/Opus recording, StrongBox API.
         targetSdk = 36
-        versionCode = 27
-        versionName = "0.22.0"
+        versionCode = 28
+        versionName = "0.23.0"
 
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
     }

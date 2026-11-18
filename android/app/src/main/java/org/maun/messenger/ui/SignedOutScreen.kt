@@ -24,7 +24,6 @@ import org.maun.messenger.Avatars
 @Composable
 fun SignedOutScreen(
     username: String?,
-    relayName: String,
     working: Boolean = false,
     onLogIn: () -> Unit,
 ) {
@@ -58,7 +57,7 @@ fun SignedOutScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            text = "On $relayName. Signing out does not delete your account there, and does not " +
+            text = "Signing out does not delete your account, and does not " +
                 "remove anything from it.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -76,6 +75,6 @@ fun SignedOutScreen(
 @Composable
 private fun SignedOutPreview() {
     MaunTheme {
-        SignedOutScreen(username = "sadab", relayName = "maun.example", onLogIn = {})
+        SignedOutScreen(username = "sadab", onLogIn = {})
     }
 }

@@ -54,7 +54,6 @@ import org.maun.messenger.crypto.Recovery
 @Composable
 fun ProfileScreen(
     code: String,
-    relayName: String,
     username: String?,
     memberEmail: String?,
     onPhoto: (android.net.Uri) -> Unit,
@@ -168,7 +167,7 @@ fun ProfileScreen(
             color = MaterialTheme.colorScheme.onSurface,
         )
         Text(
-            text = "On $relayName. Anyone with this ID can write to you.",
+            text = "Anyone with this ID can write to you.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -352,7 +351,6 @@ private fun ProfilePreview() {
     MaunTheme {
         ProfileScreen(
             code = "ab12cd34ef56ab12cd34ef56ab12cd34",
-            relayName = "maun.example",
             username = "sadab",
             memberEmail = null,
             onPhoto = {},

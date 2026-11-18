@@ -389,3 +389,41 @@ fun QrImage(text: String, description: String, modifier: Modifier = Modifier) {
         }
     }
 }
+
+/**
+ * What Maun keeps and who can see it: the plain statement the login screen used
+ * to spell out in full. It stays one tap away there, and sits in Settings under
+ * About, so it is still read before signing up and findable afterwards.
+ */
+@Composable
+internal fun PrivacyNote(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Privacy") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    "Your messages and files stay on your phone, locked with keys only your phone holds. " +
+                        "Whoever runs the server that carries them, and anyone else in between, sees only " +
+                        "scrambled data.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    "To let you in, the service keeps your email address, your username, your Maun ID, " +
+                        "and which phone you use: its make, model, and a fingerprint of the app's install. " +
+                        "It keeps nothing you write or send, and your contacts' names stay on your phone.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    "Signing out deletes this phone's copy and its keys. Nothing here is used for " +
+                        "advertising and nothing is sold or shared with anyone else.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
