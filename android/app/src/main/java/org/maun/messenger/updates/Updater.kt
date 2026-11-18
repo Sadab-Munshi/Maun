@@ -197,7 +197,7 @@ class Updater(private val context: Context) {
             val bodyLength = body.contentLength().takeIf { it > 0 }
             val total = when {
                 from > 0 && bodyLength != null -> from + bodyLength
-                from == 0 -> bodyLength
+                from == 0L -> bodyLength
                 else -> null
             }
             if (total != null && total > MAX_DOWNLOAD_BYTES) {
