@@ -85,12 +85,15 @@ class NotificationsChannelsTest {
         // opened, not which kind of address it is.
         val id = SoundSettings.Channel.MAUN.id
         val gone = "file:///nowhere/incoming_message_ringtone1.ogg"
-        manager().createNotificationChannel(
+        val attributes = android.media.AudioAttributes.Builder()
+            .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)
+            .build()
+        fun makeSilentChannel() = manager().createNotificationChannel(
             android.app.NotificationChannel(id, "Messages", NotificationManager.IMPORTANCE_HIGH).apply {
-                setSound(android.net.Uri.parse(gone), null)
+                setSound(android.net.Uri.parse(gone), attributes)
             },
         )
-        assertEquals(gone, manager().getNotificationChannel(id).sound.toString())
+        makeSilentChannel()
 
         Notifications(context).createChannels()
 
@@ -99,11 +102,7 @@ class NotificationsChannelsTest {
         // And only once: a phone whose channels cannot be opened for some
         // other reason must not have them thrown away on every start.
         manager().deleteNotificationChannel(id)
-        manager().createNotificationChannel(
-            android.app.NotificationChannel(id, "Messages", NotificationManager.IMPORTANCE_HIGH).apply {
-                setSound(android.net.Uri.parse(gone), null)
-            },
-        )
+        makeSilentChannel()
         Notifications(context).createChannels()
         assertEquals("already dealt with, this one is left alone", gone, manager().getNotificationChannel(id).sound.toString())
     }
