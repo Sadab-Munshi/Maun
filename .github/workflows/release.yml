@@ -106,6 +106,12 @@ jobs:
           fi
           for apk in app/build/outputs/apk/release/*.apk; do
             echo "--- $apk"
+            badging=$("$AAPT2" dump badging "$apk")
+            echo "$badging" | grep -E "^sdkVersion|^targetSdkVersion|^native-code|application-debuggable" || true
+            if echo "$badging" | grep -q "application-debuggable"; then
+              echo "::error::$apk is a debuggable build; a release must not be."
+              exit 1
+            fi
             "$APKSIGNER" verify --print-certs "$apk" > /tmp/certs.txt
             sed -n '1,6p' /tmp/certs.txt
             # "Signer #1 certificate SHA-256 digest: 3556…" — the digest is last.
