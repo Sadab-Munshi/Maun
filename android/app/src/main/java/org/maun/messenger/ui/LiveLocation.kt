@@ -389,13 +389,10 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
 }
 
 /** "14 min", "under a minute": what is left of a share. */
-internal fun left(millis: Long): String {
-    val minutes = (millis + 59_999L) / 60_000L
-    return when {
-        millis <= 0L -> "no time"
-        minutes <= 1L -> "under a minute"
-        else -> "$minutes min"
-    }
+internal fun left(millis: Long): String = when {
+    millis <= 0L -> "no time"
+    millis < 60_000L -> "under a minute"
+    else -> "${(millis + 59_999L) / 60_000L} min"
 }
 
 /** "just now", "20s ago", "3 min ago". */

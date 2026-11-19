@@ -140,8 +140,10 @@ class LiveLocationTest {
         val steps = listOf(
             Payload.LiveLocation(id, 1_794_700_000_000, share, Payload.LIVE_SHARE, key, 15, until),
             Payload.LiveLocation(id, 1_794_700_000_000, share, Payload.LIVE_SHARE, key, 60, until),
-            Payload.LiveLocation(id, 1_794_700_000_000, share, Payload.LIVE_SEEN),
-            Payload.LiveLocation(id, 1_794_700_000_000, share, Payload.LIVE_STOP),
+            // The two lines that only move a card from one state to the next
+            // carry neither the key nor a length of time.
+            Payload.LiveLocation(id, 1_794_700_000_000, share, Payload.LIVE_SEEN, minutes = 0),
+            Payload.LiveLocation(id, 1_794_700_000_000, share, Payload.LIVE_STOP, minutes = 0),
         )
         for (step in steps) assertEquals(step, Payload.decode(Payload.encode(step)))
     }
