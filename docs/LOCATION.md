@@ -97,20 +97,31 @@ half of what a share is for.
 
 ## The map
 
-The map is OpenStreetMap's, drawn by osmdroid on the phone. It needs no key and
-no Google, and nothing of it is fetched unless the map is open on screen.
+The map is **OpenFreeMap's**, drawn on the phone by **MapLibre** — free
+software, no key, no account, no Google. The style is one URL
+(`https://tiles.openfreemap.org/styles/bright`); the tiles are OpenStreetMap
+data packaged as vector tiles; the dot is drawn from the point itself, so the
+map holds no copy of where anybody was. Attribution is on the map, and the card
+under it says what the map is.
 
-osmdroid keeps its tiles in a folder of its own, and left alone it picks one on
-shared storage that Android 10 and later will not let an app write to. Every
-tile then fails and the map comes up as an empty grey grid with nothing on it —
-which is exactly what it did on a phone running 0.25.0. Maun now tells it, once
-before the first map is made, to keep its tiles under the app's own files, and
-gives it a Maun user agent, which is what OSM's tile policy asks of an app.
+Two things changed here. On a phone running 0.25.0 the map was an empty grey
+grid: osmdroid, which drew it then, keeps its tiles in a folder of its own, and
+the one it picked by default is on shared storage that Android 10 and later
+will not let an app write to. That was fixed in 0.26.0, and then the whole
+renderer was replaced, because osmdroid draws raster tiles from
+`tile.openstreetmap.org` — and OpenStreetMap's tile policy **forbids
+distributing an app that uses that server** without their prior permission. A
+map that can be switched off for every user at once, by somebody else, is not a
+map a safety feature can stand on, whatever it looks like.
 
-The trade is the usual one for a map: the tile server learns which part of the
-world this phone is looking at, and roughly when. The card and the map both say
-so. Nothing else is sent with a request, and the tiles are the same ones any
-other app asking for that area would get.
+The trade with OpenFreeMap is the usual one for a map: the tile server learns
+which part of the world this phone is looking at, and roughly when. It is a
+small donation-funded instance, so it is one URL away from being replaced:
+serving the same style from tiles this project rendered itself is a change to
+`MAP_STYLE` and nothing else, because everything else in the map is the
+drawing. If the map cannot load at all, the card still shows the coordinates and the
+**Maps** button on the map screen hands the point to whatever maps app the
+phone already has, which works whether or not a single tile was drawn.
 
 ## What is not in v1
 
@@ -133,7 +144,7 @@ other app asking for that area would get.
 | The phone's sealing, records and states | `android/.../LiveLocation.kt` |
 | The routes from the phone | `android/.../network/LocationApi.kt` |
 | The service and its notification | `android/.../push/LocationService.kt`, `push/Notifications.kt` |
-| The card, the sheet and the map | `android/.../ui/LiveLocation.kt` |
+| The card, the sheet and the map | `android/.../ui/LiveLocation.kt` (style URL, dot layer) |
 | The tests | `backend/test/location.test.ts`, `android/.../LiveLocationTest.kt`, `LiveCardTextTest.kt` |
 
 ## Still to be seen on a phone
@@ -149,9 +160,8 @@ first things to look at:
   background work;
 - that the card recovers when the signal comes back, and says "updates paused"
   rather than a place that has gone stale;
-- that the map draws from OSM tiles on a phone with no Google Play services —
-  the blank grey grid of 0.25.0 should be gone, and this is the first thing to
-  look at;
+- that the MapLibre map draws at all, that street names come up in a city and
+  not just a beige field, and that the dot is where the phone is;
 - that a day-long share is still being sent after an hour with the screen off,
   and what it costs a battery to move a point every fifteen seconds;
 - that Android brings the share back by itself after it has put the app away,

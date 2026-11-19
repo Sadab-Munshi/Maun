@@ -194,7 +194,8 @@ dependencies {
     implementation(libs.webrtc)
     implementation(libs.androidx.core.telecom)
     // The map on a shared location: OpenStreetMap tiles, drawn without Play Services.
-    implementation(libs.osmdroid)
+    // The map: vector tiles, drawn on the phone. No key, no Google, no osmdroid.
+    implementation(libs.maplibre)
 
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 
