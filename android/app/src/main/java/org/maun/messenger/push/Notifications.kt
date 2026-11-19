@@ -339,6 +339,14 @@ class Notifications(context: Context) {
         manager.cancel(ID_RINGING)
     }
 
+    /**
+     * Takes the "getting ready" notification away once the call is ringing.
+     * It has an ID of its own so that it can never stand in for the ring.
+     */
+    fun clearComing() {
+        manager.cancel(ID_PREPARING)
+    }
+
     /** The notification Android requires while a call goes on. Says that there is one, not with whom. */
     fun inCall(hangUp: Intent): Notification {
         val end = PendingIntent.getService(context, 4, hangUp, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -418,6 +426,7 @@ class Notifications(context: Context) {
         const val ID_FETCH = 3
         const val ID_CALL = 4
         const val ID_RINGING = 5
+        const val ID_PREPARING = 6
         private const val CHANNEL_RING = "incoming_calls"
         private const val CHANNEL_CALL_ONGOING = "call_ongoing"
 
