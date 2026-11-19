@@ -195,6 +195,33 @@ class LiveLocationTest {
     }
 
     @Test
+    fun `a place is sent once, and is a message rather than a share`() {
+        val place = Place(22.37884, 87.98385, 12.0, 1_794_700_000_000)
+        assertEquals(place, Place.fromLocal(place.toLocal()))
+
+        // It travels as an ordinary encrypted message: no share, no key, no
+        // length of time, and nothing for the relay to keep.
+        val payload = Payload.Pin("3f2c9a1e-0000-4000-8000-0000000000ae", 1_794_700_000_000, place)
+        assertEquals(payload, Payload.decode(Payload.encode(payload)))
+
+        // Whatever is not a place on this earth is not one.
+        assertNull(Place.fromLocal(""))
+        assertNull(Place.fromLocal("{}"))
+        assertNull(Place.fromLocal("""{"lat":91.0,"lon":0.0,"ac":5.0,"at":1}"""))
+        assertNull(Place.fromLocal("""{"lat":0.0,"lon":181.0,"ac":5.0,"at":1}"""))
+        assertNull(Place.fromLocal("""{"lat":0.0,"lon":0.0,"ac":5.0,"at":0}"""))
+    }
+
+    @Test
+    fun `a place that arrived is not a live share`() {
+        // The two are told apart by what the record says, so a place never
+        // shows a countdown, a Stop button or anything asking the relay.
+        val place = Place(22.37884, 87.98385, 12.0, 1_794_700_000_000)
+        assertNull(LiveShare.fromLocal(place.toLocal()))
+        assertNull(Place.fromLocal(LiveShare(share, LiveSeal.newKey(), 15, until).toLocal()))
+    }
+
+    @Test
     fun `a share's ID is the shape the relay takes, and new every time`() {
         val first = LiveSeal.newShareId()
         val second = LiveSeal.newShareId()

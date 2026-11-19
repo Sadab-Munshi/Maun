@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,6 +48,7 @@ import kotlinx.coroutines.delay
 import org.maun.messenger.LivePhase
 import org.maun.messenger.LivePoint
 import org.maun.messenger.LiveShare
+import org.maun.messenger.Place
 import org.maun.messenger.LiveState
 import org.maun.messenger.LiveView
 import org.maun.messenger.data.MessageEntity
@@ -65,20 +68,26 @@ data class LiveActions(
     val onStop: (peer: String, share: String) -> Unit = { _, _ -> },
     /** The person watching has opened it: they are told, and the card starts asking. */
     val onWatch: (peer: String, share: String) -> Unit = { _, _ -> },
+    /** Sends where this phone is, once, to [peer]: no share, nothing running behind it. */
+    val onSendNow: (peer: String) -> Unit = { _ -> },
     /** The newest thing the relay says about a share. Null when it cannot be asked. */
     val onFetch: suspend (peer: String, share: String, key: String) -> LiveView? = { _, _, _ -> null },
 )
 
 /**
- * The sheet behind the paperclip: a quarter of an hour or an hour, and what
- * that means. Nothing is shared until one of the two is pressed, and the phone
- * says so in the notification for the whole time it lasts.
+ * The sheet behind the paperclip, offering the two ways to say where you are.
+ *
+ * **Send my location now** is one message and nothing else: it is for "I am
+ * here", and it leaves nothing running. **Share live** is for being followed
+ * for a while — a walk home, a night out — and is the only one of the two that
+ * keeps a service, a notification and a countdown going.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LiveShareSheet(
     name: String,
     onDismiss: () -> Unit,
+    onSendNow: () -> Unit,
     onShare: (Int) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState()
@@ -93,7 +102,26 @@ fun LiveShareSheet(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("Share your location", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text("Where you are", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+
+            // One point in time: nothing runs afterwards, on either phone.
+            Button(
+                onClick = onSendNow,
+                modifier = Modifier.fillMaxWidth().widthIn(max = 420.dp),
+            ) {
+                Text("Send my location now")
+            }
+            Text(
+                text = "One place, sent once. $name can see where you were when you pressed it, and " +
+                    "nothing keeps following you: no countdown, no notification, no update.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            Text("Or let $name follow you", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(
                 text = "$name will see where you are, as you move, until the time you pick runs out. " +
                     "They cannot ask for it again, and you can stop it at any moment from the notification " +
@@ -103,7 +131,7 @@ fun LiveShareSheet(
                 textAlign = TextAlign.Center,
             )
             for (minutes in LiveShare.CHOICES) {
-                Button(
+                OutlinedButton(
                     onClick = { onShare(minutes) },
                     modifier = Modifier.fillMaxWidth().widthIn(max = 420.dp),
                 ) {
@@ -142,6 +170,30 @@ fun LiveLocationRow(
     val record = LiveShare.fromLocal(message.text)
     val outgoing = message.outgoing
     val chatColors = LocalChatColors.current
+
+    // A place that was sent once is not a share, and nothing about it counts
+    // down or asks again: it is drawn and left alone.
+    val sent = if (record == null) Place.fromLocal(message.text) else null
+    if (sent != null) {
+        val point = sent.point()
+        val now = System.currentTimeMillis()
+        Card(
+            outgoing = outgoing,
+            title = if (outgoing) "You sent your location" else "$name sent their location",
+            detail = "${place(point)} · sent ${since(sent.at, now)}",
+            chatColors = chatColors,
+            modifier = modifier,
+            action = {
+                TextButton(onClick = { onOpenMap(point, if (outgoing) "Where you were" else "$name's location") }) {
+                    Text("Map")
+                }
+            },
+            pulse = false,
+            onOpenMap = null,
+            openMap = onOpenMap,
+        )
+        return
+    }
     // The card counts down, so it is redrawn once a second while it is on screen.
     var now by remember(record?.share) { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(record?.share) {
@@ -459,25 +511,3 @@ private fun clock(until: Long): String {
 
 /** How often a card that is being watched asks the relay. A point comes every fifteen seconds. */
 private const val POLL_MS = 10_000L
-
-/** Whether this phone's own location switch is on: permission is not the same thing. */
-fun locationSwitchedOn(context: Context): Boolean {
-    val manager = context.getSystemService(LocationManager::class.java) ?: return false
-    return try {
-        manager.isLocationEnabled
-    } catch (_: Exception) {
-        false
-    }
-}
-
-/** Opens the phone's own location settings, so that the switch can be found. */
-fun openLocationSettings(context: Context) {
-    try {
-        context.startActivity(
-            Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-        )
-    } catch (_: Exception) {
-        // No settings app will answer; the dialog has already said what to do.
-    }
-}

@@ -162,6 +162,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Sends where this phone is, once, to [peer]. Nothing runs afterwards: no
+     * share, no service, no notification, nothing that asks again.
+     */
+    fun sendCurrentLocation(peer: String) {
+        viewModelScope.launch {
+            messenger.sendCurrentLocation(peer)?.let { why -> _liveProblem.value = why }
+        }
+    }
+
     /** Ends the share with [peer] here and now, from the card or its notification. */
     fun stopLiveShare(peer: String, share: String) = messenger.finishLiveShare(peer, share)
 
