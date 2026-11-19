@@ -728,6 +728,60 @@ describe("waking a phone", () => {
     await hangUp(a);
   });
 
+  it("gives a mailbox written before the call word the column it needs, and keeps its address", async () => {
+    // A mailbox that was woken by the last release has a push table without
+    // `call_wake`. The first request after the deploy has to add it without
+    // losing the address that is already in the row.
+    const alice = await registered();
+    const bob = await withPush();
+    await runInDurableObject(mailbox(bob.id), (doInstance, state) => {
+      const instance = doInstance as unknown as { tablesReady: boolean; ensureTables(): void };
+      const row = state.storage.sql.exec("SELECT url, key, auth, last, pending, day, sent FROM push WHERE id = 1").toArray()[0]!;
+      state.storage.sql.exec("DROP TABLE push");
+      state.storage.sql.exec(
+        `CREATE TABLE push (
+           id INTEGER PRIMARY KEY CHECK (id = 1),
+           url TEXT NOT NULL, key BLOB NOT NULL, auth BLOB NOT NULL,
+           last INTEGER NOT NULL, pending INTEGER NOT NULL,
+           day INTEGER NOT NULL, sent INTEGER NOT NULL
+         )`,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO push (id, url, key, auth, last, pending, day, sent) VALUES (1, ?, ?, ?, ?, ?, ?, ?)",
+        row.url,
+        row.key,
+        row.auth,
+        row.last,
+        row.pending,
+        row.day,
+        row.sent,
+      );
+      instance.tablesReady = false;
+      instance.ensureTables();
+    });
+
+    const columns = await runInDurableObject(mailbox(bob.id), (_instance, state) =>
+      state.storage.sql.exec("SELECT name FROM pragma_table_info('push')").toArray().map((row) => row.name as string),
+    );
+    expect(columns).toContain("call_wake");
+    // The address the phone left is still the one it is woken at.
+    expect((await pushRow(bob.id))?.url).toBe(bob.url);
+
+    const a = await online(alice);
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(1)).toBe(1);
+    expect(wakes[0]!.url).toBe(bob.url);
+
+    // And a call after it is still promoted, on a mailbox that was migrated.
+    const id = requestId();
+    const call = JSON.stringify({ callId: "c1", type: "offer", sdp: "v=0", video: false });
+    a.sendJson({ t: "send", id, to: bob.id, kind: 2, body: toBase64(new TextEncoder().encode(call)), urgent: true });
+    expect(await a.nextJson()).toMatchObject({ t: "stored" });
+    expect(await wakeCount(2)).toBe(2);
+    expect(new TextDecoder().decode(await bob.keys.decrypt(wakes[1]!.body))).toBe(PUSH_PAYLOAD_CALL);
+    await hangUp(a);
+  }, 30_000);
+
   it("says how many messages are waiting when the phone logs in", async () => {
     const alice = await registered();
     const bob = await registered();
