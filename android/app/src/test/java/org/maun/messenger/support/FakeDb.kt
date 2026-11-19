@@ -142,6 +142,14 @@ class FakeDb : ChatDao, SignalStorage, Transactor {
     override fun fileMessages(): List<Long> =
         lock.withLock { state.messages.filter { it.kind == MessageKind.FILE }.map { it.seq } }
 
+    override fun liveMessages(peer: String): List<MessageEntity> = lock.withLock {
+        state.messages.filter { it.peer == peer && it.kind == MessageKind.LOCATION }.sortedBy { it.seq }
+    }
+
+    override fun liveShares(): List<MessageEntity> = lock.withLock {
+        state.messages.filter { it.kind == MessageKind.LOCATION && it.outgoing }.sortedByDescending { it.seq }
+    }
+
     override fun deleteAllMessages(): Int = lock.withLock {
         val removed = state.messages.size
         state = state.copy(messages = emptyList())

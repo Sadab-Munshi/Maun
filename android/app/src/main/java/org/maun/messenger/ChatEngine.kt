@@ -528,6 +528,172 @@ class ChatEngine(
         }
     }
 
+    // ---- Live location -------------------------------------------------------
+
+    /**
+     * Adds a share this phone has just started: the card in the conversation
+     * with [peer], and the message that tells them the key that opens it.
+     * Nothing of where this phone is goes in it; points travel on their own.
+     */
+    suspend fun addLiveShare(peer: String, share: String, key: String, minutes: Int, until: Long): MessageEntity {
+        val message = MessageEntity(
+            peer = peer,
+            id = UUID.randomUUID().toString(),
+            outgoing = true,
+            kind = MessageKind.LOCATION,
+            text = LiveShare(share, key, minutes, until).toLocal(),
+            at = now(),
+            status = MessageStatus.PENDING,
+        )
+        val seq = withContext(io) {
+            tx.inTransaction {
+                check(dao.isContact(peer)) { "not a contact" }
+                dao.insertMessage(message).also {
+                    dao.insertOutbox(
+                        OutboxEntity(
+                            peer = peer,
+                            messageId = message.id,
+                            payload = Payload.encode(
+                                Payload.LiveLocation(
+                                    id = message.id,
+                                    sentAt = message.at,
+                                    share = share,
+                                    type = Payload.LIVE_SHARE,
+                                    key = key,
+                                    minutes = minutes,
+                                    until = until,
+                                ),
+                            ),
+                        ),
+                    )
+                }
+            }
+        }
+        noteUnsent()
+        kick()
+        return message.copy(seq = seq)
+    }
+
+    /**
+     * The share of [share] is over on this phone: the card says so, and [peer]
+     * is told in a message, so that their card says so too without having to
+     * ask the relay.
+     */
+    suspend fun endLiveShare(peer: String, share: String) {
+        val queued = withContext(io) {
+            tx.inTransaction {
+                if (!dao.isContact(peer)) return@inTransaction false
+                moveLive(peer, share, LiveShare.STOPPED)
+                dao.insertOutbox(
+                    OutboxEntity(
+                        peer = peer,
+                        messageId = null,
+                        payload = Payload.encode(
+                            Payload.LiveLocation(
+                                id = UUID.randomUUID().toString(),
+                                sentAt = now(),
+                                share = share,
+                                type = Payload.LIVE_STOP,
+                            ),
+                        ),
+                        wakes = true,
+                    ),
+                )
+                true
+            }
+        }
+        if (queued) {
+            noteUnsent()
+            kick()
+        }
+    }
+
+    /**
+     * The person [peer] shared with has opened the card. Told to them, so that
+     * their card can say somebody is watching, and kept here, so that this
+     * phone starts asking the relay for points.
+     */
+    suspend fun watchLive(peer: String, share: String) {
+        val queued = withContext(io) {
+            tx.inTransaction {
+                if (!dao.isContact(peer)) return@inTransaction false
+                val record = dao.liveMessages(peer).firstNotNullOfOrNull { message ->
+                    LiveShare.fromLocal(message.text)?.takeIf { it.share == share }
+                } ?: return@inTransaction false
+                moveLive(peer, share, LiveShare.WATCHING)
+                dao.insertOutbox(
+                    OutboxEntity(
+                        peer = peer,
+                        messageId = null,
+                        payload = Payload.encode(
+                            Payload.LiveLocation(
+                                id = UUID.randomUUID().toString(),
+                                sentAt = now(),
+                                share = share,
+                                type = Payload.LIVE_SEEN,
+                                key = record.key,
+                            ),
+                        ),
+                    ),
+                )
+                true
+            }
+        }
+        if (queued) {
+            noteUnsent()
+            kick()
+        }
+    }
+
+    /** Moves the card of [share] to [state], without telling anybody. */
+    suspend fun setLiveState(peer: String, share: String, state: Int) {
+        withContext(io) { tx.inTransaction { moveLive(peer, share, state) } }
+    }
+
+    /** Every share this phone started, newest first: the ones still running when the app comes back. */
+    suspend fun runningShares(): List<MessageEntity> = withContext(io) { dao.liveShares() }
+
+    /** Handles a share, or a line about one, that [from] sent. In a transaction. */
+    private fun liveIncoming(from: String, payload: Payload.LiveLocation): Boolean {
+        // Only people one has added can say where they are, or look at it.
+        if (!dao.isContact(from)) return false
+        return when (payload.type) {
+            Payload.LIVE_SHARE -> {
+                // One card per share, however many times the message arrives.
+                val already = dao.liveMessages(from).any { LiveShare.fromLocal(it.text)?.share == payload.share }
+                if (already) {
+                    false
+                } else {
+                    saveIncoming(
+                        from = from,
+                        id = payload.id,
+                        sentAt = payload.sentAt,
+                        kind = MessageKind.LOCATION,
+                        text = LiveShare(payload.share, payload.key, payload.minutes, payload.until).toLocal(),
+                    )
+                }
+            }
+            Payload.LIVE_SEEN -> {
+                moveLive(from, payload.share, LiveShare.WATCHING)
+                false
+            }
+            else -> {
+                moveLive(from, payload.share, LiveShare.STOPPED)
+                false
+            }
+        }
+    }
+
+    /** Writes [state] into the record of [share]. In a transaction. */
+    private fun moveLive(peer: String, share: String, state: Int) {
+        dao.liveMessages(peer).forEach { message ->
+            val record = LiveShare.fromLocal(message.text) ?: return@forEach
+            if (record.share == share && record.state != state) {
+                dao.setText(message.seq, record.copy(state = state).toLocal())
+            }
+        }
+    }
+
     // ---- Called by the app ---------------------------------------------------
 
     /** Queues [text] for [peer], who must be a contact. Returns as soon as it is saved. */
@@ -831,6 +997,7 @@ class ChatEngine(
                         if (dao.isContact(from)) arrivedCall = payload
                         false
                     }
+                    is Payload.LiveLocation -> liveIncoming(from, payload)
                     Payload.Unknown -> false
                 }
             }

@@ -7,6 +7,7 @@ analytics, no phone number, and no chat history on any server.
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
 - How a phone is woken, and why it is built that way: [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)
+- Sharing where you are, and what that leaves on the relay: [docs/LOCATION.md](docs/LOCATION.md)
 - Building, signing and publishing a version: [docs/RELEASE.md](docs/RELEASE.md)
 - Working on this repository, with or without an AI agent: [AGENTS.md](AGENTS.md)
 
@@ -43,6 +44,7 @@ contacts without the relay being able to open it.
 | Signed HTTP requests and noticing a ban | `android/.../network/FileApi.kt` |
 | Phone fingerprint (member-only relays) | `android/.../security/DeviceFingerprint.kt` |
 | Voice messages: recording and playing | `android/.../voice/VoiceRecorder.kt`, `android/.../voice/VoicePlayer.kt` |
+| Live location: a sealed point at a time, for a quarter of an hour or an hour | `android/.../LiveLocation.kt`, `android/.../push/LocationService.kt`, `backend/src/mailbox.ts` |
 | Voice calls: setting up, sound, ringing, staying alive | `android/.../webrtc/CallManager.kt`, `CallAudio.kt`, `CallService.kt`, `backend/src/turn.ts` |
 | Safety number for checking a contact | `android/.../crypto/SafetyNumber.kt` |
 | Profile pictures: sealed on the phone, one per account on the relay, told to contacts in a message | `android/.../ProfilePictures.kt`, `android/.../network/AvatarApi.kt`, `backend/src/index.ts` |

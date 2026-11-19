@@ -176,6 +176,59 @@ export function isUsername(value: string): boolean {
   return USERNAME.test(value) && !RESERVED_NAMES.has(value);
 }
 
+// ---- Live location ---------------------------------------------------------
+//
+// A share is one row in the sharing phone's mailbox: who may watch, until
+// when, and the newest sealed point. The point is encrypted on the phone with
+// a key that travels only inside an end-to-end encrypted message, so what the
+// relay holds is a blob it cannot open, and one at a time: each new point
+// replaces the last. The relay keeps no history of where anybody was, and
+// clears the point the moment the share runs out.
+
+/** A share's ID: 16 random bytes in lower-case hex, chosen by the sharing phone. */
+export const SHARE_ID_BYTES = 16;
+const SHARE_ID = /^[0-9a-f]{32}$/;
+export function isShareId(value: string): boolean {
+  return SHARE_ID.test(value);
+}
+
+/** How long a share may be offered for. The app offers the two. */
+export const SHARE_MINUTES = [15, 60];
+export const SHARE_MIN_MINUTES = 15;
+export const SHARE_MAX_MINUTES = 60;
+
+/**
+ * The largest sealed point the relay takes: a latitude, a longitude, an
+ * accuracy and a time, sealed, is a few hundred bytes.
+ */
+export const MAX_SHARE_POINT_BYTES = 512;
+
+/**
+ * Points closer together than this are dropped without complaint. A phone
+ * sends one every half minute while it has a fix; anything faster is a share
+ * being hammered, and would make the relay a record of a journey.
+ */
+export const SHARE_MIN_INTERVAL_MS = 5 * 1000;
+
+/** Shares one mailbox keeps at once, whatever their state. */
+export const MAX_SHARES = 8;
+/**
+ * How long a finished share is remembered, so that the person watching learns
+ * it ended rather than that it never existed. The point is cleared at the
+ * minute it was promised for; only "it ended, then" is kept this long.
+ */
+export const SHARE_KEEP_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * What the person watching is told about a share. `live`: here is the newest
+ * sealed point, or none yet. `ended`: it is over, and nothing of where anybody
+ * was comes with it. `gone`: no such share — never one, or forgotten by now.
+ */
+export type SharePeek =
+  | { state: "live"; until: number; point: string | null; at: number | null }
+  | { state: "ended"; until: number }
+  | { state: "gone" };
+
 /** How long a member's standing is trusted before the member list is asked again. */
 export const MEMBER_CHECK_MS = 60 * 1000;
 

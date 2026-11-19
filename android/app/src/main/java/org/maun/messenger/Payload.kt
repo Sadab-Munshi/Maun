@@ -71,6 +71,26 @@ sealed interface Payload {
      */
     data class Avatar(val version: String, val key: String = "", val size: Long = 0L) : Payload
 
+    /**
+     * A live-location share, and the two things said about one later.
+     *
+     * [share] is the ID the relay knows it by, [key] the key that opens its
+     * sealed points — the only copy of that key outside the phone that made
+     * it is here, inside an encrypted message. [until] is the minute it ends,
+     * counted by the relay, and [minutes] how long it was started for.
+     * An empty [key] comes with [LIVE_SEEN] and [LIVE_STOP], which say nothing
+     * new and only move a card from one line to the next.
+     */
+    data class LiveLocation(
+        val id: String,
+        val sentAt: Long,
+        val share: String,
+        val type: String,
+        val key: String = "",
+        val minutes: Int = 15,
+        val until: Long = 0L,
+    ) : Payload
+
     /** Something a newer version of Maun sent. It is dropped without complaint. */
     data object Unknown : Payload
 
@@ -102,6 +122,18 @@ sealed interface Payload {
             "\uD83D\uDC4F", "\uD83D\uDD25", "\uD83C\uDF89", "\uD83D\uDE0D", "\uD83D\uDE0E", "\uD83D\uDC4C",
             "\u270C\uFE0F", "\uD83E\uDD1D", "\uD83D\uDE4C", "\uD83D\uDCAF", "\uD83D\uDCA9", "\uD83E\uDD14",
         )
+
+        /** A share has started, the person watching has opened it, or it has ended. */
+        const val LIVE_SHARE = "share"
+        const val LIVE_SEEN = "seen"
+        const val LIVE_STOP = "stop"
+        private val LIVE_TYPES = setOf(LIVE_SHARE, LIVE_SEEN, LIVE_STOP)
+
+        /** A share's ID: 16 random bytes in lower-case hex, as the relay takes it. */
+        private val SHARE = Regex("^[0-9a-f]{32}$")
+
+        /** The key that opens a point: 32 random bytes, base64. */
+        private val LIVE_KEY = Regex("^[A-Za-z0-9+/]{43}=$")
 
         const val AVATAR_NONE = "none"
 
@@ -192,6 +224,12 @@ sealed interface Payload {
                     payload.candidate?.let { json.put("mid", it.mid).put("idx", it.index).put("cand", it.sdp) }
                     payload.reason?.let { json.put("why", it) }
                 }
+                is LiveLocation -> {
+                    json.put("k", "place").put("id", payload.id).put("at", payload.sentAt)
+                        .put("share", payload.share).put("type", payload.type)
+                    if (payload.key.isNotEmpty()) json.put("key", payload.key)
+                    if (payload.type == LIVE_SHARE) json.put("mins", payload.minutes).put("until", payload.until)
+                }
                 Unknown -> throw IllegalArgumentException("nothing to encode")
             }
             return pad(json.toString().toByteArray(Charsets.UTF_8))
@@ -242,6 +280,23 @@ sealed interface Payload {
                     if (!isMessageId(of) || (emoji.isNotEmpty() && emoji !in MORE_REACTIONS)) return Unknown
                     if (!json.has("at")) return Unknown
                     Reaction(of, emoji, json.optLong("at"))
+                }
+                "place" -> {
+                    val id = json.optString("id")
+                    val share = json.optString("share")
+                    val type = json.optString("type")
+                    if (!isMessageId(id) || !SHARE.matches(share) || type !in LIVE_TYPES) return Unknown
+                    val key = json.optString("key")
+                    val minutes = json.optInt("mins", 0)
+                    val until = json.optLong("until", 0L)
+                    if (type == LIVE_SHARE) {
+                        // A share without the key that opens it says nothing;
+                        // one for longer than the relay allows is not one.
+                        if (!LIVE_KEY.matches(key)) return Unknown
+                        if (minutes !in 15..60 || until <= 0L) return Unknown
+                    }
+                    if (!json.has("at")) return Unknown
+                    LiveLocation(id, json.optLong("at"), share, type, if (type == LIVE_SHARE) key else "", minutes, until)
                 }
                 "receipt" -> Receipt(ids(json.optJSONArray("delivered")), ids(json.optJSONArray("read")))
                 "avatar" -> {

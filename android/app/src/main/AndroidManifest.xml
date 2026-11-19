@@ -64,6 +64,16 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!--
+        Sharing where you are, for a quarter of an hour or an hour, with one
+        person you picked. Asked for when the button is pressed and never
+        before, and only ever used while a share is running: there is a
+        notification for the whole time, with a button to stop it.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!--
         Backups are off everywhere: messages and keys must never leave the
         phone, and Keystore-wrapped data could not be restored anyway.
     -->
@@ -120,6 +130,12 @@
             android:name=".webrtc.CallService"
             android:exported="false"
             android:foregroundServiceType="phoneCall|microphone|camera" />
+
+        <!-- Runs only while this phone is sharing where it is, and says so in the shade. -->
+        <service
+            android:name=".push.LocationService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
 
         <!-- Hands a temporary file in Maun's cache to the camera app when taking a photo. -->
         <provider

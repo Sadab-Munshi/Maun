@@ -200,6 +200,8 @@ fun ChatScreen(
     onOpenDetails: () -> Unit,
     onAccept: (String) -> Unit,
     onBlock: () -> Unit,
+    /** Live location: sharing this phone's, and watching somebody else's. */
+    live: LiveActions = LiveActions(),
 ) {
     val isContact = contactName != null
     val context = LocalContext.current
@@ -222,6 +224,9 @@ fun ChatScreen(
     // The quotes are drawn from this phone's own copy of the conversation.
     val byId = remember(messages) { messages.associateBy { it.id } }
     var showAttachSheet by rememberSaveable { mutableStateOf(false) }
+    var showLiveSheet by rememberSaveable { mutableStateOf(false) }
+    // The point being shown on a map, and whose it is. Drawn over everything.
+    var mapOf by remember { mutableStateOf<Pair<org.maun.messenger.LivePoint, String>?>(null) }
 
     val currentMessages by rememberUpdatedState(messages)
     val fileOf = { seq: Long ->
@@ -267,6 +272,22 @@ fun ChatScreen(
         }
     }
 
+    // Asked for when a share is about to start, and at no other time.
+    var shareAfter by remember { mutableStateOf<Int?>(null) }
+    val askForLocation = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { granted ->
+        val minutes = shareAfter
+        shareAfter = null
+        val allowed = granted[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            granted[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (minutes == null) return@rememberLauncherForActivityResult
+        if (allowed) {
+            live.onShare(peerId, minutes)
+        } else {
+            Toast.makeText(context, "Maun was not allowed to use this phone's location.", Toast.LENGTH_LONG).show()
+        }
+    }
     val askForCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
             launchCameraCapture()
@@ -423,6 +444,22 @@ fun ChatScreen(
                                             is DayItem -> Pill(dayLabel(item.day, today))
                                             is MessageItem -> if (item.message.kind == MessageKind.NOTICE) {
                                                 Pill(item.message.text)
+                                            } else if (item.message.kind == MessageKind.LOCATION) {
+                                                Box(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    contentAlignment = if (item.message.outgoing) {
+                                                        Alignment.CenterEnd
+                                                    } else {
+                                                        Alignment.CenterStart
+                                                    },
+                                                ) {
+                                                    LiveLocationRow(
+                                                        message = item.message,
+                                                        name = contactName ?: "They",
+                                                        live = live,
+                                                        onOpenMap = { point, title -> mapOf = point to title },
+                                                    )
+                                                }
                                             } else {
                                                 MessageRow(
                                                     item = item,
@@ -539,7 +576,46 @@ fun ChatScreen(
                     Toast.makeText(context, "Could not open file picker.", Toast.LENGTH_SHORT).show()
                 }
             },
+            onLocation = {
+                showAttachSheet = false
+                showLiveSheet = true
+            },
         )
+    }
+
+    if (showLiveSheet) {
+        LiveShareSheet(
+            name = contactName ?: "They",
+            onDismiss = { showLiveSheet = false },
+            onShare = { minutes ->
+                showLiveSheet = false
+                // The phone's location is asked for once, after the person has
+                // said how long to share for: a refused permission leaves
+                // nothing running and nothing said to the other phone.
+                val already = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ) == PackageManager.PERMISSION_GRANTED
+                if (already) {
+                    live.onShare(peerId, minutes)
+                } else {
+                    shareAfter = minutes
+                    askForLocation.launch(
+                        arrayOf(
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION,
+                        ),
+                    )
+                }
+            },
+        )
+    }
+
+    mapOf?.let { (point, title) ->
+        LiveMapScreen(title = title, point = point, onClose = { mapOf = null })
     }
 
     viewing?.let { seq ->
@@ -926,6 +1002,7 @@ private fun AttachmentSheet(
     onGallery: () -> Unit,
     onCamera: () -> Unit,
     onDocument: () -> Unit,
+    onLocation: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState()
     ModalBottomSheet(
@@ -966,6 +1043,13 @@ private fun AttachmentSheet(
                     tint = Color(0xFF2E5C8A),
                     container = Color(0xFFD9E8F7),
                     onClick = onDocument,
+                )
+                AttachmentChoice(
+                    icon = MaunIcons.Pin,
+                    label = "Location",
+                    tint = Color(0xFF7A5A1F),
+                    container = Color(0xFFF3E6C8),
+                    onClick = onLocation,
                 )
             }
             Text(

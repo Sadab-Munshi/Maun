@@ -35,6 +35,7 @@ import kotlinx.coroutines.launch
 import org.maun.messenger.AppLock
 import org.maun.messenger.BuildConfig
 import org.maun.messenger.CodeCheck
+import org.maun.messenger.LiveView
 import org.maun.messenger.MaunApp
 import org.maun.messenger.MediaSaver
 import org.maun.messenger.data.MessageEntity
@@ -144,6 +145,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         attachProblem.value = null
         messenger.clearFileProblem()
     }
+
+    private val _liveProblem = MutableStateFlow<String?>(null)
+
+    /** Why a share could not be started: said once, then cleared. */
+    val liveProblem: StateFlow<String?> = _liveProblem.asStateFlow()
+
+    fun clearLiveProblem() {
+        _liveProblem.value = null
+    }
+
+    /** Starts sharing where this phone is with [peer], for [minutes] (fifteen or sixty). */
+    fun startLiveShare(peer: String, minutes: Int) {
+        viewModelScope.launch {
+            messenger.startLiveShare(peer, minutes)?.let { why -> _liveProblem.value = why }
+        }
+    }
+
+    /** Ends the share with [peer] here and now, from the card or its notification. */
+    fun stopLiveShare(peer: String, share: String) = messenger.finishLiveShare(peer, share)
+
+    /** This phone opened [peer]'s share: they are told, and the card starts asking for points. */
+    fun watchLiveShare(peer: String, share: String) {
+        viewModelScope.launch { messenger.watchLiveShare(peer, share) }
+    }
+
+    /** What the relay says about a share right now. Null when it could not be asked. */
+    suspend fun liveView(peer: String, share: String, key: String): LiveView? = messenger.liveView(peer, share, key)
 
     /** On a member-only relay: this account's username. */
     val username = messenger.username

@@ -43,6 +43,9 @@ object MessageKind {
 
     /** A line the app itself put into the conversation, such as "set up Maun again". */
     const val NOTICE = 3
+
+    /** A live-location share. The text is its record: see [org.maun.messenger.LiveShare]. */
+    const val LOCATION = 4
 }
 
 /**
@@ -219,6 +222,14 @@ interface ChatDao {
     /** Every message that has a file, for telling which stored files still belong to one. */
     @Query("SELECT seq FROM messages WHERE kind = 2")
     fun fileMessages(): List<Long>
+
+    /** The live-location messages of one conversation, oldest first. */
+    @Query("SELECT * FROM messages WHERE peer = :peer AND kind = 4 ORDER BY seq")
+    fun liveMessages(peer: String): List<MessageEntity>
+
+    /** Every share this phone started, for the ones still running when the app comes back. */
+    @Query("SELECT * FROM messages WHERE kind = 4 AND outgoing = 1 ORDER BY seq DESC")
+    fun liveShares(): List<MessageEntity>
 
     @Query("DELETE FROM messages")
     fun deleteAllMessages(): Int

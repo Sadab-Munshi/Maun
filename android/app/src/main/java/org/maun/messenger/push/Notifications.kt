@@ -80,6 +80,14 @@ class Notifications(context: Context) {
                     .setDescription("Shown while Maun stays connected or is checking for messages.")
                     .setShowBadge(false)
                     .build(),
+                // Quiet, ongoing, and never dismissed by accident: it is the
+                // one thing between a running share and a phone that shares
+                // without saying so.
+                NotificationChannelCompat.Builder(CHANNEL_LIVE, NotificationManagerCompat.IMPORTANCE_LOW)
+                    .setName("Sharing your location")
+                    .setDescription("Shown while a live location is being shared, with a button to stop it.")
+                    .setShowBadge(false)
+                    .build(),
             ),
         )
     }
@@ -356,6 +364,32 @@ class Notifications(context: Context) {
             .build()
     }
 
+    /**
+     * The permanent notification Android requires while this phone is sharing
+     * where it is. It names who can see it and how long is left, and it carries
+     * the button that ends the share: stopping is one tap from the shade, from
+     * the lock screen, and from inside a conversation.
+     */
+    fun sharingLocation(who: String, left: String, stop: Intent): Notification {
+        val end = PendingIntent.getService(context, 5, stop, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        return NotificationCompat.Builder(context, CHANNEL_LIVE)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Sharing your location")
+            .setContentText("$left left · $who can see it")
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setContentIntent(openApp())
+            .addAction(0, "Stop", end)
+            .build()
+    }
+
+    fun clearSharingLocation() {
+        manager.cancel(ID_LIVE)
+    }
+
     /** The permanent notification Android requires while Maun stays connected. */
     fun connected(): Notification = quiet("Maun is connected", "Waiting for messages. Tap to open.")
 
@@ -418,6 +452,7 @@ class Notifications(context: Context) {
         const val ID_FETCH = 3
         const val ID_CALL = 4
         const val ID_RINGING = 5
+        const val ID_LIVE = 6
         private const val CHANNEL_RING = "incoming_calls"
         private const val CHANNEL_CALL_ONGOING = "call_ongoing"
 
@@ -438,5 +473,6 @@ class Notifications(context: Context) {
 
         private const val LEGACY_MESSAGES = "messages"
         private const val CHANNEL_BACKGROUND = "background"
+        private const val CHANNEL_LIVE = "live_location"
     }
 }

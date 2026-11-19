@@ -193,6 +193,8 @@ dependencies {
     implementation(libs.unifiedpush.fcm)
     implementation(libs.webrtc)
     implementation(libs.androidx.core.telecom)
+    // The map on a shared location: OpenStreetMap tiles, drawn without Play Services.
+    implementation(libs.osmdroid)
 
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 

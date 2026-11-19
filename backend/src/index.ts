@@ -7,10 +7,13 @@ import {
   FILE_TTL_MS,
   MAX_AVATAR_BYTES,
   MAX_FILE_BYTES,
+  MAX_SHARE_POINT_BYTES,
   PROTOCOL_VERSION,
+  SHARE_MIN_MINUTES,
   avatarKey,
   isFileKey,
   isMailboxId,
+  isShareId,
 } from "./protocol";
 
 export { Mailbox } from "./mailbox";
@@ -77,6 +80,18 @@ export default {
     }
     const avatar = /^\/v1\/avatars\/([^/]+)$/.exec(url.pathname);
     if (request.method === "GET" && avatar) return getAvatar(request, env, avatar[1] ?? "");
+
+    // Live location: one sealed point per share, replaced as it moves.
+    if (request.method === "POST" && url.pathname === "/v1/location") return startShare(request, env);
+    const oneShare = /^\/v1\/location\/([0-9a-f]{32})$/.exec(url.pathname);
+    if (oneShare) {
+      const share = oneShare[1]!;
+      if (!isShareId(share)) return new Response("not found", { status: 404 });
+      if (request.method === "POST") return putSharePoint(request, env, share);
+      if (request.method === "DELETE") return stopShare(request, env, share);
+    }
+    const aShare = /^\/v1\/location\/([0-9a-f]{64})\/([0-9a-f]{32})$/.exec(url.pathname);
+    if (request.method === "GET" && aShare) return peekShare(request, env, aShare[1]!, aShare[2]!);
 
     if (request.method === "POST" && url.pathname === "/v1/files") return upload(request, env);
     const file = /^\/v1\/files\/([^/]+)$/.exec(url.pathname);
@@ -177,6 +192,115 @@ async function download(request: Request, env: Env, key: string): Promise<Respon
       "Cache-Control": "no-store",
     },
   });
+}
+
+// ---- Live location ----------------------------------------------------------------
+//
+// A share is kept in the mailbox of the phone that shares it, and is read by
+// exactly one other account, the one it was started for. What travels through
+// here is a sealed point: the latitude, the longitude and the accuracy,
+// encrypted on the phone with a key that reached the watcher inside an
+// end-to-end encrypted message. The relay cannot read a point, cannot tell one
+// place from another, and keeps only the newest one of each share, until the
+// minute the share was promised for. Then it throws the point away.
+
+/** The account in the credential, if the relay still lets it in. */
+async function signedIn(
+  request: Request,
+  env: Env,
+): Promise<{ id: string; stub: DurableObjectStub<Mailbox> } | Response> {
+  const answer = await allowed(request, env, 0);
+  if (answer !== "ok") return refusal(answer);
+  const who = credentials(request);
+  if (!who) return refusal("denied");
+  const stub = env.MAILBOX.get(env.MAILBOX.idFromName(who.mailboxId)) as DurableObjectStub<Mailbox>;
+  return { id: who.mailboxId, stub };
+}
+
+/** Reads a small JSON body, or null when it is not one. */
+async function smallJson(request: Request, maxBytes: number): Promise<Record<string, unknown> | null> {
+  let text: string;
+  try {
+    text = await request.text();
+  } catch {
+    return null;
+  }
+  if (text.length === 0 || text.length > maxBytes) return null;
+  try {
+    const value: unknown = JSON.parse(text);
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+    return value as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** Starts a share: who may watch, and for how long. */
+async function startShare(request: Request, env: Env): Promise<Response> {
+  const me = await signedIn(request, env);
+  if (me instanceof Response) return me;
+  const body = await smallJson(request, 2048);
+  if (!body) return Response.json({ error: "bad_request" }, { status: 400 });
+  const to = typeof body.to === "string" ? body.to : "";
+  if (!isMailboxId(to)) return Response.json({ error: "bad_viewer" }, { status: 400 });
+  const minutes = typeof body.minutes === "number" && Number.isFinite(body.minutes) ? body.minutes : SHARE_MIN_MINUTES;
+  const answer = await me.stub.shareStart(me.id, to, minutes);
+  if (answer === "bad_viewer") return Response.json({ error: "bad_viewer" }, { status: 400 });
+  if (answer === "full") return Response.json({ error: "too_many", max: 8 }, { status: 429 });
+  if (answer === "no_account") return Response.json({ error: "no_account" }, { status: 409 });
+  return Response.json(answer, { status: 201 });
+}
+
+/** Handing over the newest point of a share. */
+async function putSharePoint(request: Request, env: Env, share: string): Promise<Response> {
+  const declared = Number(request.headers.get("Content-Length") ?? "");
+  if (!Number.isSafeInteger(declared) || declared <= 0 || !request.body) {
+    return Response.json({ error: "length_required" }, { status: 411 });
+  }
+  if (declared > MAX_SHARE_POINT_BYTES) {
+    return Response.json({ error: "too_large", max: MAX_SHARE_POINT_BYTES }, { status: 413 });
+  }
+  const me = await signedIn(request, env);
+  if (me instanceof Response) return me;
+  const point = new Uint8Array(await request.arrayBuffer());
+  if (point.length === 0 || point.length > MAX_SHARE_POINT_BYTES) {
+    return Response.json({ error: "too_large", max: MAX_SHARE_POINT_BYTES }, { status: 413 });
+  }
+  const answer = await me.stub.sharePoint(me.id, share, point);
+  switch (answer) {
+    case "ok":
+      return Response.json({ ok: true });
+    case "too_soon":
+      return Response.json({ error: "too_soon" }, { status: 429 });
+    case "ended":
+      return Response.json({ error: "ended" }, { status: 410 });
+    case "gone":
+      return Response.json({ error: "gone" }, { status: 404 });
+    case "too_large":
+      return Response.json({ error: "too_large", max: MAX_SHARE_POINT_BYTES }, { status: 413 });
+    default:
+      return Response.json({ error: "no_account" }, { status: 409 });
+  }
+}
+
+/** Stopping a share before its time is up. */
+async function stopShare(request: Request, env: Env, share: string): Promise<Response> {
+  const me = await signedIn(request, env);
+  if (me instanceof Response) return me;
+  const answer = await me.stub.shareStop(me.id, share);
+  if (answer === "gone") return Response.json({ error: "gone" }, { status: 404 });
+  if (answer === "no_account") return Response.json({ error: "no_account" }, { status: 409 });
+  return new Response(null, { status: 204 });
+}
+
+/** What the account a share was started for may see of it. */
+async function peekShare(request: Request, env: Env, sharer: string, share: string): Promise<Response> {
+  const me = await signedIn(request, env);
+  if (me instanceof Response) return me;
+  // A share is never read by the phone that made it: it knows where it is.
+  if (sharer === me.id) return Response.json({ state: "gone" });
+  const stub = env.MAILBOX.get(env.MAILBOX.idFromName(sharer)) as DurableObjectStub<Mailbox>;
+  return Response.json(await stub.sharePeek(sharer, share, me.id));
 }
 
 // ---- Profile pictures ------------------------------------------------------------
