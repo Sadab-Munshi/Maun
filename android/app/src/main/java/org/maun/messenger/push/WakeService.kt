@@ -1,6 +1,7 @@
 package org.maun.messenger.push
 
 import org.maun.messenger.MaunApp
+import org.maun.messenger.Messenger
 import org.maun.messenger.webrtc.RingService
 import org.maun.messenger.network.PushAddress
 import org.unifiedpush.android.connector.FailedReason
@@ -17,7 +18,23 @@ import org.unifiedpush.android.connector.data.PushMessage
  * a message for this phone and the phone is not connected, it leaves a wake-up
  * there; the push service passes it on, and Maun connects and fetches.
  */
+/**
+ * Where the answers from what wakes this phone go. The app takes them; a test
+ * can take them instead, so that what Maun does with an answer can be asked
+ * without a whole app behind it.
+ */
+internal interface WakeReporter {
+    /** An address for wake-ups, or null when there is none any more. */
+    fun address(address: PushAddress?)
+
+    /** Something the user should be told about what wakes this phone. */
+    fun problem(reason: String)
+}
+
 class WakeService : PushService() {
+
+    /** Where answers go. Null in the app, where they go to the [Messenger]. */
+    internal var reporter: WakeReporter? = null
     private companion object {
         /** What the relay's wake-up for a ringing call says. Anything else is a message. */
         const val WAKE_CALL = "call"
@@ -27,18 +44,34 @@ class WakeService : PushService() {
     private val messenger
         get() = (application as MaunApp).messenger
 
+    /** Where answers go: the app, unless a test has said where. */
+    private fun telling(): WakeReporter = reporter ?: object : WakeReporter {
+        override fun address(address: PushAddress?) = messenger.onPushAddress(address)
+        override fun problem(reason: String) = messenger.onPushFailed(reason)
+    }
+
     /** What wakes this phone, as the start of a sentence. */
     private val waker: String
         get() = PushApps.current(this)?.takeIf { it.google }?.label ?: "Your push app"
 
     override fun onNewEndpoint(endpoint: PushEndpoint, instance: String) {
-        val address = endpoint.pubKeySet?.let { PushAddress.fromWebPush(endpoint.url, it.pubKey, it.auth) }
+        took(endpoint.pubKeySet?.let { PushAddress.fromWebPush(endpoint.url, it.pubKey, it.auth) })
+    }
+
+    /**
+     * What a new endpoint from what wakes this phone means for the address the
+     * relay holds. Null is an endpoint Maun cannot use — and an address it
+     * cannot use is not a reason to forget one that works: the relay goes on
+     * waking this phone at the address it already has, and the phone goes on
+     * hearing about messages and calls while the push app sorts itself out.
+     */
+    internal fun took(address: PushAddress?) {
+        val telling = telling()
         if (address == null) {
-            messenger.onPushFailed("$waker gave Maun an address it cannot use.")
-            messenger.onPushAddress(null)
-        } else {
-            messenger.onPushAddress(address)
+            telling.problem("${waker} gave Maun an address it cannot use.")
+            return
         }
+        telling.address(address)
     }
 
     override fun onMessage(message: PushMessage, instance: String) {
@@ -64,7 +97,7 @@ class WakeService : PushService() {
     }
 
     override fun onRegistrationFailed(reason: FailedReason, instance: String) {
-        messenger.onPushFailed(
+        telling().problem(
             when (reason) {
                 FailedReason.NETWORK -> "$waker could not be reached. Maun asks again the next time it is opened."
                 FailedReason.ACTION_REQUIRED -> "$waker needs your attention before it can wake Maun. Open it once."
@@ -75,6 +108,7 @@ class WakeService : PushService() {
     }
 
     override fun onUnregistered(instance: String) {
-        messenger.onPushAddress(null)
+        // What wakes this phone says the address is gone. That much is certain.
+        telling().address(null)
     }
 }
