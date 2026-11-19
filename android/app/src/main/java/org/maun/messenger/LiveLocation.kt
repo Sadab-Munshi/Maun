@@ -97,6 +97,27 @@ data class Place(val latitude: Double, val longitude: Double, val accuracy: Doub
     }
 }
 
+/**
+ * How far apart two points are, in metres, on the sphere the earth very nearly
+ * is — the great-circle distance, which is what "how far away is he" means for
+ * distances of a street or a district.
+ *
+ * This is arithmetic on the phone that asks. A person watching a share who
+ * lets Maun use their own location learns how far away the other phone is, and
+ * the phone that shares is told nothing at all: no second share, no second
+ * trail, and nothing on the relay.
+ */
+fun metresBetween(from: LivePoint, to: LivePoint): Double {
+    val earth = 6_371_008.8
+    val lat1 = Math.toRadians(from.lat)
+    val lat2 = Math.toRadians(to.lat)
+    val dLat = lat2 - lat1
+    val dLon = Math.toRadians(to.lon - from.lon)
+    val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2)
+    return 2 * earth * Math.asin(minOf(1.0, Math.sqrt(a)))
+}
+
 /** What the person watching knows about a share right now. */
 enum class LiveState {
     /** The share is running: [LiveView.point] is where the other phone was, as it last said. */

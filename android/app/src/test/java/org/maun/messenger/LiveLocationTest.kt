@@ -195,6 +195,22 @@ class LiveLocationTest {
     }
 
     @Test
+    fun `how far away somebody is comes from two points and nothing else`() {
+        val here = LivePoint(22.3218, 88.0487, 12.0, 1_794_700_000_000)
+        // The same place twice is nothing at all.
+        assertEquals(0.0, metresBetween(here, here), 0.001)
+        // A degree of latitude is about 111.2 km anywhere on the sphere.
+        val north = LivePoint(23.3218, 88.0487, 5.0, 1_794_700_000_000)
+        assertEquals(111_195.0, metresBetween(here, north), 200.0)
+        // And it does not care which of the two is called first.
+        assertEquals(metresBetween(here, north), metresBetween(north, here), 0.001)
+        // A kilometre up the road, near enough.
+        val up = LivePoint(22.3308, 88.0487, 5.0, 1_794_700_000_000)
+        val metres = metresBetween(here, up)
+        assertTrue("expected about a kilometre, got $metres", metres in 900.0..1_100.0)
+    }
+
+    @Test
     fun `a place is sent once, and is a message rather than a share`() {
         val place = Place(22.37884, 87.98385, 12.0, 1_794_700_000_000)
         assertEquals(place, Place.fromLocal(place.toLocal()))
