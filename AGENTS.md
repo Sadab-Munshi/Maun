@@ -136,6 +136,10 @@ not a step that passed.
   socket to the relay on its own.
 - **Encryption.** `crypto/Sessions.kt` and libsignal. Nothing hand-rolls a
   ratchet or a key exchange.
+- **A live location.** `LiveLocation.kt` on the phone (sealing, the record,
+  the four states) and `shareStart`/`sharePoint`/`shareStop`/`sharePeek` in
+  `mailbox.ts`. Read `docs/LOCATION.md` first: the point is sealed on the phone
+  and the relay must never be handed anything it could read.
 - **Tests.** Look at the nearest existing test file and match its shape,
   including how it names cases (a sentence, no prefix).
 
@@ -158,6 +162,12 @@ not a step that passed.
   connection limits lifted, because every test phone connects from one address.
 - Debug builds are signed with the committed `android/debug.keystore` on
   purpose: it protects nothing, and it lets one debug build install over the last.
+- A `FOREGROUND_SERVICE_*` permission and its `android:foregroundServiceType`
+  go together, or the service is killed on Android 14 and later. The location
+  kind also needs the location permission *before* `startForeground`, not after.
+- Lint's `MissingPermission` does not follow a permission check that lives in
+  another method: annotate the method that calls, as `LocationService.listen`
+  does, or do the check inline as `Notifications.showMessages` does.
 
 ## Git
 
@@ -187,6 +197,7 @@ would prove it.
 | `PLAN.md` | Build plan, decisions taken, progress |
 | `docs/NOTIFICATIONS.md` | How a phone is woken, and why every part of it is shaped that way |
 | `docs/CHAT.md` | Sessions, receipts, message requests, blocking |
+| `docs/LOCATION.md` | Live location: what the relay keeps, what it cannot, and what is not in v1 |
 | `docs/RECOVERY.md` | What survives an uninstall, a reinstall, a new phone |
 | `docs/RELEASE.md` | Building, signing and publishing a version |
 | `docs/PLAY_PROTECT.md`, `docs/PLAY_PROTECT_APPEAL.md` | The Play Protect warning, and the appeal |
