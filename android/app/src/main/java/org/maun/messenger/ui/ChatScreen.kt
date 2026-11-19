@@ -142,6 +142,8 @@ import kotlin.math.ceil
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.maun.messenger.AppLock
+import org.maun.messenger.locationSwitchedOn
+import org.maun.messenger.openLocationSettings
 import org.maun.messenger.Attachment
 import org.maun.messenger.Messenger
 import org.maun.messenger.Payload
@@ -274,27 +276,57 @@ fun ChatScreen(
         }
     }
 
-    // Asked for when a share is about to start, and at no other time.
-    var shareAfter by remember { mutableStateOf<Int?>(null) }
+    // Asked for when something is about to be sent, and at no other time. What
+    // was waiting on the answer is held here, so a place sent once and a share
+    // lasting hours go through exactly the same door.
+    var afterPermission by remember { mutableStateOf<(() -> Unit)?>(null) }
     val askForLocation = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { granted ->
-        val minutes = shareAfter
-        shareAfter = null
+        val next = afterPermission
+        afterPermission = null
         val allowed = granted[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             granted[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        if (minutes == null) return@rememberLauncherForActivityResult
         when {
+            next == null -> Unit
             // Agreed to, but the phone's location is still switched off: the
-            // dialog that follows is the one that can put that right, and the
-            // share waits behind it rather than running empty.
+            // dialog that follows is the one that can put that right, and
+            // nothing is sent rather than sending a place that is not there.
             !allowed -> Toast.makeText(
                 context,
                 "Maun was not allowed to use this phone's location.",
                 Toast.LENGTH_LONG,
             ).show()
             !locationSwitchedOn(context) -> locationOff = true
-            else -> live.onShare(peerId, minutes)
+            else -> next()
+        }
+    }
+    // One place to ask: permission if it has never been given, then the
+    // phone's own switch, then the thing that was wanted. A place sent once
+    // and a share lasting hours go through the same door.
+    val withLocation: (() -> Unit) -> Unit = { action ->
+        val already = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        when {
+            // Permission is one switch and the phone's own location is
+            // another: with it off there is nowhere to share from, and a card
+            // that never fills in is worse than a sentence saying why.
+            already && !locationSwitchedOn(context) -> locationOff = true
+            already -> action()
+            else -> {
+                afterPermission = action
+                askForLocation.launch(
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                    ),
+                )
+            }
         }
     }
     val askForCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -596,34 +628,16 @@ fun ChatScreen(
         LiveShareSheet(
             name = contactName ?: "They",
             onDismiss = { showLiveSheet = false },
+            // One place, once. Nothing is left running after it.
+            onSendNow = {
+                showLiveSheet = false
+                withLocation { live.onSendNow(peerId) }
+            },
+            // Being followed for a while: the only one of the two that keeps
+            // a service and a countdown going.
             onShare = { minutes ->
                 showLiveSheet = false
-                // The phone's location is asked for once, after the person has
-                // said how long to share for: a refused permission leaves
-                // nothing running and nothing said to the other phone.
-                val already = ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                ) == PackageManager.PERMISSION_GRANTED
-                when {
-                    // Permission is one switch; the phone's own location is
-                    // another, and a share started with it off would be a card
-                    // that never fills in.
-                    already && !locationSwitchedOn(context) -> locationOff = true
-                    already -> live.onShare(peerId, minutes)
-                    else -> {
-                        shareAfter = minutes
-                        askForLocation.launch(
-                            arrayOf(
-                                Manifest.permission.ACCESS_FINE_LOCATION,
-                                Manifest.permission.ACCESS_COARSE_LOCATION,
-                            ),
-                        )
-                    }
-                }
+                withLocation { live.onShare(peerId, minutes) }
             },
         )
     }

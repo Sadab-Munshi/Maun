@@ -48,6 +48,55 @@ data class LivePoint(val lat: Double, val lon: Double, val accuracy: Double, val
     }
 }
 
+/**
+ * A place this phone was told about once, and never again.
+ *
+ * The two ways to send where you are differ in one thing: a share keeps
+ * saying where the phone is until its time runs out, and this says it once.
+ * A place is therefore an ordinary message — sealed inside the same
+ * encryption as the words around it, kept by nobody else, and never asked
+ * after: the relay has no row for it, no service runs on the phone that sent
+ * it, and nothing polls for it on the phone that receives it.
+ *
+ * [at] is when the fix was taken on the sending phone, so a card can say how
+ * old the place is. Nobody may be there any more; the card says so.
+ */
+data class Place(val latitude: Double, val longitude: Double, val accuracy: Double, val at: Long) {
+
+    fun point(): LivePoint = LivePoint(latitude, longitude, accuracy, at)
+
+    fun toLocal(): String = JSONObject()
+        .put("lat", latitude)
+        .put("lon", longitude)
+        .put("ac", accuracy)
+        .put("at", at)
+        .toString()
+
+    companion object {
+        fun fromLocal(text: String): Place? = try {
+            from(JSONObject(text))
+        } catch (_: JSONException) {
+            null
+        }
+
+        /** A place out of a message that carries one. Null for anything that is not one. */
+        fun from(json: JSONObject): Place? = of(
+            json.optDouble("lat", Double.NaN),
+            json.optDouble("lon", Double.NaN),
+            json.optDouble("ac", 0.0),
+            json.optLong("at", 0L),
+        )
+
+        /** A place from its four numbers, or null when they are not a place on this earth. */
+        fun of(latitude: Double, longitude: Double, accuracy: Double, at: Long): Place? {
+            if (!latitude.isFinite() || !longitude.isFinite() || at <= 0L) return null
+            if (latitude < -90.0 || latitude > 90.0 || longitude < -180.0 || longitude > 180.0) return null
+            val known = accuracy.takeIf { it.isFinite() && it in 0.0..100_000.0 } ?: 0.0
+            return Place(latitude, longitude, known, at)
+        }
+    }
+}
+
 /** What the person watching knows about a share right now. */
 enum class LiveState {
     /** The share is running: [LiveView.point] is where the other phone was, as it last said. */

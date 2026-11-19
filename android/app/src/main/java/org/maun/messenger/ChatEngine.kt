@@ -575,6 +575,41 @@ class ChatEngine(
     }
 
     /**
+     * Sends where this phone is, once, as an ordinary message. There is no
+     * share, no key and no relay row: the place travels inside the same
+     * encryption as a sentence, and nothing keeps asking after it.
+     */
+    suspend fun sendPlace(peer: String, place: Place): MessageEntity {
+        val message = MessageEntity(
+            peer = peer,
+            id = UUID.randomUUID().toString(),
+            outgoing = true,
+            kind = MessageKind.LOCATION,
+            text = place.toLocal(),
+            at = now(),
+            status = MessageStatus.PENDING,
+        )
+        val seq = withContext(io) {
+            tx.inTransaction {
+                check(dao.isContact(peer)) { "not a contact" }
+                dao.insertMessage(message).also {
+                    dao.insertOutbox(
+                        OutboxEntity(
+                            peer = peer,
+                            messageId = message.id,
+                            payload = Payload.encode(Payload.Pin(message.id, message.at, place)),
+                            wakes = true,
+                        ),
+                    )
+                }
+            }
+        }
+        noteUnsent()
+        kick()
+        return message.copy(seq = seq)
+    }
+
+    /**
      * The share of [share] is over on this phone: the card says so, and [peer]
      * is told in a message, so that their card says so too without having to
      * ask the relay.
@@ -998,6 +1033,13 @@ class ChatEngine(
                         false
                     }
                     is Payload.LiveLocation -> liveIncoming(from, payload)
+                    // A place is a message, not a share: nothing to watch, nothing to end.
+                    is Payload.Pin ->
+                        if (dao.isContact(from)) {
+                            saveIncoming(from, payload.id, payload.sentAt, MessageKind.LOCATION, payload.place.toLocal())
+                        } else {
+                            false
+                        }
                     Payload.Unknown -> false
                 }
             }

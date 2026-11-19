@@ -1,15 +1,44 @@
 # Live location
 
-Sharing where you are, for a quarter of an hour or an hour, with one person.
-This is the v1: on purpose the smallest thing that is honest about what it
-does, and no more.
+Saying where you are with one person, two ways: a place sent once, and a share
+that follows you for as long as getting there takes. This is the v1: on purpose
+the smallest thing that is honest about what it does, and no more.
 
-## What it is
+## The two ways
 
-- The paperclip in a conversation, **Location**, then **15 minutes** or
-  **1 hour**. That is the whole of the offer.
+The paperclip offers both, and they are not the same thing.
+
+| | **Send my location now** | **Share live** |
+|---|---|---|
+| What travels | one ordinary encrypted message | a relay row, with sealed points on it |
+| How long it lasts | forever, as a message | 15 minutes to a day, then nothing |
+| What runs on the sending phone | nothing | a foreground service and a notification |
+| What the other phone does | nothing: it already has it | asks the relay while its card is on screen |
+| Anything to end | no | yes: Stop, the clock, or the relay |
+
+A place sent once answers "where are you?" nine times out of ten, and costs
+neither battery nor a thing kept on the relay. A share is for the other time:
+the walk home, the night out, the long drive.
+
+## What a share is
+
+- The paperclip in a conversation, **Location**, then **15 minutes**, **1 hour**,
+  **4 hours**, **8 hours** or **24 hours**. That is the whole of the offer. The
+  list runs to a day because this is a safety feature before it is a
+  convenience: somebody walking home at night should not be told to start the
+  share again every quarter of an hour.
 - The phone asks Android for its location at that moment, and at no other time.
   Saying no leaves nothing running and tells the other phone nothing.
+- Permission is one switch and the phone's own location is another. If the app
+  is allowed the location but the phone has it switched off, nothing is sent: a
+  dialog says so, with **Location settings** beside **Not now**, because a share
+  that runs with no fix behind it is a card that never fills in. Maun does
+  **not** switch the phone's location on by itself — Android only lets a system
+  app do that, and it is the phone owner's switch, not the app's.
+- While a share runs, the phone keeps a fix every ten seconds and sends a point
+  when fifteen seconds have passed, or sooner if it has moved ten metres.
+  Standing still it still says where it is every four minutes, so a viewer can
+  tell "still here" from "signal gone".
 - A notification for the whole time it lasts: who can see it, how long is left,
   and **Stop**. It cannot be swiped away while the share runs.
 - The other phone sees a card with **View**. Nothing is fetched until that is
@@ -131,10 +160,15 @@ other app asking for that area would get.
 | The routes | `backend/src/index.ts` — `startShare`, `putSharePoint`, `stopShare`, `peekShare` |
 | The numbers | `backend/src/protocol.ts` — the live-location section |
 | The phone's sealing, records and states | `android/.../LiveLocation.kt` |
+| A place sent once | `Place` in `LiveLocation.kt`; the switch helpers in `android/.../Places.kt` |
 | The routes from the phone | `android/.../network/LocationApi.kt` |
 | The service and its notification | `android/.../push/LocationService.kt`, `push/Notifications.kt` |
 | The card, the sheet and the map | `android/.../ui/LiveLocation.kt` |
 | The tests | `backend/test/location.test.ts`, `android/.../LiveLocationTest.kt`, `LiveCardTextTest.kt` |
+
+A place sent once touches nothing in `backend/`: it is a message like any
+other, sealed with the conversation's own keys, and the relay cannot tell it
+from a sentence.
 
 ## Still to be seen on a phone
 

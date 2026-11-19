@@ -1,6 +1,7 @@
 package org.maun.messenger.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -66,6 +67,14 @@ class LiveCardTextTest {
         assertEquals("Live location ended", previewOf(summary(over.toLocal())))
         // A record this version cannot read is still a location, not JSON on screen.
         assertEquals("Live location", previewOf(summary("{}")))
+    }
+
+    @Test
+    fun `a place sent once says so in the list, and does not pretend to be a share`() {
+        val place = org.maun.messenger.Place(22.37884, 87.98385, 12.0, System.currentTimeMillis())
+        assertEquals("Location", previewOf(summary(place.toLocal())))
+        // Nothing in it can be mistaken for a share that ends at a minute.
+        assertNull(org.maun.messenger.LiveShare.fromLocal(place.toLocal()))
     }
 
     @Test
