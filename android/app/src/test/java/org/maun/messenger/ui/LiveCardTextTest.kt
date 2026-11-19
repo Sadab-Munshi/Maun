@@ -70,6 +70,20 @@ class LiveCardTextTest {
     }
 
     @Test
+    fun `a distance is said the way a person would say it`() {
+        assertEquals("0 m away", howFar(0.0))
+        assertEquals("180 m away", howFar(180.4))
+        assertEquals("949 m away", howFar(949.0))
+        assertEquals("1.0 km away", howFar(1_000.0))
+        assertEquals("1.4 km away", howFar(1_430.0))
+        assertEquals("9.9 km away", howFar(9_940.0))
+        assertEquals("10 km away", howFar(10_200.0))
+        assertEquals("131 km away", howFar(131_400.0))
+        assertEquals("an unknown distance away", howFar(Double.NaN))
+        assertEquals("an unknown distance away", howFar(-5.0))
+    }
+
+    @Test
     fun `a place sent once says so in the list, and does not pretend to be a share`() {
         val place = org.maun.messenger.Place(22.37884, 87.98385, 12.0, System.currentTimeMillis())
         assertEquals("Location", previewOf(summary(place.toLocal())))

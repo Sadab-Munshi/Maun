@@ -20,6 +20,7 @@ import org.maun.messenger.webrtc.CallManager
 import org.maun.messenger.webrtc.CallSignals
 import org.maun.messenger.webrtc.CallUi
 import org.maun.messenger.webrtc.RingService
+import org.maun.messenger.network.Addresses
 import org.maun.messenger.network.AvatarApi
 import org.maun.messenger.network.FileApi
 import org.maun.messenger.network.LocationApi
@@ -1033,8 +1034,13 @@ class Messenger(context: Context) {
         val engine = engine ?: return "Not connected to the relay yet."
         if (!mayShareLocation()) return "Maun needs to be allowed to use this phone's location."
         if (!locationSwitchedOn(appContext)) return "This phone's location is switched off."
-        val place = currentPlace()
+        val fix = currentPlace()
             ?: return "The phone could not say where it is. A window or the open sky helps."
+        // What the place is called, if OpenStreetMap can say. Asked once, from
+        // this phone, with the answer kept: the phone that receives the place
+        // learns the name from the message and never asks anybody anything.
+        val label = withTimeoutOrNull(4_000L) { addresses()?.of(fix.latitude, fix.longitude) }.orEmpty()
+        val place = fix.copy(label = label)
         return try {
             engine.sendPlace(peer, place)
             null
@@ -1145,6 +1151,11 @@ class Messenger(context: Context) {
     private fun mayShareLocation(): Boolean =
         ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    /** The geocoder, made the first time a place is sent. */
+    private fun addresses(): Addresses = addressLookup ?: Addresses(appContext).also { addressLookup = it }
+
+    private var addressLookup: Addresses? = null
 
     /** How long a single fix may take before the phone is taken at its word. */
     private val FIX_TIMEOUT_MS = 12_000L

@@ -195,6 +195,22 @@ class LiveLocationTest {
     }
 
     @Test
+    fun `how far away somebody is comes from two points and nothing else`() {
+        val here = LivePoint(22.3218, 88.0487, 12.0, 1_794_700_000_000)
+        // The same place twice is nothing at all.
+        assertEquals(0.0, metresBetween(here, here), 0.001)
+        // A degree of latitude is about 111.2 km anywhere on the sphere.
+        val north = LivePoint(23.3218, 88.0487, 5.0, 1_794_700_000_000)
+        assertEquals(111_195.0, metresBetween(here, north), 200.0)
+        // And it does not care which of the two is called first.
+        assertEquals(metresBetween(here, north), metresBetween(north, here), 0.001)
+        // A kilometre up the road, near enough.
+        val up = LivePoint(22.3308, 88.0487, 5.0, 1_794_700_000_000)
+        val metres = metresBetween(here, up)
+        assertTrue("expected about a kilometre, got $metres", metres in 900.0..1_100.0)
+    }
+
+    @Test
     fun `a place is sent once, and is a message rather than a share`() {
         val place = Place(22.37884, 87.98385, 12.0, 1_794_700_000_000)
         assertEquals(place, Place.fromLocal(place.toLocal()))
@@ -210,6 +226,25 @@ class LiveLocationTest {
         assertNull(Place.fromLocal("""{"lat":91.0,"lon":0.0,"ac":5.0,"at":1}"""))
         assertNull(Place.fromLocal("""{"lat":0.0,"lon":181.0,"ac":5.0,"at":1}"""))
         assertNull(Place.fromLocal("""{"lat":0.0,"lon":0.0,"ac":5.0,"at":0}"""))
+    }
+
+    @Test
+    fun `a place can carry its own name, and the name travels with it`() {
+        val place = Place(22.3218, 88.0487, 12.0, 1_794_700_000_000, "Syampur, Shyampur - I, Howrah, 711314")
+        assertEquals(place, Place.fromLocal(place.toLocal()))
+        val payload = Payload.Pin("3f2c9a1e-0000-4000-8000-0000000000af", 1_794_700_000_000, place)
+        assertEquals(payload, Payload.decode(Payload.encode(payload)))
+        // A place with no name is still a place, and says nothing about one.
+        val bare = place.copy(label = "")
+        assertEquals(bare, Place.fromLocal(bare.toLocal()))
+    }
+
+    @Test
+    fun `a name is one line, and never more than a line`() {
+        val long = "a".repeat(400)
+        assertEquals(Place.MAX_LABEL, Place.of(1.0, 2.0, 5.0, 1L, long)!!.label.length)
+        // Newlines and control characters have no business on a card.
+        assertEquals("Syampur Howrah", Place.of(1.0, 2.0, 5.0, 1L, " Syampur\nHowrah ")!!.label)
     }
 
     @Test

@@ -15,6 +15,8 @@ The paperclip offers both, and they are not the same thing.
 | What runs on the sending phone | nothing | a foreground service and a notification |
 | What the other phone does | nothing: it already has it | asks the relay while its card is on screen |
 | Anything to end | no | yes: Stop, the clock, or the relay |
+| Tapped | opens the phone's map app at that place | opens Maun's map, both of you on it |
+| What it says | the place's name, from OpenStreetMap, then the numbers | the numbers, and how far from you |
 
 A place sent once answers "where are you?" nine times out of ten, and costs
 neither battery nor a thing kept on the relay. A share is for the other time:
@@ -124,6 +126,52 @@ The phone that shares is told the moment the card is opened, and its own card
 says **"Ada is watching"** from then on. Being told that somebody is looking is
 half of what a share is for.
 
+## The name of a place
+
+A coordinate is exact and says nothing. So the phone that sends a place asks
+for its name once — road, village, district, postcode — from **Nominatim**,
+the OpenStreetMap Foundation's own geocoder, and the answer travels inside the
+same encrypted message as the coordinate.
+
+- **One lookup per place, ever.** The answer is kept under a key rounded to
+  about eleven metres, so sending the same place twice asks once, and a place
+  OpenStreetMap has no name for is remembered as having none rather than asked
+  again every time a card is drawn.
+- **One request a second, at most**, which is what Nominatim's usage policy
+  asks, and the app says who it is in the `User-Agent` header, which the policy
+  also asks.
+- **Only the sender asks.** The phone that receives a place learns the name from
+  the message; it never tells anybody where anybody was, and it never asks a
+  stranger to describe a place on its behalf.
+- **It is a courtesy, not a fact.** The coordinate is the answer. In much of
+  rural India the name is a village and a postcode — "Syampur, Shyampur - I,
+  Howrah, 711314" — because that is all the map knows. Where the map has a
+  name, the name leads: "Balikuria Volebaba Temple, Manna Para Road, …".
+- When there is nothing true to say, nothing is said: no name, and the card
+  says the numbers.
+
+## Both of you on one map
+
+A phone watching a share can put itself on the map too, so that "where is he"
+becomes "he is 1.4 km up the road". Press **How far?** on the map screen and
+Maun asks this phone for its own place, draws a second dot, and writes the
+distance under the map.
+
+Three things make that different from what other apps do with it:
+
+- **The viewer's place never leaves the viewer's phone.** The distance is
+  arithmetic on this device, between two points; nothing is sent to the relay,
+  nothing is sent to the phone that is sharing, and no second share exists. The
+  phone that shares is not even told that the question was asked.
+- **It stops with the screen.** Following this phone's own location begins when
+  the map is opened with **How far?** and ends when the map is closed; the last
+  place is forgotten with it.
+- **It is off unless asked for.** Reading a share needs no permission at all.
+
+The distance is the great-circle distance between the two points: right to
+within a few metres across a street, and within about a fifth of a percent
+across a district.
+
 ## The map
 
 The map is **OpenFreeMap's**, drawn on the phone by **MapLibre** — free
@@ -157,8 +205,10 @@ phone already has, which works whether or not a single tile was drawn.
 - No history: the point moves as the phone moves, and each new point replaces
   the last, but no line is drawn and no trail is kept.
 - No "ask again", and no way for the viewer to start a share.
-- No distance, direction or travel time, because the viewer's own location is
-  never asked for. A viewer needs no permission at all.
+- No direction and no travel time: Maun says how far away somebody is, not
+  which way to walk, and it will not draw a route.
+- No permission at all for a viewer *unless* they ask for the distance:
+  reading a share needs none, and nothing asks until **How far?** is pressed.
 - No sharing in a group: Maun has no groups.
 - No wake-up for a new point: the viewer's card asks while it is on screen,
   which is the only time the answer is any use.
@@ -171,6 +221,7 @@ phone already has, which works whether or not a single tile was drawn.
 | The routes | `backend/src/index.ts` — `startShare`, `putSharePoint`, `stopShare`, `peekShare` |
 | The numbers | `backend/src/protocol.ts` — the live-location section |
 | The phone's sealing, records and states | `android/.../LiveLocation.kt` |
+| The name of a place | `android/.../network/Addresses.kt` (Nominatim, cached, one a second) |
 | A place sent once | `Place` in `LiveLocation.kt`; the switch helpers in `android/.../Places.kt` |
 | The routes from the phone | `android/.../network/LocationApi.kt` |
 | The service and its notification | `android/.../push/LocationService.kt`, `push/Notifications.kt` |
@@ -196,6 +247,8 @@ first things to look at:
   rather than a place that has gone stale;
 - that the MapLibre map draws at all, that street names come up in a city and
   not just a beige field, and that the dot is where the phone is;
+- that **How far?** puts both dots on one map, that the camera keeps both of
+  them on it, and that the number matches what a walk says it is;
 - that a day-long share is still being sent after an hour with the screen off,
   and what it costs a battery to move a point every fifteen seconds;
 - that Android brings the share back by itself after it has put the app away,

@@ -1,9 +1,20 @@
 package org.maun.messenger.ui
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.net.Uri
+import android.os.Bundle
+import android.os.Looper
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,13 +27,13 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -38,20 +49,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
-import org.maun.messenger.LivePhase
-import org.maun.messenger.LivePoint
-import org.maun.messenger.LiveShare
-import org.maun.messenger.Place
-import org.maun.messenger.LiveState
-import org.maun.messenger.LiveView
-import org.maun.messenger.data.MessageEntity
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.geometry.LatLng
@@ -68,6 +74,14 @@ import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.Point
+import org.maun.messenger.LivePhase
+import org.maun.messenger.LivePoint
+import org.maun.messenger.LiveShare
+import org.maun.messenger.LiveState
+import org.maun.messenger.LiveView
+import org.maun.messenger.metresBetween
+import org.maun.messenger.Place
+import org.maun.messenger.data.MessageEntity
 
 /**
  * What the conversation can do about a live location: offer one, stop one,
@@ -189,16 +203,27 @@ fun LiveLocationRow(
     if (sent != null) {
         val point = sent.point()
         val now = System.currentTimeMillis()
+        val context = LocalContext.current
+        val label = if (outgoing) "Where you were" else "$name's location"
         Card(
             outgoing = outgoing,
             title = if (outgoing) "You sent your location" else "$name sent their location",
-            detail = "${place(point)} · sent ${since(sent.at, now)}",
+            detail = buildString {
+                // The name first, in the words the sending phone found for it,
+                // then the numbers underneath, because the numbers never lie.
+                if (sent.label.isNotEmpty()) append(sent.label).append('\n')
+                append(place(point)).append(" · sent ").append(since(sent.at, now))
+            },
             chatColors = chatColors,
-            modifier = modifier,
+            // A tap hands the place to the map app the phone already has,
+            // which knows the name, the address and the way there. The button
+            // beside it opens Maun's own map instead.
+            modifier = modifier.clickable { openInMaps(context, point, label) },
+            // Tapped, a place is handed to the phone's own map app, which knows
+            // the name, the address and how to get there — the same thing
+            // WhatsApp does, and the reason a bubble does not need all of it.
             action = {
-                TextButton(onClick = { onOpenMap(point, if (outgoing) "Where you were" else "$name's location") }) {
-                    Text("Map")
-                }
+                TextButton(onClick = { onOpenMap(point, label) }) { Text("Map") }
             },
             pulse = false,
             onOpenMap = null,
@@ -391,7 +416,19 @@ private fun Card(
 @Composable
 fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
     val context = LocalContext.current
-    val dot = MaterialTheme.colorScheme.primary.toArgb()
+    val theirs = MaterialTheme.colorScheme.primary.toArgb()
+    val yours = MaterialTheme.colorScheme.tertiary.toArgb()
+    // Where this phone is, when the person looking has said Maun may ask. It
+    // never leaves the phone: the distance below is subtraction on this device.
+    var mine by remember { mutableStateOf<LivePoint?>(null) }
+    var following by remember { mutableStateOf(false) }
+    val askForMe = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { granted ->
+        val allowed = granted[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            granted[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (allowed) following = true
+    }
     // One map for as long as the screen is open: the point moves under it, the
     // map itself is not thrown away and drawn again with every new point.
     val mapView = remember(context) {
@@ -411,6 +448,13 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
             mapView.onDestroy()
         }
     }
+    // Following stops the moment the screen does, and the last place is
+    // forgotten with it.
+    DisposableEffect(following) {
+        if (!following) return@DisposableEffect onDispose { }
+        val stop = followMyLocation(context) { fix -> mine = fix }
+        onDispose { stop() }
+    }
     var map by remember(mapView) { mutableStateOf<MapLibreMap?>(null) }
     LaunchedEffect(mapView) {
         mapView.getMapAsync { ready -> map = ready }
@@ -425,19 +469,19 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
             isZoomGesturesEnabled = true
             isAttributionEnabled = true
         }
-        loaded.setStyle(styleFor(point, dot))
+        loaded.setStyle(styleFor(point, theirs, yours))
     }
     // The point moves while a share is being watched, so the map follows it.
-    LaunchedEffect(map, point.lat, point.lon) {
+    LaunchedEffect(map, point.lat, point.lon, mine?.lat, mine?.lon) {
         val loaded = map ?: return@LaunchedEffect
-        loaded.cameraPosition = CameraPosition.Builder()
+        loaded.style?.getSourceAs<GeoJsonSource>(PIN_SOURCE)?.setGeoJson(pin(point))
+        loaded.style?.getSourceAs<GeoJsonSource>(MY_SOURCE)?.setGeoJson(mine?.let { pin(it) } ?: nobody())
+        loaded.cameraPosition = loaded.cameraFor(point, mine) ?: CameraPosition.Builder()
             .target(LatLng(point.lat, point.lon))
             .zoom(ZOOM)
             .build()
-        // The style may not have finished loading; when it has not, the first
-        // point is already in the style it was built with.
-        loaded.style?.getSourceAs<GeoJsonSource>(PIN_SOURCE)?.setGeoJson(pin(point))
     }
+    val distance = mine?.let { metresBetween(it, point) }
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
         Surface(
@@ -456,6 +500,25 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.weight(1f),
                 )
+                if (mine == null) {
+                    // Off until somebody asks for it: a viewer of a share needs
+                    // no permission at all, and this is the only thing that
+                    // would ask for one.
+                    TextButton(
+                        onClick = {
+                            if (locationAllowed(context)) {
+                                following = true
+                            } else {
+                                askForMe.launch(
+                                    arrayOf(
+                                        Manifest.permission.ACCESS_FINE_LOCATION,
+                                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                                    ),
+                                )
+                            }
+                        },
+                    ) { Text("How far?") }
+                }
                 // The map is a picture of the point; this hands the point to
                 // whatever map app the phone already has, which is what is
                 // wanted when the next step is walking there. It works whether
@@ -468,15 +531,85 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
         ) {
-            Text(
-                text = "Map from OpenFreeMap, drawn from OpenStreetMap data. It sees the area " +
-                    "this phone is looking at, and nothing else.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            )
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                if (distance != null) {
+                    Text(
+                        text = "$title is ${howFar(distance)}",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                Text(
+                    text = "Map from OpenFreeMap, drawn from OpenStreetMap data. " +
+                        (if (distance != null) {
+                            "The distance is worked out on this phone; where you are is never sent anywhere."
+                        } else {
+                            "It sees the area this phone is looking at, and nothing else."
+                        }),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
+}
+
+/** The camera that has both dots on it, with room for the bars above and below. */
+private fun MapLibreMap.cameraFor(theirs: LivePoint, mine: LivePoint?): CameraPosition? {
+    if (mine == null) return null
+    val bounds = org.maplibre.android.geometry.LatLngBounds.Builder()
+        .include(LatLng(theirs.lat, theirs.lon))
+        .include(LatLng(mine.lat, mine.lon))
+        .build()
+    // Left, top, right, bottom: the distance card sits at the bottom.
+    return getCameraForLatLngBounds(bounds, intArrayOf(120, 260, 120, 360))
+}
+
+/** Nobody's place, for the source that waits until somebody asks for theirs. */
+private fun nobody(): FeatureCollection = FeatureCollection.fromFeatures(emptyList())
+
+/**
+ * Asks this phone where it is, and keeps asking, until the returned function is
+ * called. Nothing is sent anywhere: this is for the distance under the map, and
+ * the phone that shares is never told that the question was asked.
+ */
+@SuppressLint("MissingPermission")
+private fun followMyLocation(context: Context, onFix: (LivePoint) -> Unit): () -> Unit {
+    val manager = context.getSystemService(LocationManager::class.java) ?: return {}
+    val listener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            if (location.time <= 0L) return
+            onFix(LivePoint(location.latitude, location.longitude, location.accuracy.toDouble(), location.time))
+        }
+
+        @Deprecated("Required by LocationListener")
+        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+
+        override fun onProviderEnabled(provider: String) = Unit
+
+        override fun onProviderDisabled(provider: String) = Unit
+    }
+    listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).forEach { provider ->
+        runCatching {
+            manager.requestLocationUpdates(provider, 5_000L, 5f, listener, Looper.getMainLooper())
+        }
+    }
+    return { runCatching { manager.removeUpdates(listener) } }
+}
+
+/** Whether permission to use this phone's own location has already been given. */
+private fun locationAllowed(context: Context): Boolean =
+    ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED
+
+/** "180 m away", "1.4 km away", "12 km away": a distance said the way a person would. */
+internal fun howFar(metres: Double): String = when {
+    !metres.isFinite() || metres < 0 -> "an unknown distance away"
+    metres < 950 -> "${metres.toInt()} m away"
+    metres < 10_000 -> String.format(java.util.Locale.US, "%.1f km away", metres / 1000)
+    else -> "${(metres / 1000).roundToInt()} km away"
 }
 
 /**
@@ -491,9 +624,13 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
  */
 private const val MAP_STYLE = "https://tiles.openfreemap.org/styles/bright"
 
-/** The one layer that moves: where the phone is, or was. */
+/** The layer that moves: where the other phone is, or was. */
 private const val PIN_SOURCE = "maun-pin"
 private const val PIN_DOT_LAYER = "maun-pin-dot"
+
+/** And this phone's own, drawn only when the person looking has asked to see how far away it is. */
+private const val MY_SOURCE = "maun-me"
+private const val MY_DOT_LAYER = "maun-me-dot"
 private const val ZOOM = 16.0
 
 /**
@@ -503,20 +640,23 @@ private const val ZOOM = 16.0
  * draw of the map has it: there is no frame where the map is there and the dot
  * is not.
  */
-private fun styleFor(point: LivePoint, color: Int): Style.Builder = Style.Builder()
+private fun styleFor(point: LivePoint, theirs: Int, yours: Int): Style.Builder = Style.Builder()
     .fromUri(MAP_STYLE)
     .withSource(GeoJsonSource(PIN_SOURCE, pin(point)))
-    .withLayer(
-        CircleLayer(PIN_DOT_LAYER, PIN_SOURCE).withProperties(
-            circleRadius(9f),
-            circleColor(color),
-            circleOpacity(1f),
-            // A white edge, so the dot is the same dot on a pale street and on
-            // a dark park.
-            circleStrokeColor(android.graphics.Color.WHITE),
-            circleStrokeWidth(3f),
-        ),
-    )
+    // Empty until somebody asks for it, so the second dot is a setGeoJson
+    // rather than the whole style being built again under the map.
+    .withSource(GeoJsonSource(MY_SOURCE, nobody()))
+    .withLayer(dot(PIN_DOT_LAYER, PIN_SOURCE, theirs))
+    .withLayer(dot(MY_DOT_LAYER, MY_SOURCE, yours))
+
+/** A dot with a white edge, so it is the same dot on a pale street and on a dark park. */
+private fun dot(id: String, source: String, color: Int): CircleLayer = CircleLayer(id, source).withProperties(
+    circleRadius(9f),
+    circleColor(color),
+    circleOpacity(1f),
+    circleStrokeColor(android.graphics.Color.WHITE),
+    circleStrokeWidth(3f),
+)
 
 /** The point as GeoJSON: MapLibre wants longitude first, and this is the one place that flips it. */
 private fun pin(point: LivePoint): FeatureCollection = FeatureCollection.fromFeature(
