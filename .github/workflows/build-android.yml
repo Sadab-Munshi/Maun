@@ -103,18 +103,16 @@ jobs:
         # One APK per phone architecture, so a download carries one copy of the
         # calling and encryption libraries rather than two.
         #
-        # What people install over mobile data is the release APK, and the
-        # release workflow keeps that one under 40 MB. A debug build is not
-        # something anybody downloads: it carries unminified code and the whole
-        # MapLibre renderer uncompressed, so this budget is 44 MB and is only
-        # here to catch a step change, not to be the download budget.
+        # With the map renderer's native library compressed inside the APK,
+        # arm64 comes to about 31 MB and armeabi-v7a to 28 MB. The budget stays
+        # at 40 MB: if it is ever reached, something is wrong rather than big.
         run: |
           status=0
           for apk in app/build/outputs/apk/debug/*.apk; do
             size=$(stat -c %s "$apk")
             echo "$apk is $((size / 1024 / 1024)) MB"
-            if [ "$size" -gt $((44 * 1024 * 1024)) ]; then
-              echo "::error::$apk is over 44 MB. Check that shrinking is on, the native libraries are stripped, and no architecture was added to every APK."
+            if [ "$size" -gt $((40 * 1024 * 1024)) ]; then
+              echo "::error::$apk is over 40 MB. Check that shrinking is on, the native libraries are stripped, and no architecture was added to every APK."
               status=1
             fi
           done
