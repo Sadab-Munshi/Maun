@@ -4,9 +4,11 @@ import {
   CONNECTED_GRACE_MS,
   WAKE_RETRY_WAITS_CALL_MS,
   WAKE_RETRY_WAITS_MS,
+  PUSH_CALL_TTL_SECONDS,
   PUSH_CONTACT,
   PUSH_DAILY_CAP,
   PUSH_PAYLOAD,
+  PUSH_PAYLOAD_CALL,
   PUSH_REPEAT_MS,
   PUSH_SETTLE_MS,
   PUSH_SETTLE_WAITS_MS,
@@ -120,7 +122,7 @@ async function pushRow(id: string): Promise<Record<string, unknown> | undefined>
 /** The appointment to look for a woken phone again, if there is one. */
 async function retryRow(id: string): Promise<Record<string, unknown> | undefined> {
   return runInDurableObject(mailbox(id), (_instance, state) =>
-    state.storage.sql.exec("SELECT at, count, urgent FROM wake_retry WHERE id = 1").toArray()[0],
+    state.storage.sql.exec("SELECT at, count, seen, urgent FROM wake_retry WHERE id = 1").toArray()[0],
   );
 }
 
@@ -396,6 +398,45 @@ describe("waking a phone", () => {
     await hangUp(a);
   }, 30_000);
 
+  it("counts one message taken of two as progress, and still delivers the other", async () => {
+    const alice = await registered();
+    const bob = await withPush();
+    const a = await online(alice);
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(1)).toBe(1);
+    // A second is left while the first wake-up is still unanswered, so the
+    // relay now knows that two were waiting when it last looked.
+    await sendMessage(a, bob.id, randomBytes(8));
+    await vi.waitFor(async () => expect(await retryRow(bob.id)).toBeDefined());
+    await editPush(bob.id, "UPDATE wake_retry SET at = ?", Date.now() - 1);
+    await editPush(bob.id, "UPDATE push SET last = last - ?", PUSH_REPEAT_MS + 1000);
+    await runAlarm(bob.id);
+    expect(await wakeCount(2)).toBe(2);
+    await vi.waitFor(async () => expect((await retryRow(bob.id))?.seen).toBe(2));
+
+    // Bob's phone comes and takes one of the two, and leaves without the other.
+    const b = await online(bob);
+    const first = await b.nextJson();
+    const second = await b.nextJson();
+    b.sendJson({ t: "ack", seq: first.seq });
+    b.sendJson({ t: "echo", id: "settle", body: "" });
+    expect(await b.nextJson()).toMatchObject({ t: "echo" });
+    await hangUp(b);
+
+    // The next look sees that something was taken. That is progress, and it
+    // does not wake the phone again for it.
+    await editPush(bob.id, "UPDATE wake_retry SET at = ?", Date.now() - 1);
+    await editPush(bob.id, "UPDATE push SET last = last - ?", PUSH_REPEAT_MS + 1000);
+    await runAlarm(bob.id);
+    expect(await wakeCount(2)).toBe(2);
+
+    // What was not taken is still there, and is still delivered.
+    const again = await online(bob);
+    expect(await again.nextJson()).toMatchObject({ t: "msg", seq: second.seq });
+    await hangUp(again);
+    await hangUp(a);
+  }, 30_000);
+
   it("stops once the message has been taken, and not a moment before", async () => {
     const alice = await registered();
     let bob = await withPush();
@@ -446,6 +487,62 @@ describe("waking a phone", () => {
       expect(await wakeCount(i + 2)).toBe(i + 2);
     }
     await vi.waitFor(async () => expect(await retryRow(bob.id)).toBeUndefined());
+    await hangUp(a);
+  }, 30_000);
+
+  it("still says call when a call follows a message within the same second", async () => {
+    // A message leaves a wake-up on its way to the phone. A call that arrives
+    // before that one has been answered is still a call: the phone has to be
+    // told to get ready to ring, and the call has to be looked for again at the
+    // call's own interval rather than the message's slower one.
+    const alice = await registered();
+    const bob = await withPush();
+    const a = await online(alice);
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(1)).toBe(1);
+
+    const id = requestId();
+    const call = JSON.stringify({ callId: "c1", type: "offer", sdp: "v=0", video: false });
+    a.sendJson({ t: "send", id, to: bob.id, kind: 2, body: toBase64(new TextEncoder().encode(call)), urgent: true });
+    expect(await a.nextJson()).toMatchObject({ t: "stored" });
+
+    // A second wake-up goes out, and it is the call one.
+    expect(await wakeCount(2)).toBe(2);
+    expect(new TextDecoder().decode(await bob.keys.decrypt(wakes[1]!.body))).toBe(PUSH_PAYLOAD_CALL);
+    expect(wakes[1]!.headers.get("ttl")).toBe(String(PUSH_CALL_TTL_SECONDS));
+
+    // And the phone is looked for again in 8 seconds, not 20.
+    await vi.waitFor(async () => expect(await retryRow(bob.id)).toBeDefined());
+    const row = await retryRow(bob.id);
+    expect(row!.urgent).toBe(1);
+    expect(row!.at as number).toBeLessThanOrEqual(Date.now() + WAKE_RETRY_WAITS_CALL_MS[0]!);
+    await hangUp(a);
+  }, 30_000);
+
+  it("leaves the appointment made for a call alone when a message follows it", async () => {
+    const alice = await registered();
+    const bob = await withPush();
+    const a = await online(alice);
+    const id = requestId();
+    const call = JSON.stringify({ callId: "c1", type: "offer", sdp: "v=0", video: false });
+    a.sendJson({ t: "send", id, to: bob.id, kind: 2, body: toBase64(new TextEncoder().encode(call)), urgent: true });
+    expect(await a.nextJson()).toMatchObject({ t: "stored" });
+    expect(await wakeCount(1)).toBe(1);
+    await vi.waitFor(async () => expect(await retryRow(bob.id)).toBeDefined());
+    const before = await retryRow(bob.id);
+    expect(before!.urgent).toBe(1);
+
+    // A message arrives once the relay's own guard against repeating itself has
+    // passed, so a wake-up for it does go out.
+    await editPush(bob.id, "UPDATE push SET last = last - ?", PUSH_REPEAT_MS + 1000);
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(2)).toBe(2);
+
+    // The call is still being looked for, and still at the moment it was
+    // promised: the message's own, later appointment does not replace it.
+    const after = await retryRow(bob.id);
+    expect(after!.urgent).toBe(1);
+    expect(after!.at as number).toBe(before!.at as number);
     await hangUp(a);
   }, 30_000);
 
@@ -630,6 +727,60 @@ describe("waking a phone", () => {
     expect(await pushRow(bob.id)).toMatchObject({ sent: 1, pending: 1 });
     await hangUp(a);
   });
+
+  it("gives a mailbox written before the call word the column it needs, and keeps its address", async () => {
+    // A mailbox that was woken by the last release has a push table without
+    // `call_wake`. The first request after the deploy has to add it without
+    // losing the address that is already in the row.
+    const alice = await registered();
+    const bob = await withPush();
+    await runInDurableObject(mailbox(bob.id), (doInstance, state) => {
+      const instance = doInstance as unknown as { tablesReady: boolean; ensureTables(): void };
+      const row = state.storage.sql.exec("SELECT url, key, auth, last, pending, day, sent FROM push WHERE id = 1").toArray()[0]!;
+      state.storage.sql.exec("DROP TABLE push");
+      state.storage.sql.exec(
+        `CREATE TABLE push (
+           id INTEGER PRIMARY KEY CHECK (id = 1),
+           url TEXT NOT NULL, key BLOB NOT NULL, auth BLOB NOT NULL,
+           last INTEGER NOT NULL, pending INTEGER NOT NULL,
+           day INTEGER NOT NULL, sent INTEGER NOT NULL
+         )`,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO push (id, url, key, auth, last, pending, day, sent) VALUES (1, ?, ?, ?, ?, ?, ?, ?)",
+        row.url,
+        row.key,
+        row.auth,
+        row.last,
+        row.pending,
+        row.day,
+        row.sent,
+      );
+      instance.tablesReady = false;
+      instance.ensureTables();
+    });
+
+    const columns = await runInDurableObject(mailbox(bob.id), (_instance, state) =>
+      state.storage.sql.exec("SELECT name FROM pragma_table_info('push')").toArray().map((row) => row.name as string),
+    );
+    expect(columns).toContain("call_wake");
+    // The address the phone left is still the one it is woken at.
+    expect((await pushRow(bob.id))?.url).toBe(bob.url);
+
+    const a = await online(alice);
+    await sendMessage(a, bob.id, randomBytes(8));
+    expect(await wakeCount(1)).toBe(1);
+    expect(wakes[0]!.url).toBe(bob.url);
+
+    // And a call after it is still promoted, on a mailbox that was migrated.
+    const id = requestId();
+    const call = JSON.stringify({ callId: "c1", type: "offer", sdp: "v=0", video: false });
+    a.sendJson({ t: "send", id, to: bob.id, kind: 2, body: toBase64(new TextEncoder().encode(call)), urgent: true });
+    expect(await a.nextJson()).toMatchObject({ t: "stored" });
+    expect(await wakeCount(2)).toBe(2);
+    expect(new TextDecoder().decode(await bob.keys.decrypt(wakes[1]!.body))).toBe(PUSH_PAYLOAD_CALL);
+    await hangUp(a);
+  }, 30_000);
 
   it("says how many messages are waiting when the phone logs in", async () => {
     const alice = await registered();
