@@ -101,8 +101,11 @@ jobs:
 
       - name: Check APK size
         # One APK per phone architecture, so a download carries one copy of the
-        # calling and encryption libraries rather than two. People install this
-        # over mobile data: keep each one well under the 40 MB budget.
+        # calling and encryption libraries rather than two.
+        #
+        # With the map renderer's native library compressed inside the APK,
+        # arm64 comes to about 31 MB and armeabi-v7a to 28 MB. The budget stays
+        # at 40 MB: if it is ever reached, something is wrong rather than big.
         run: |
           status=0
           for apk in app/build/outputs/apk/debug/*.apk; do

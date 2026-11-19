@@ -119,6 +119,11 @@ android {
         jniLibs {
             // A second copy of libsignal's native library, meant for its own tests.
             excludes += "**/libsignal_jni_testing.so"
+            // Native libraries are compressed inside the APK rather than stored
+            // as they are. The map renderer alone is 12 MB of arm64 code, and
+            // what people download is the APK: compressed it is about 4 MB, at
+            // the cost of a little work extracting it on first run.
+            useLegacyPackaging = true
         }
         resources {
             // libsignal's jar also carries desktop builds of its native library
@@ -194,7 +199,8 @@ dependencies {
     implementation(libs.webrtc)
     implementation(libs.androidx.core.telecom)
     // The map on a shared location: OpenStreetMap tiles, drawn without Play Services.
-    implementation(libs.osmdroid)
+    // The map: vector tiles, drawn on the phone. No key, no Google, no osmdroid.
+    implementation(libs.maplibre)
 
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 

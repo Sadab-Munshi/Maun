@@ -2,8 +2,7 @@ package org.maun.messenger.ui
 
 import android.content.Context
 import android.content.Intent
-import android.location.LocationManager
-import android.provider.Settings
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -40,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -52,10 +52,22 @@ import org.maun.messenger.Place
 import org.maun.messenger.LiveState
 import org.maun.messenger.LiveView
 import org.maun.messenger.data.MessageEntity
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
-import org.osmdroid.util.GeoPoint
-import org.osmdroid.views.MapView
-import org.osmdroid.views.overlay.Marker
+import org.maplibre.android.MapLibre
+import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.MapView
+import org.maplibre.android.maps.Style
+import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.PropertyFactory.circleColor
+import org.maplibre.android.style.layers.PropertyFactory.circleOpacity
+import org.maplibre.android.style.layers.PropertyFactory.circleRadius
+import org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor
+import org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth
+import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.geojson.Feature
+import org.maplibre.geojson.FeatureCollection
+import org.maplibre.geojson.Point
 
 /**
  * What the conversation can do about a live location: offer one, stop one,
@@ -379,44 +391,55 @@ private fun Card(
 @Composable
 fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
     val context = LocalContext.current
+    val dot = MaterialTheme.colorScheme.primary.toArgb()
     // One map for as long as the screen is open: the point moves under it, the
-    // map itself is not thrown away and drawn again every half minute.
-    val map = remember(context) {
-        prepareTiles(context)
+    // map itself is not thrown away and drawn again with every new point.
+    val mapView = remember(context) {
+        prepareMaps(context)
         MapView(context).apply {
-            setTileSource(TileSourceFactory.MAPNIK)
-            setMultiTouchControls(true)
-            setBuiltInZoomControls(false)
-            controller.setZoom(16.0)
+            // MapLibre asks for the whole of a View's life, not half of it: a
+            // map that has been created but not started draws nothing.
+            onCreate(null)
+            onStart()
+            onResume()
         }
     }
-    val marker = remember(map) {
-        Marker(map).apply {
-            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-            map.overlays.add(this)
-        }
-    }
-    DisposableEffect(map) {
-        map.onResume()
+    DisposableEffect(mapView) {
         onDispose {
-            map.onPause()
-            map.onDetach()
+            mapView.onPause()
+            mapView.onStop()
+            mapView.onDestroy()
         }
     }
-    // The point moves while the map is open, so the map follows it.
-    LaunchedEffect(point.lat, point.lon, title) {
-        val at = GeoPoint(point.lat, point.lon)
-        marker.position = at
-        marker.title = title
-        map.controller.setCenter(at)
-        map.invalidate()
+    var map by remember(mapView) { mutableStateOf<MapLibreMap?>(null) }
+    LaunchedEffect(mapView) {
+        mapView.getMapAsync { ready -> map = ready }
+    }
+    LaunchedEffect(map) {
+        val loaded = map ?: return@LaunchedEffect
+        loaded.uiSettings.apply {
+            // A second finger should not spin the map under somebody who is
+            // trying to read a street name.
+            isRotateGesturesEnabled = false
+            isTiltGesturesEnabled = false
+            isZoomGesturesEnabled = true
+            isAttributionEnabled = true
+        }
+        loaded.setStyle(styleFor(point, dot))
+    }
+    // The point moves while a share is being watched, so the map follows it.
+    LaunchedEffect(map, point.lat, point.lon) {
+        val loaded = map ?: return@LaunchedEffect
+        loaded.cameraPosition = CameraPosition.Builder()
+            .target(LatLng(point.lat, point.lon))
+            .zoom(ZOOM)
+            .build()
+        // The style may not have finished loading; when it has not, the first
+        // point is already in the style it was built with.
+        loaded.style?.getSourceAs<GeoJsonSource>(PIN_SOURCE)?.setGeoJson(pin(point))
     }
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
-        AndroidView(
-            factory = { map },
-            update = { it.setUseDataConnection(true) },
-            modifier = Modifier.fillMaxSize(),
-        )
+        AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
         Surface(
             modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth(),
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
@@ -433,6 +456,11 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.weight(1f),
                 )
+                // The map is a picture of the point; this hands the point to
+                // whatever map app the phone already has, which is what is
+                // wanted when the next step is walking there. It works whether
+                // or not a single tile loaded.
+                TextButton(onClick = { openInMaps(context, point, title) }) { Text("Maps") }
             }
         }
         Surface(
@@ -441,7 +469,8 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
         ) {
             Text(
-                text = "Map tiles by OpenStreetMap, which sees the area this phone is looking at.",
+                text = "Map from OpenFreeMap, drawn from OpenStreetMap data. It sees the area " +
+                    "this phone is looking at, and nothing else.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -451,25 +480,71 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
 }
 
 /**
- * osmdroid keeps its tiles in a folder of its own and asks its own configuration
- * where that is. Left alone it picks a folder on shared storage, which Android
- * 10 and later will not let an app write to, so every tile fails and the map
- * comes up as an empty grey grid. It has to be told, once, before the first
- * map is made — and told who is asking, which is what OpenStreetMap's tile
- * policy asks of an app.
+ * The map is OpenFreeMap's: OpenStreetMap data packaged as vector tiles and
+ * drawn on the phone by MapLibre, which is free software. No key, no account,
+ * no Google, and no card behind it.
+ *
+ * The trade is the usual one for a map: the tile server learns which part of
+ * the world this phone is looking at, and roughly when, and the map says so.
+ * Moving to tiles this project served itself would be a change to this one
+ * URL, because everything else about the map is the drawing.
  */
-private var tilesReady = false
+private const val MAP_STYLE = "https://tiles.openfreemap.org/styles/bright"
 
-private fun prepareTiles(context: Context) {
-    if (tilesReady) return
-    val config = org.osmdroid.config.Configuration.getInstance()
-    val base = java.io.File(context.filesDir, "osmdroid")
-    config.load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
-    // After load(), which resets both of these from the preferences.
-    config.osmdroidBasePath = base
-    config.osmdroidTileCache = java.io.File(base, "tiles")
-    config.userAgentValue = "Maun/${org.maun.messenger.BuildConfig.VERSION_NAME} (${context.packageName})"
-    tilesReady = true
+/** The one layer that moves: where the phone is, or was. */
+private const val PIN_SOURCE = "maun-pin"
+private const val PIN_DOT_LAYER = "maun-pin-dot"
+private const val ZOOM = 16.0
+
+/**
+ * A map of [point], with the point already on it, ready to hand to MapLibre.
+ *
+ * The point is put into the style rather than added afterwards, so the first
+ * draw of the map has it: there is no frame where the map is there and the dot
+ * is not.
+ */
+private fun styleFor(point: LivePoint, color: Int): Style.Builder = Style.Builder()
+    .fromUri(MAP_STYLE)
+    .withSource(GeoJsonSource(PIN_SOURCE, pin(point)))
+    .withLayer(
+        CircleLayer(PIN_DOT_LAYER, PIN_SOURCE).withProperties(
+            circleRadius(9f),
+            circleColor(color),
+            circleOpacity(1f),
+            // A white edge, so the dot is the same dot on a pale street and on
+            // a dark park.
+            circleStrokeColor(android.graphics.Color.WHITE),
+            circleStrokeWidth(3f),
+        ),
+    )
+
+/** The point as GeoJSON: MapLibre wants longitude first, and this is the one place that flips it. */
+private fun pin(point: LivePoint): FeatureCollection = FeatureCollection.fromFeature(
+    Feature.fromGeometry(Point.fromLngLat(point.lon, point.lat)),
+)
+
+/** Hands the point to the phone's own maps app, without asking it where it is. */
+private fun openInMaps(context: Context, point: LivePoint, title: String) {
+    val at = "${point.lat},${point.lon}"
+    val uri = Uri.parse("geo:$at?q=" + Uri.encode(at) + "(" + Uri.encode(title) + ")")
+    try {
+        context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (_: Exception) {
+        // No maps app on this phone: the map on screen is all there is, and it
+        // is enough to see where the point is.
+    }
+}
+
+/**
+ * MapLibre is told about this phone once, before the first map is made. It
+ * needs no key and no account: what it needs is to exist before a MapView does.
+ */
+private var mapsReady = false
+
+private fun prepareMaps(context: Context) {
+    if (mapsReady) return
+    MapLibre.getInstance(context)
+    mapsReady = true
 }
 
 /** "15 minutes", "1 hour", "8 hours", "24 hours": how long a share is started for. */
