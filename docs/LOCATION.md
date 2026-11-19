@@ -15,6 +15,7 @@ The paperclip offers both, and they are not the same thing.
 | What runs on the sending phone | nothing | a foreground service and a notification |
 | What the other phone does | nothing: it already has it | asks the relay while its card is on screen |
 | Anything to end | no | yes: Stop, the clock, or the relay |
+| On the card | a preview, and no button: the whole card is the tap | **View**, then **Open the map** while it is still moving |
 | Tapped | opens the phone's map app at that place | opens Maun's map, both of you on it |
 | What it says | the place's name, from OpenStreetMap, then the numbers | the numbers, and how far from you |
 
@@ -168,6 +169,12 @@ Three things make that different from what other apps do with it:
   place is forgotten with it.
 - **It is off unless asked for.** Reading a share needs no permission at all.
 
+The two dots are never the same dot. The other phone's is the bigger one, in a
+red that no road, water or park on the map is drawn in; this phone's own is
+smaller and the app's green. Under the distance there is a key with the same two
+colours, naming the person who is sharing and **You**, so that a glance at the
+map is enough — on a phone held in one hand, in the dark, walking.
+
 The distance is the great-circle distance between the two points: right to
 within a few metres across a street, and within about a fifth of a percent
 across a district.
@@ -197,8 +204,10 @@ small donation-funded instance, so it is one URL away from being replaced:
 serving the same style from tiles this project rendered itself is a change to
 `MAP_STYLE` and nothing else, because everything else in the map is the
 drawing. If the map cannot load at all, the card still shows the coordinates and the
-**Maps** button on the map screen hands the point to whatever maps app the
-phone already has, which works whether or not a single tile was drawn.
+map icon in the corner of the map screen hands the point to whatever maps app
+the phone already has, which works whether or not a single tile was drawn. It is
+an icon rather than the word **Maps**, because the name of the person whose
+place it is has to fit in that bar, on a phone held in one hand.
 
 ## What is not in v1
 
@@ -249,6 +258,11 @@ first things to look at:
   not just a beige field, and that the dot is where the phone is;
 - that **How far?** puts both dots on one map, that the camera keeps both of
   them on it, and that the number matches what a walk says it is;
+- that the two dots are told apart at a glance, and that the key under the
+  distance names the right colour for the right person;
+- that the top bar sits below the phone's clock rather than under it, that a
+  long name is cut rather than wrapped, and that the credit at the bottom of the
+  map is not covered by the card;
 - that a day-long share is still being sent after an hour with the screen off,
   and what it costs a battery to move a point every fifteen seconds;
 - that Android brings the share back by itself after it has put the app away,
