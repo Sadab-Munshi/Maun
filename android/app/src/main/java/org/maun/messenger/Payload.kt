@@ -91,6 +91,15 @@ sealed interface Payload {
         val until: Long = 0L,
     ) : Payload
 
+    /**
+     * Where the sending phone was, once: no share, no key, no relay row.
+     *
+     * It is an ordinary message — the place travels inside the same encryption
+     * as a sentence would — so there is nothing to end, nothing to expire, and
+     * nothing that keeps asking where anybody is.
+     */
+    data class Pin(val id: String, val sentAt: Long, val place: Place) : Payload
+
     /** Something a newer version of Maun sent. It is dropped without complaint. */
     data object Unknown : Payload
 
@@ -230,6 +239,9 @@ sealed interface Payload {
                     if (payload.key.isNotEmpty()) json.put("key", payload.key)
                     if (payload.type == LIVE_SHARE) json.put("mins", payload.minutes).put("until", payload.until)
                 }
+                is Pin -> json.put("k", "pin").put("id", payload.id).put("at", payload.sentAt)
+                    .put("la", payload.place.latitude).put("lo", payload.place.longitude)
+                    .put("ac", payload.place.accuracy).put("pat", payload.place.at)
                 Unknown -> throw IllegalArgumentException("nothing to encode")
             }
             return pad(json.toString().toByteArray(Charsets.UTF_8))
@@ -297,6 +309,19 @@ sealed interface Payload {
                     }
                     if (!json.has("at")) return Unknown
                     LiveLocation(id, json.optLong("at"), share, type, if (type == LIVE_SHARE) key else "", minutes, until)
+                }
+                "pin" -> {
+                    val id = json.optString("id")
+                    if (!isMessageId(id) || !json.has("at")) return Unknown
+                    // A place is four numbers; anything else is not one, and a
+                    // message that has lost its place says nothing at all.
+                    val place = Place.of(
+                        json.optDouble("la", Double.NaN),
+                        json.optDouble("lo", Double.NaN),
+                        json.optDouble("ac", 0.0),
+                        json.optLong("pat", 0L),
+                    ) ?: return Unknown
+                    Pin(id, json.optLong("at"), place)
                 }
                 "receipt" -> Receipt(ids(json.optJSONArray("delivered")), ids(json.optJSONArray("read")))
                 "avatar" -> {

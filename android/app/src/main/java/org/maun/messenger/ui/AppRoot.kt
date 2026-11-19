@@ -448,6 +448,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                 },
                                 live = LiveActions(
                                     onShare = { peer, minutes -> viewModel.startLiveShare(peer, minutes) },
+                                    onSendNow = { peer -> viewModel.sendCurrentLocation(peer) },
                                     onStop = { peer, share -> viewModel.stopLiveShare(peer, share) },
                                     onWatch = { peer, share -> viewModel.watchLiveShare(peer, share) },
                                     onFetch = { peer, share, key -> viewModel.liveView(peer, share, key) },

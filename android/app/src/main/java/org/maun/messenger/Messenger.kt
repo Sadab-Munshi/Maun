@@ -1,7 +1,13 @@
 package org.maun.messenger
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.os.Bundle
+import android.os.Looper
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
@@ -1014,6 +1020,76 @@ class Messenger(context: Context) {
     }
 
     /**
+     * Sends where this phone is, once, to [peer]. Returns why it could not, or
+     * null when it went.
+     *
+     * This is the other half of the feature: a share keeps saying where the
+     * phone is until its time runs out, and this says it once and stops. No
+     * relay row is made, no service starts, no notification appears and
+     * nothing is left running behind it — the place is a message, and the
+     * only thing that happens after it is that it arrives.
+     */
+    suspend fun sendCurrentLocation(peer: String): String? {
+        val engine = engine ?: return "Not connected to the relay yet."
+        if (!mayShareLocation()) return "Maun needs to be allowed to use this phone's location."
+        if (!locationSwitchedOn(appContext)) return "This phone's location is switched off."
+        val place = currentPlace()
+            ?: return "The phone could not say where it is. A window or the open sky helps."
+        return try {
+            engine.sendPlace(peer, place)
+            null
+        } catch (e: IllegalStateException) {
+            e.message ?: "That message could not be sent."
+        }
+    }
+
+    /**
+     * One fix, and no more. Best effort: a phone indoors may take the whole
+     * [FIX_TIMEOUT_MS] to answer, and a phone with nothing to say says nothing.
+     * Nothing here is wanted badly enough to keep the radio on for it.
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun currentPlace(): Place? = withContext(Dispatchers.IO) {
+        val manager = appContext.getSystemService(LocationManager::class.java) ?: return@withContext null
+        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .filter { provider -> runCatching { manager.isProviderEnabled(provider) }.getOrDefault(false) }
+        if (providers.isEmpty()) return@withContext null
+        // The newest fix of the ones that come in while it is asked, not a
+        // remembered one from however long ago: a place that is not where the
+        // phone is now is worse than no place at all.
+        val best = java.util.concurrent.atomic.AtomicReference<Location?>(null)
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                val current = best.get()
+                if (current == null || location.time >= current.time) best.set(location)
+            }
+
+            @Deprecated("Required by LocationListener")
+            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+
+            override fun onProviderEnabled(provider: String) = Unit
+
+            override fun onProviderDisabled(provider: String) = Unit
+        }
+        providers.forEach { provider ->
+            runCatching { manager.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper()) }
+        }
+        // A last known fix is a fair answer while the new one is looked for, so
+        // that a phone indoors says where it was rather than nothing at all.
+        val remembered = providers.firstNotNullOfOrNull { provider ->
+            runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
+        }
+        withTimeoutOrNull(FIX_TIMEOUT_MS) {
+            while (best.get() == null) delay(200)
+        }
+        runCatching { manager.removeUpdates(listener) }
+        val fix = best.get() ?: remembered
+        // A fix with no time on it, or one from somewhere that is not a place,
+        // is no fix: the card would have nothing true to say.
+        fix?.let { Place.of(it.latitude, it.longitude, it.accuracy.toDouble(), it.time) }
+    }
+
+    /**
      * The share is over, whoever ended it: the button on the card, the one in
      * the notification, the minute running out, or the relay saying so. The
      * relay is told, [peer] is told, and the card says so.
@@ -1069,6 +1145,9 @@ class Messenger(context: Context) {
     private fun mayShareLocation(): Boolean =
         ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    /** How long a single fix may take before the phone is taken at its word. */
+    private val FIX_TIMEOUT_MS = 12_000L
 
     /** What to call [peer] where a notification may be read on a locked screen. */
     private fun nameOf(peer: String): String =
