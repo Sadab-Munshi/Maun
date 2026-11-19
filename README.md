@@ -6,8 +6,11 @@ analytics, no phone number, and no chat history on any server.
 - What it is and is not: [PROJECT.md](PROJECT.md)
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
+- How a phone is woken, and why it is built that way: [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)
+- Building, signing and publishing a version: [docs/RELEASE.md](docs/RELEASE.md)
+- Working on this repository, with or without an AI agent: [AGENTS.md](AGENTS.md)
 
-## Status: app 0.17.0 (files, voice messages, voice and video calls, profile pictures, tappable links, and an optional member-only mode with usernames)
+## Status: app 0.24.2 (files, voice messages, voice and video calls, profile pictures, tappable links, and an optional member-only mode with usernames)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
 messages while the app is closed. The app can be locked behind the phone's
@@ -373,6 +376,19 @@ Other members do not have to do anything:
   trusted for which ID the username belongs to.
 - A member who writes to someone who has not added them is added under their
   username instead of showing up as an unknown ID.
+
+## Working on the code
+
+`AGENTS.md` at the root is the working agreement for anyone — person or AI agent
+— changing this repository: the commands that are the build, what counts as
+done, which workflow answers which question, the parts that only the owner can
+do (deploying, signing, anything on a phone), and the mistakes that have already
+been made once. Each half has its own notes as well: [backend/README.md](backend/README.md)
+for the relay, [android/README.md](android/README.md) for the app.
+
+The short version: **the Android build is GitHub Actions**, a behaviour change
+comes with a test that fails before it and passes after, and nothing is
+published or deployed without the owner saying so.
 
 ## Continuous integration
 
