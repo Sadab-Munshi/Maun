@@ -53,8 +53,7 @@ class RingService : Service() {
             ringing = true
             handler.removeCallbacks(giveUp)
             // Started, then the call was over before this ran.
-            val call = (application as MaunApp).messenger.calls.state.value
-            if (call == null || !call.incoming || call.phase != CallUi.Phase.Ringing) stop()
+            if (!callStillRinging()) stop()
         } else if (!ringing) {
             handler.removeCallbacks(giveUp)
             handler.postDelayed(giveUp, PREPARE_MILLIS)
@@ -67,13 +66,23 @@ class RingService : Service() {
         super.onDestroy()
     }
 
+    /**
+     * Whether the call this start belongs to is still ringing, from the app's
+     * own state. In a function of its own so that a test can say what the call
+     * is doing without a whole app behind it.
+     */
+    internal open fun callStillRinging(): Boolean {
+        val call = (application as MaunApp).messenger.calls.state.value
+        return call != null && call.incoming && call.phase == CallUi.Phase.Ringing
+    }
+
     private fun stop() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     companion object {
-        private const val ACTION_RING = "org.maun.messenger.RING"
+        internal const val ACTION_RING = "org.maun.messenger.RING"
         private const val EXTRA_NAME = "name"
         private const val EXTRA_VIDEO = "video"
 
