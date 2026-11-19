@@ -241,8 +241,14 @@ object Background {
 /**
  * Whether the address the relay holds for this phone has to be taken away,
  * given how the look at what wakes it went.
+ *
+ * Only two things say the address is no use: there is nothing on this phone to
+ * wake it any more, or a push app has said the address is gone. A look that
+ * did not answer says nothing about the address at all — the phone that has
+ * just booted, with its push app not running yet, is exactly the phone that
+ * must not be made to depend on being opened before it can be woken again.
  */
-internal fun forgetAddressOn(outcome: PushLookup): Boolean = outcome != PushLookup.Ready
+internal fun forgetAddressOn(outcome: PushLookup): Boolean = outcome == PushLookup.NoPushApp
 
 /** Runs after the phone has restarted or Maun was updated, when nothing of Maun is running. */
 class StartReceiver : BroadcastReceiver() {

@@ -61,13 +61,14 @@ class WakeService : PushService() {
     /**
      * What a new endpoint from what wakes this phone means for the address the
      * relay holds. Null is an endpoint Maun cannot use — and an address it
-     * cannot use is not a reason to forget one that works.
+     * cannot use is not a reason to forget one that works: the relay goes on
+     * waking this phone at the address it already has, and the phone goes on
+     * hearing about messages and calls while the push app sorts itself out.
      */
     internal fun took(address: PushAddress?) {
         val telling = telling()
         if (address == null) {
             telling.problem("${waker} gave Maun an address it cannot use.")
-            telling.address(null)
             return
         }
         telling.address(address)
