@@ -25,6 +25,21 @@ class LiveCardTextTest {
     }
 
     @Test
+    fun `how long a share is started for is said in hours, up to a day`() {
+        // A walk home is not over in a quarter of an hour: the offers run to a day.
+        assertEquals(listOf(15, 60, 240, 480, 1440), LiveShare.CHOICES)
+        assertEquals("15 minutes", howLong(15))
+        assertEquals("1 hour", howLong(60))
+        assertEquals("1 h 30 min", howLong(90))
+        assertEquals("4 hours", howLong(240))
+        assertEquals("8 hours", howLong(480))
+        assertEquals("24 hours", howLong(1440))
+        for (minutes in LiveShare.CHOICES) {
+            assertFalse("a share is never offered for nothing", howLong(minutes).contains("0 minutes"))
+        }
+    }
+
+    @Test
     fun `how long ago a point came is said in the plainest way`() {
         val now = 1_000_000L
         assertEquals("nothing yet", since(null, now))

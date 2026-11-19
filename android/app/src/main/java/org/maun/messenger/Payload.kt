@@ -293,7 +293,7 @@ sealed interface Payload {
                         // A share without the key that opens it says nothing;
                         // one for longer than the relay allows is not one.
                         if (!LIVE_KEY.matches(key)) return Unknown
-                        if (minutes !in 15..60 || until <= 0L) return Unknown
+                        if (minutes !in 15..(24 * 60) || until <= 0L) return Unknown
                     }
                     if (!json.has("at")) return Unknown
                     LiveLocation(id, json.optLong("at"), share, type, if (type == LIVE_SHARE) key else "", minutes, until)

@@ -131,8 +131,11 @@ data class LiveShare(
         /** Over, because somebody stopped it, or its minutes ran out. */
         const val STOPPED = 2
 
-        /** What a share may be started for. The app offers both, and nothing else. */
-        val CHOICES = listOf(15, 60)
+        /**
+         * What a share may be started for. Safety, not convenience: a walk home
+         * is not over in a quarter of an hour, so the list runs to a day.
+         */
+        val CHOICES = listOf(15, 60, 4 * 60, 8 * 60, 24 * 60)
 
         private val SHARE = Regex("^[0-9a-f]{32}$")
 
@@ -142,7 +145,7 @@ data class LiveShare(
             val key = json.optString("key")
             val minutes = json.optInt("mins", 0)
             val until = json.optLong("until", 0L)
-            if (SHARE.matches(share) && key.isNotEmpty() && minutes in 1..60 && until > 0L) {
+            if (SHARE.matches(share) && key.isNotEmpty() && minutes in 1 until 24 * 60 + 1 && until > 0L) {
                 LiveShare(share, key, minutes, until, json.optInt("state", LIVE))
             } else {
                 null

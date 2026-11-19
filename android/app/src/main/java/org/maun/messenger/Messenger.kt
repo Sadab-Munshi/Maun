@@ -554,7 +554,7 @@ class Messenger(context: Context) {
             engineScope = chatScope
             connection = created
             // A share that was still running when the app was last closed carries on.
-            chatScope.launch { resumeLiveShares() }
+            chatScope.launch { resumeRunningShares() }
             // Publish the account only after the engine and file loader exist.
             // Otherwise the first conversation can try to load a preview too early.
             _account.value = AccountState.Present(
@@ -1074,8 +1074,13 @@ class Messenger(context: Context) {
     private fun nameOf(peer: String): String =
         _contacts.value.firstOrNull { it.id == peer }?.name ?: "One of your contacts"
 
+    /** Picks up any share this phone started that is still running. Called by [LocationService] too. */
+    fun resumeLiveShares() {
+        scope.launch { resumeRunningShares() }
+    }
+
     /** A share still running when the app opens carries on, notification and all. */
-    private suspend fun resumeLiveShares() {
+    private suspend fun resumeRunningShares() {
         val engine = engine ?: return
         val now = System.currentTimeMillis()
         for (message in engine.runningShares()) {

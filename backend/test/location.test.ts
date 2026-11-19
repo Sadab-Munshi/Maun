@@ -1,6 +1,12 @@
 import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { MAX_SHARE_POINT_BYTES, SHARE_KEEP_MS, SHARE_MIN_INTERVAL_MS } from "../src/protocol";
+import {
+  MAX_SHARE_POINT_BYTES,
+  SHARE_KEEP_MS,
+  SHARE_MAX_MINUTES,
+  SHARE_MINUTES,
+  SHARE_MIN_INTERVAL_MS,
+} from "../src/protocol";
 import { connect, freshIp, hangUp, loginFrame, randomBytes, registered, type User } from "./helpers";
 
 // A share is kept in the mailbox of the phone that shares it, so these tests
@@ -243,13 +249,22 @@ describe("live location", () => {
     );
   });
 
-  it("takes fifteen minutes or an hour, and nothing in between from a hand-written request", async () => {
+  it("takes any length the app offers, up to a day, and clamps the rest", async () => {
     const alice = await signedIn();
     const bob = await signedIn();
 
-    const long = await shared(alice, bob.user.id, 600);
-    expect(long.until - Date.now()).toBeLessThanOrEqual(60 * 60_000);
-    expect(long.until - Date.now()).toBeGreaterThan(59 * 60_000);
+    // Getting home at night is not over in a quarter of an hour.
+    for (const minutes of SHARE_MINUTES) {
+      const share = await shared(alice, bob.user.id, minutes);
+      const length = share.until - Date.now();
+      expect(length).toBeGreaterThan((minutes - 1) * 60_000);
+      expect(length).toBeLessThanOrEqual(minutes * 60_000);
+    }
+
+    // A hand-written request for longer than a day is cut down to one.
+    const day = await shared(alice, bob.user.id, 5_000);
+    expect(day.until - Date.now()).toBeLessThanOrEqual(SHARE_MAX_MINUTES * 60_000);
+    expect(day.until - Date.now()).toBeGreaterThan((SHARE_MAX_MINUTES - 1) * 60_000);
 
     const short = await shared(alice, bob.user.id, 1);
     expect(short.until - Date.now()).toBeGreaterThan(14 * 60_000);

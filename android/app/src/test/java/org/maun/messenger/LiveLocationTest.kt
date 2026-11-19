@@ -1,6 +1,7 @@
 package org.maun.messenger
 
 import java.util.Base64
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -152,13 +153,45 @@ class LiveLocationTest {
     fun `a share without the key that opens it is dropped`() {
         val id = "3f2c9a1e-0000-4000-8000-0000000000ab"
         // No key at all, a key of the wrong length, and a length of time the
-        // relay would never have given: none of them is a share.
+        // relay would never have given — a day is the longest it will: none of
+        // them is a share.
         val noKey = """{"v":1,"k":"place","id":"$id","at":1,"share":"$share","type":"share","mins":15,"until":$until}"""
         val shortKey = """{"v":1,"k":"place","id":"$id","at":1,"share":"$share","type":"share","key":"c2hvcnQ=","mins":15,"until":$until}"""
-        val tooLong = """{"v":1,"k":"place","id":"$id","at":1,"share":"$share","type":"share","key":"${LiveSeal.newKey()}","mins":600,"until":$until}"""
+        val tooLong = """{"v":1,"k":"place","id":"$id","at":1,"share":"$share","type":"share","key":"${LiveSeal.newKey()}","mins":1441,"until":$until}"""
         for (json in listOf(noKey, shortKey, tooLong)) {
             assertEquals(Payload.Unknown, Payload.decode(Payload.pad(json.toByteArray(Charsets.UTF_8))))
         }
+    }
+
+    @Test
+    fun `a share may be started for a day, because getting home at night takes longer than an hour`() {
+        // The longest the relay will take, and it survives the round trip.
+        val day = LiveShare(share, LiveSeal.newKey(), 24 * 60, until)
+        assertEquals(day, LiveShare.fromLocal(day.toLocal()))
+        val payload = Payload.LiveLocation(
+            "3f2c9a1e-0000-4000-8000-0000000000ac",
+            1_794_700_000_000,
+            share,
+            Payload.LIVE_SHARE,
+            day.key,
+            24 * 60,
+            until,
+        )
+        assertEquals(payload, Payload.decode(Payload.encode(payload)))
+
+        // Longer than a day is not a share this version knows.
+        val json = JSONObject()
+            .put("v", 1)
+            .put("k", "place")
+            .put("id", "3f2c9a1e-0000-4000-8000-0000000000ad")
+            .put("at", 1)
+            .put("share", share)
+            .put("type", "share")
+            .put("key", day.key)
+            .put("mins", 5000)
+            .put("until", until)
+            .toString()
+        assertEquals(Payload.Unknown, Payload.decode(Payload.pad(json.toByteArray(Charsets.UTF_8))))
     }
 
     @Test

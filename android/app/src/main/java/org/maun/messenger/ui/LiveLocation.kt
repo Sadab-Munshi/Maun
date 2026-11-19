@@ -1,5 +1,9 @@
 package org.maun.messenger.ui
 
+import android.content.Context
+import android.content.Intent
+import android.location.LocationManager
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -103,7 +107,7 @@ fun LiveShareSheet(
                     onClick = { onShare(minutes) },
                     modifier = Modifier.fillMaxWidth().widthIn(max = 420.dp),
                 ) {
-                    Text(if (minutes < 60) "Share for $minutes minutes" else "Share for 1 hour")
+                    Text("Share for ${howLong(minutes)}")
                 }
             }
             Text(
@@ -179,7 +183,8 @@ fun LiveLocationRow(
     when (phase) {
         LivePhase.SHARING -> Card(
             outgoing = outgoing,
-            title = "Sharing your location",
+            // Being told that somebody is looking is half of what a share is for.
+            title = if (record.state == LiveShare.WATCHING) "$name is watching" else "Sharing your location",
             detail = "Until ${clock(record.until)} · ${left(record.until - now)} left",
             chatColors = chatColors,
             modifier = modifier,
@@ -236,7 +241,7 @@ fun LiveLocationRow(
         LivePhase.ENDED -> Card(
             outgoing = outgoing,
             title = if (outgoing) "You shared your location" else "$name shared their location",
-            detail = "Ended at ${clock(record.until)}. Nothing of where anybody was is kept.",
+            detail = "Ended. Nothing of where anybody was is kept.",
             chatColors = chatColors,
             modifier = modifier,
             action = null,
@@ -325,6 +330,7 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
     // One map for as long as the screen is open: the point moves under it, the
     // map itself is not thrown away and drawn again every half minute.
     val map = remember(context) {
+        prepareTiles(context)
         MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
             setMultiTouchControls(true)
@@ -354,7 +360,11 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
         map.invalidate()
     }
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
-        AndroidView(factory = { map }, modifier = Modifier.fillMaxSize())
+        AndroidView(
+            factory = { map },
+            update = { it.setUseDataConnection(true) },
+            modifier = Modifier.fillMaxSize(),
+        )
         Surface(
             modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth(),
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
@@ -388,6 +398,36 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
     }
 }
 
+/**
+ * osmdroid keeps its tiles in a folder of its own and asks its own configuration
+ * where that is. Left alone it picks a folder on shared storage, which Android
+ * 10 and later will not let an app write to, so every tile fails and the map
+ * comes up as an empty grey grid. It has to be told, once, before the first
+ * map is made — and told who is asking, which is what OpenStreetMap's tile
+ * policy asks of an app.
+ */
+private var tilesReady = false
+
+private fun prepareTiles(context: Context) {
+    if (tilesReady) return
+    val config = org.osmdroid.config.Configuration.getInstance()
+    val base = java.io.File(context.filesDir, "osmdroid")
+    config.load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
+    // After load(), which resets both of these from the preferences.
+    config.osmdroidBasePath = base
+    config.osmdroidTileCache = java.io.File(base, "tiles")
+    config.userAgentValue = "Maun/${org.maun.messenger.BuildConfig.VERSION_NAME} (${context.packageName})"
+    tilesReady = true
+}
+
+/** "15 minutes", "1 hour", "8 hours", "24 hours": how long a share is started for. */
+internal fun howLong(minutes: Int): String = when {
+    minutes < 60 -> "$minutes minutes"
+    minutes % 60 != 0 -> "${minutes / 60} h ${minutes % 60} min"
+    minutes == 60 -> "1 hour"
+    else -> "${minutes / 60} hours"
+}
+
 /** "14 min", "under a minute": what is left of a share. */
 internal fun left(millis: Long): String = when {
     millis <= 0L -> "no time"
@@ -417,5 +457,27 @@ private fun clock(until: Long): String {
     return "%02d:%02d".format(time.hour, time.minute)
 }
 
-/** How often a card that is being watched asks the relay. A point comes every half minute. */
-private const val POLL_MS = 15_000L
+/** How often a card that is being watched asks the relay. A point comes every fifteen seconds. */
+private const val POLL_MS = 10_000L
+
+/** Whether this phone's own location switch is on: permission is not the same thing. */
+fun locationSwitchedOn(context: Context): Boolean {
+    val manager = context.getSystemService(LocationManager::class.java) ?: return false
+    return try {
+        manager.isLocationEnabled
+    } catch (_: Exception) {
+        false
+    }
+}
+
+/** Opens the phone's own location settings, so that the switch can be found. */
+fun openLocationSettings(context: Context) {
+    try {
+        context.startActivity(
+            Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    } catch (_: Exception) {
+        // No settings app will answer; the dialog has already said what to do.
+    }
+}

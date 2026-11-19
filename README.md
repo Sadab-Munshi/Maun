@@ -11,7 +11,7 @@ analytics, no phone number, and no chat history on any server.
 - Building, signing and publishing a version: [docs/RELEASE.md](docs/RELEASE.md)
 - Working on this repository, with or without an AI agent: [AGENTS.md](AGENTS.md)
 
-## Status: app 0.25.0 (files, voice messages, voice and video calls, profile pictures, tappable links, live location for a quarter of an hour or an hour, and an optional member-only mode with usernames)
+## Status: app 0.25.0 (files, voice messages, voice and video calls, profile pictures, tappable links, live location for anything from a quarter of an hour to a day, and an optional member-only mode with usernames)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
 messages while the app is closed. The app can be locked behind the phone's
@@ -44,7 +44,7 @@ contacts without the relay being able to open it.
 | Signed HTTP requests and noticing a ban | `android/.../network/FileApi.kt` |
 | Phone fingerprint (member-only relays) | `android/.../security/DeviceFingerprint.kt` |
 | Voice messages: recording and playing | `android/.../voice/VoiceRecorder.kt`, `android/.../voice/VoicePlayer.kt` |
-| Live location: a sealed point at a time, for a quarter of an hour or an hour | `android/.../LiveLocation.kt`, `android/.../push/LocationService.kt`, `backend/src/mailbox.ts` |
+| Live location: a sealed point at a time, for a quarter of an hour to a day | `android/.../LiveLocation.kt`, `android/.../push/LocationService.kt`, `backend/src/mailbox.ts` |
 | Voice calls: setting up, sound, ringing, staying alive | `android/.../webrtc/CallManager.kt`, `CallAudio.kt`, `CallService.kt`, `backend/src/turn.ts` |
 | Safety number for checking a contact | `android/.../crypto/SafetyNumber.kt` |
 | Profile pictures: sealed on the phone, one per account on the relay, told to contacts in a message | `android/.../ProfilePictures.kt`, `android/.../network/AvatarApi.kt`, `backend/src/index.ts` |
