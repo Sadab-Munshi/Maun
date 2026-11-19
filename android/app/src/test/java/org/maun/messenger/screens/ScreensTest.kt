@@ -23,9 +23,11 @@ import org.maun.messenger.webrtc.CallUi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import org.maun.messenger.ui.SettingUpScreen
 import org.maun.messenger.voice.VoiceState
 import androidx.compose.runtime.Composable
@@ -47,6 +49,10 @@ import org.maun.messenger.ui.DeliveryUi
 import org.maun.messenger.ui.HomeLists
 import org.maun.messenger.ui.HomeScreen
 import org.maun.messenger.ui.LockScreen
+import org.maun.messenger.ui.LiveActions
+import org.maun.messenger.ui.LiveLocationRow
+import org.maun.messenger.Place
+import org.maun.messenger.LiveShare
 import org.maun.messenger.ui.MaunTheme
 import org.maun.messenger.ui.PermissionSetupState
 import org.maun.messenger.ui.PermissionsScreen
@@ -740,6 +746,39 @@ class ScreensTest {
 
     @Test
     fun locked() = shoot("locked") { LockScreen(onShown = {}, onUnlock = {}) }
+
+    /**
+     * The two ways of saying where you are, on a phone. A place sent once is a
+     * preview and nothing else: no button, and a small map in the corner that
+     * says a tap opens it. A share is a card with one thing to do about it.
+     */
+    @Composable
+    private fun LocationCards() {
+        val sent = Place.of(22.34739, 87.96799, 1.0, now - 13 * minute, "Anantapur, Shyampur - II, Howrah, 711301")!!
+        val bare = Place.of(22.36523, 87.99999, 146.0, now - 223 * minute)!!
+        val share = LiveShare("3f2c".repeat(8), "ab".repeat(32), minutes = 15, until = now + 12 * minute)
+        val watched = LiveShare("9a1b".repeat(8), "cd".repeat(32), minutes = 60, until = now + 40 * minute, state = LiveShare.WATCHING)
+        val live = LiveActions()
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceVariant) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                LiveLocationRow(message(4, false, sent.toLocal(), 13 * minute, kind = MessageKind.LOCATION), name = "Asha", live = live)
+                LiveLocationRow(message(3, true, sent.toLocal(), 13 * minute, kind = MessageKind.LOCATION), name = "Asha", live = live)
+                LiveLocationRow(message(2, true, bare.toLocal(), 223 * minute, kind = MessageKind.LOCATION), name = "Asha", live = live)
+                LiveLocationRow(message(1, false, share.toLocal(), 1 * minute, kind = MessageKind.LOCATION), name = "Asha", live = live)
+                LiveLocationRow(message(5, true, watched.toLocal(), 1 * minute, kind = MessageKind.LOCATION), name = "Asha", live = live)
+            }
+        }
+    }
+
+    @Test
+    fun locationCards() = shoot("chat-location") { LocationCards() }
+
+    @Test
+    @Config(qualifiers = "+night")
+    fun locationCardsDark() = shoot("chat-location-dark") { LocationCards() }
 
     @Test
     fun permissionsSetup() = shoot("permissions") {
