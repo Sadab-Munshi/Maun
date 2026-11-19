@@ -208,7 +208,12 @@ fun LiveLocationRow(
         Card(
             outgoing = outgoing,
             title = if (outgoing) "You sent your location" else "$name sent their location",
-            detail = "${place(point)} · sent ${since(sent.at, now)}",
+            detail = buildString {
+                // The name first, in the words the sending phone found for it,
+                // then the numbers underneath, because the numbers never lie.
+                if (sent.label.isNotEmpty()) append(sent.label).append('\n')
+                append(place(point)).append(" · sent ").append(since(sent.at, now))
+            },
             chatColors = chatColors,
             // A tap hands the place to the map app the phone already has,
             // which knows the name, the address and the way there. The button

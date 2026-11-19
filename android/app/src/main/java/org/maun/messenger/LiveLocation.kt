@@ -61,7 +61,21 @@ data class LivePoint(val lat: Double, val lon: Double, val accuracy: Double, val
  * [at] is when the fix was taken on the sending phone, so a card can say how
  * old the place is. Nobody may be there any more; the card says so.
  */
-data class Place(val latitude: Double, val longitude: Double, val accuracy: Double, val at: Long) {
+data class Place(
+    val latitude: Double,
+    val longitude: Double,
+    val accuracy: Double,
+    val at: Long,
+    /**
+     * What the place is called, in words — "Manna Para Road, Syampur, Howrah,
+     * 711314" — as the sending phone worked it out. Empty when OpenStreetMap
+     * has no name for it, which in much of rural India it will not.
+     *
+     * It is a courtesy, not a fact about the reader: the coordinate is the
+     * answer, and the words are there so that nobody has to read one.
+     */
+    val label: String = "",
+) {
 
     fun point(): LivePoint = LivePoint(latitude, longitude, accuracy, at)
 
@@ -70,6 +84,7 @@ data class Place(val latitude: Double, val longitude: Double, val accuracy: Doub
         .put("lon", longitude)
         .put("ac", accuracy)
         .put("at", at)
+        .apply { if (label.isNotEmpty()) put("label", label) }
         .toString()
 
     companion object {
@@ -85,15 +100,28 @@ data class Place(val latitude: Double, val longitude: Double, val accuracy: Doub
             json.optDouble("lon", Double.NaN),
             json.optDouble("ac", 0.0),
             json.optLong("at", 0L),
+            json.optString("label"),
         )
 
         /** A place from its four numbers, or null when they are not a place on this earth. */
-        fun of(latitude: Double, longitude: Double, accuracy: Double, at: Long): Place? {
+        fun of(latitude: Double, longitude: Double, accuracy: Double, at: Long, label: String = ""): Place? {
             if (!latitude.isFinite() || !longitude.isFinite() || at <= 0L) return null
             if (latitude < -90.0 || latitude > 90.0 || longitude < -180.0 || longitude > 180.0) return null
             val known = accuracy.takeIf { it.isFinite() && it in 0.0..100_000.0 } ?: 0.0
-            return Place(latitude, longitude, known, at)
+            return Place(latitude, longitude, known, at, clean(label))
         }
+
+        /** A name is worth having at the length of one line, and not one character more. */
+        fun clean(label: String): String {
+            // A newline in a coordinate's name is a line break nobody asked
+            // for on a card: it becomes the space it stood for.
+            val spaced = label.map { if (it.isISOControl()) ' ' else it }.joinToString("")
+            val tidy = spaced.split(' ').filter { it.isNotEmpty() }.joinToString(" ")
+            return if (tidy.length <= MAX_LABEL) tidy else tidy.take(MAX_LABEL).trim()
+        }
+
+        /** The longest name a place may carry, in characters. */
+        const val MAX_LABEL = 160
     }
 }
 

@@ -229,6 +229,25 @@ class LiveLocationTest {
     }
 
     @Test
+    fun `a place can carry its own name, and the name travels with it`() {
+        val place = Place(22.3218, 88.0487, 12.0, 1_794_700_000_000, "Syampur, Shyampur - I, Howrah, 711314")
+        assertEquals(place, Place.fromLocal(place.toLocal()))
+        val payload = Payload.Pin("3f2c9a1e-0000-4000-8000-0000000000af", 1_794_700_000_000, place)
+        assertEquals(payload, Payload.decode(Payload.encode(payload)))
+        // A place with no name is still a place, and says nothing about one.
+        val bare = place.copy(label = "")
+        assertEquals(bare, Place.fromLocal(bare.toLocal()))
+    }
+
+    @Test
+    fun `a name is one line, and never more than a line`() {
+        val long = "a".repeat(400)
+        assertEquals(Place.MAX_LABEL, Place.of(1.0, 2.0, 5.0, 1L, long)!!.label.length)
+        // Newlines and control characters have no business on a card.
+        assertEquals("Syampur Howrah", Place.of(1.0, 2.0, 5.0, 1L, " Syampur\nHowrah ")!!.label)
+    }
+
+    @Test
     fun `a place that arrived is not a live share`() {
         // The two are told apart by what the record says, so a place never
         // shows a countdown, a Stop button or anything asking the relay.

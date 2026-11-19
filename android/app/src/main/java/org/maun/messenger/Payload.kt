@@ -242,6 +242,10 @@ sealed interface Payload {
                 is Pin -> json.put("k", "pin").put("id", payload.id).put("at", payload.sentAt)
                     .put("la", payload.place.latitude).put("lo", payload.place.longitude)
                     .put("ac", payload.place.accuracy).put("pat", payload.place.at)
+                    // The name of the place, worked out once by the phone that
+                    // was there: inside the encryption, so the phone that reads
+                    // it never has to ask anybody where anybody was.
+                    .apply { if (payload.place.label.isNotEmpty()) put("lbl", payload.place.label) }
                 Unknown -> throw IllegalArgumentException("nothing to encode")
             }
             return pad(json.toString().toByteArray(Charsets.UTF_8))
@@ -320,6 +324,7 @@ sealed interface Payload {
                         json.optDouble("lo", Double.NaN),
                         json.optDouble("ac", 0.0),
                         json.optLong("pat", 0L),
+                        json.optString("lbl"),
                     ) ?: return Unknown
                     Pin(id, json.optLong("at"), place)
                 }

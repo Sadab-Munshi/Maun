@@ -16,6 +16,7 @@ The paperclip offers both, and they are not the same thing.
 | What the other phone does | nothing: it already has it | asks the relay while its card is on screen |
 | Anything to end | no | yes: Stop, the clock, or the relay |
 | Tapped | opens the phone's map app at that place | opens Maun's map, both of you on it |
+| What it says | the place's name, from OpenStreetMap, then the numbers | the numbers, and how far from you |
 
 A place sent once answers "where are you?" nine times out of ten, and costs
 neither battery nor a thing kept on the relay. A share is for the other time:
@@ -125,6 +126,30 @@ The phone that shares is told the moment the card is opened, and its own card
 says **"Ada is watching"** from then on. Being told that somebody is looking is
 half of what a share is for.
 
+## The name of a place
+
+A coordinate is exact and says nothing. So the phone that sends a place asks
+for its name once — road, village, district, postcode — from **Nominatim**,
+the OpenStreetMap Foundation's own geocoder, and the answer travels inside the
+same encrypted message as the coordinate.
+
+- **One lookup per place, ever.** The answer is kept under a key rounded to
+  about eleven metres, so sending the same place twice asks once, and a place
+  OpenStreetMap has no name for is remembered as having none rather than asked
+  again every time a card is drawn.
+- **One request a second, at most**, which is what Nominatim's usage policy
+  asks, and the app says who it is in the `User-Agent` header, which the policy
+  also asks.
+- **Only the sender asks.** The phone that receives a place learns the name from
+  the message; it never tells anybody where anybody was, and it never asks a
+  stranger to describe a place on its behalf.
+- **It is a courtesy, not a fact.** The coordinate is the answer. In much of
+  rural India the name is a village and a postcode — "Syampur, Shyampur - I,
+  Howrah, 711314" — because that is all the map knows. Where the map has a
+  name, the name leads: "Balikuria Volebaba Temple, Manna Para Road, …".
+- When there is nothing true to say, nothing is said: no name, and the card
+  says the numbers.
+
 ## Both of you on one map
 
 A phone watching a share can put itself on the map too, so that "where is he"
@@ -196,6 +221,7 @@ phone already has, which works whether or not a single tile was drawn.
 | The routes | `backend/src/index.ts` — `startShare`, `putSharePoint`, `stopShare`, `peekShare` |
 | The numbers | `backend/src/protocol.ts` — the live-location section |
 | The phone's sealing, records and states | `android/.../LiveLocation.kt` |
+| The name of a place | `android/.../network/Addresses.kt` (Nominatim, cached, one a second) |
 | A place sent once | `Place` in `LiveLocation.kt`; the switch helpers in `android/.../Places.kt` |
 | The routes from the phone | `android/.../network/LocationApi.kt` |
 | The service and its notification | `android/.../push/LocationService.kt`, `push/Notifications.kt` |
