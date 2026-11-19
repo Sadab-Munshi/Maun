@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -189,7 +188,6 @@ fun LiveLocationRow(
                     Text("Stop", color = MaterialTheme.colorScheme.error)
                 }
             },
-            mapPoint = null,
             pulse = true,
             onOpenMap = null,
             openMap = onOpenMap,
@@ -204,7 +202,6 @@ fun LiveLocationRow(
             action = {
                 Button(onClick = { live.onWatch(message.peer, record.share) }) { Text("View") }
             },
-            mapPoint = null,
             pulse = true,
             onOpenMap = null,
             openMap = onOpenMap,
@@ -230,7 +227,6 @@ fun LiveLocationRow(
                         TextButton(onClick = { live.onStop(message.peer, record.share) }) { Text("Hide") }
                     }
                 },
-                mapPoint = if (ended || stale) null else point,
                 pulse = !ended && !stale,
                 onOpenMap = if (ended || stale || point == null) null else point,
                 openMap = onOpenMap,
@@ -244,7 +240,6 @@ fun LiveLocationRow(
             chatColors = chatColors,
             modifier = modifier,
             action = null,
-            mapPoint = null,
             pulse = false,
             onOpenMap = null,
             openMap = onOpenMap,
@@ -261,9 +256,8 @@ private fun Card(
     chatColors: ChatColors,
     modifier: Modifier = Modifier,
     action: (@Composable () -> Unit)? = null,
-    mapPoint: LivePoint?,
-    pulse: Boolean,
-    onOpenMap: LivePoint?,
+    pulse: Boolean = false,
+    onOpenMap: LivePoint? = null,
     openMap: (LivePoint, String) -> Unit = { _, _ -> },
 ) {
     Surface(
@@ -315,8 +309,6 @@ private fun Card(
             action?.invoke()
         }
     }
-    // A dot on the card so that a running share is recognisable at a glance.
-    if (mapPoint != null && pulse) Unit
 }
 
 /**
