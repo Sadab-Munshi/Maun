@@ -19,11 +19,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -49,10 +53,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -64,12 +70,25 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory.circleColor
 import org.maplibre.android.style.layers.PropertyFactory.circleOpacity
 import org.maplibre.android.style.layers.PropertyFactory.circleRadius
 import org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor
 import org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth
+import org.maplibre.android.style.layers.PropertyFactory.textAllowOverlap
+import org.maplibre.android.style.layers.PropertyFactory.textAnchor
+import org.maplibre.android.style.layers.PropertyFactory.textColor
+import org.maplibre.android.style.layers.PropertyFactory.textField
+import org.maplibre.android.style.layers.PropertyFactory.textFont
+import org.maplibre.android.style.layers.PropertyFactory.textHaloColor
+import org.maplibre.android.style.layers.PropertyFactory.textHaloWidth
+import org.maplibre.android.style.layers.PropertyFactory.textIgnorePlacement
+import org.maplibre.android.style.layers.PropertyFactory.textOffset
+import org.maplibre.android.style.layers.PropertyFactory.textSize
+import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
@@ -99,6 +118,15 @@ data class LiveActions(
     /** The newest thing the relay says about a share. Null when it cannot be asked. */
     val onFetch: suspend (peer: String, share: String, key: String) -> LiveView? = { _, _, _ -> null },
 )
+
+/**
+ * A place to put on the map, and what to call it.
+ *
+ * [title] is what the card said, and what the phone's map app will label the
+ * pin with; [who] is just the person's name, which is what fits at the top of
+ * a map on a phone held in one hand.
+ */
+data class MapAsk(val point: LivePoint, val title: String, val who: String = "")
 
 /**
  * The sheet behind the paperclip, offering the two ways to say where you are.
@@ -190,8 +218,8 @@ fun LiveLocationRow(
     name: String,
     live: LiveActions,
     modifier: Modifier = Modifier,
-    /** Draws the point on a map, full screen: the card only ever offers the button. */
-    onOpenMap: (LivePoint, String) -> Unit = { _, _ -> },
+    /** Draws the point on a map, full screen: only a share that is still moving offers it. */
+    onOpenMap: (MapAsk) -> Unit = {},
 ) {
     val record = LiveShare.fromLocal(message.text)
     val outgoing = message.outgoing
@@ -215,19 +243,15 @@ fun LiveLocationRow(
                 append(place(point)).append(" · sent ").append(since(sent.at, now))
             },
             chatColors = chatColors,
-            // A tap hands the place to the map app the phone already has,
-            // which knows the name, the address and the way there. The button
-            // beside it opens Maun's own map instead.
+            // A place that was sent once is a preview: the whole card is the
+            // way through, and there is no second button to read first. Tapped,
+            // it is handed to the phone's own map app, which knows the name, the
+            // address and how to get there — the same thing WhatsApp does, and
+            // the reason a bubble does not need all of it.
             modifier = modifier.clickable { openInMaps(context, point, label) },
-            // Tapped, a place is handed to the phone's own map app, which knows
-            // the name, the address and how to get there — the same thing
-            // WhatsApp does, and the reason a bubble does not need all of it.
-            action = {
-                TextButton(onClick = { onOpenMap(point, label) }) { Text("Map") }
-            },
             pulse = false,
-            onOpenMap = null,
-            openMap = onOpenMap,
+            // A small map in the corner, so that it reads as a thing that opens.
+            opensMapApp = true,
         )
         return
     }
@@ -283,8 +307,6 @@ fun LiveLocationRow(
                 }
             },
             pulse = true,
-            onOpenMap = null,
-            openMap = onOpenMap,
         )
 
         LivePhase.OFFER -> Card(
@@ -297,8 +319,6 @@ fun LiveLocationRow(
                 Button(onClick = { live.onWatch(message.peer, record.share) }) { Text("View") }
             },
             pulse = true,
-            onOpenMap = null,
-            openMap = onOpenMap,
         )
 
         LivePhase.WATCHING -> {
@@ -310,9 +330,10 @@ fun LiveLocationRow(
                 stale -> "Updates paused — last update ${since(point.at, now)}."
                 else -> "Updated ${since(point.at, now)} · ${place(point)}"
             }
+            val heading = if (ended) "Live location ended" else "$name's live location"
             Card(
                 outgoing = outgoing,
-                title = if (ended) "Live location ended" else "$name's live location",
+                title = heading,
                 detail = detail,
                 chatColors = chatColors,
                 modifier = modifier,
@@ -322,8 +343,14 @@ fun LiveLocationRow(
                     }
                 },
                 pulse = !ended && !stale,
-                onOpenMap = if (ended || stale || point == null) null else point,
-                openMap = onOpenMap,
+                // Only a share that is still moving is worth a map of its own:
+                // a place sent once already opens the map app on a tap, and a
+                // share that is over has nothing left to show.
+                openMap = if (!ended && !stale && point != null) {
+                    { onOpenMap(MapAsk(point, heading, name)) }
+                } else {
+                    null
+                },
             )
         }
 
@@ -335,13 +362,16 @@ fun LiveLocationRow(
             modifier = modifier,
             action = null,
             pulse = false,
-            onOpenMap = null,
-            openMap = onOpenMap,
         )
     }
 }
 
-/** The card itself: a title, a line under it, and whatever can be done about it. */
+/**
+ * The card itself: a title, a line under it, and whatever can be done about it.
+ *
+ * [openMap] draws the one button a card ever needs; [opensMapApp] is for a card
+ * that is itself the button, and only marks the corner so it reads that way.
+ */
 @Composable
 private fun Card(
     outgoing: Boolean,
@@ -351,8 +381,8 @@ private fun Card(
     modifier: Modifier = Modifier,
     action: (@Composable () -> Unit)? = null,
     pulse: Boolean = false,
-    onOpenMap: LivePoint? = null,
-    openMap: (LivePoint, String) -> Unit = { _, _ -> },
+    openMap: (() -> Unit)? = null,
+    opensMapApp: Boolean = false,
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(0.85f),
@@ -396,9 +426,17 @@ private fun Card(
                             .background(MaterialTheme.colorScheme.primary),
                     )
                 }
+                if (opensMapApp) {
+                    Icon(
+                        MaunIcons.Map,
+                        contentDescription = null,
+                        tint = if (outgoing) chatColors.outgoingMeta else chatColors.incomingMeta,
+                        modifier = Modifier.size(17.dp),
+                    )
+                }
             }
-            if (onOpenMap != null) {
-                TextButton(onClick = { openMap(onOpenMap, title) }) { Text("Open the map") }
+            if (openMap != null) {
+                TextButton(onClick = openMap) { Text("Open the map") }
             }
             action?.invoke()
         }
@@ -412,12 +450,22 @@ private fun Card(
  * no account and no key. That also means the tile server learns which part of
  * the world this phone is looking at, and when. Nothing else is sent with the
  * request, and the map is only drawn while it is open on screen.
+ *
+ * Two dots can be on it, and they are never the same dot: the other phone's is
+ * the bigger, red one, this phone's own is the smaller, green one, and the line
+ * under the map says which is which. That is everything the colours mean.
  */
 @Composable
-fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
+fun LiveMapScreen(ask: MapAsk, onClose: () -> Unit) {
     val context = LocalContext.current
-    val theirs = MaterialTheme.colorScheme.primary.toArgb()
-    val yours = MaterialTheme.colorScheme.tertiary.toArgb()
+    val point = ask.point
+    // The name goes on the map as well as in the bar: a dot with its name
+    // under it needs no key, and a name in the bar needs no dot.
+    val header = mapHeadline(ask)
+    val under = mapSubtitle(ask)
+    val theirName = mapLabel(header)
+    val theirs = Color(THEIR_DOT)
+    val yours = MaterialTheme.colorScheme.primary
     // Where this phone is, when the person looking has said Maun may ask. It
     // never leaves the phone: the distance below is subtraction on this device.
     var mine by remember { mutableStateOf<LivePoint?>(null) }
@@ -467,15 +515,18 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
             isRotateGesturesEnabled = false
             isTiltGesturesEnabled = false
             isZoomGesturesEnabled = true
-            isAttributionEnabled = true
+            // The credit is drawn by this screen instead, at the bottom, where
+            // the card under the map cannot cover it up.
+            isAttributionEnabled = false
         }
-        loaded.setStyle(styleFor(point, theirs, yours))
+        loaded.setStyle(styleFor(point, theirName, theirs.toArgb(), yours.toArgb()))
     }
     // The point moves while a share is being watched, so the map follows it.
     LaunchedEffect(map, point.lat, point.lon, mine?.lat, mine?.lon) {
         val loaded = map ?: return@LaunchedEffect
-        loaded.style?.getSourceAs<GeoJsonSource>(PIN_SOURCE)?.setGeoJson(pin(point))
-        loaded.style?.getSourceAs<GeoJsonSource>(MY_SOURCE)?.setGeoJson(mine?.let { pin(it) } ?: nobody())
+        loaded.style?.getSourceAs<GeoJsonSource>(PIN_SOURCE)?.setGeoJson(pin(point, theirName))
+        loaded.style?.getSourceAs<GeoJsonSource>(MY_SOURCE)
+            ?.setGeoJson(mine?.let { pin(it, MY_NAME) } ?: nobody())
         loaded.cameraPosition = loaded.cameraFor(point, mine) ?: CameraPosition.Builder()
             .target(LatLng(point.lat, point.lon))
             .zoom(ZOOM)
@@ -484,22 +535,42 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
     val distance = mine?.let { metresBetween(it, point) }
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
+
+        // The bar sits below the phone's own clock, not under it, and the
+        // actions are icons at the end: a name is what has to fit here.
         Surface(
             modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth(),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+            shadowElevation = 2.dp,
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(start = 4.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = onClose) {
                     Icon(MaunIcons.Back, contentDescription = "Back")
                 }
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
-                )
+                Column(modifier = Modifier.weight(1f).padding(start = 2.dp)) {
+                    Text(
+                        text = header,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (under.isNotEmpty()) {
+                        Text(
+                            text = under,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
                 if (mine == null) {
                     // Off until somebody asks for it: a viewer of a share needs
                     // no permission at all, and this is the only thing that
@@ -517,42 +588,125 @@ fun LiveMapScreen(title: String, point: LivePoint, onClose: () -> Unit) {
                                 )
                             }
                         },
-                    ) { Text("How far?") }
+                    ) {
+                        Text("How far?", style = MaterialTheme.typography.labelLarge)
+                    }
                 }
                 // The map is a picture of the point; this hands the point to
                 // whatever map app the phone already has, which is what is
                 // wanted when the next step is walking there. It works whether
                 // or not a single tile loaded.
-                TextButton(onClick = { openInMaps(context, point, title) }) { Text("Maps") }
-            }
-        }
-        Surface(
-            modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-        ) {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                if (distance != null) {
-                    Text(
-                        text = "$title is ${howFar(distance)}",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
+                IconButton(onClick = { openInMaps(context, point, ask.title) }) {
+                    Icon(
+                        MaunIcons.Map,
+                        contentDescription = "Open in the map app",
+                        tint = MaterialTheme.colorScheme.primary,
                     )
                 }
-                Text(
-                    text = "Map from OpenFreeMap, drawn from OpenStreetMap data. " +
-                        (if (distance != null) {
+            }
+        }
+
+        // At the bottom: how far apart the two dots are, which dot is which,
+        // what this phone does and does not send, and who drew the map.
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    if (distance != null) {
+                        Text(
+                            text = "$header is ${howFar(distance)}",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Key(theirs = theirs, yours = yours, who = theirName)
+                    }
+                    Text(
+                        text = if (distance != null) {
                             "The distance is worked out on this phone; where you are is never sent anywhere."
                         } else {
                             "It sees the area this phone is looking at, and nothing else."
-                        }),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
+            // OpenStreetMap's credit, where nothing can sit on top of it.
+            Text(
+                text = "© OpenStreetMap contributors · tiles by OpenFreeMap",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable { openUri(context, "https://www.openstreetmap.org/copyright") }
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+            )
         }
     }
 }
+
+/** Which dot is which, in the same colours the map draws them. */
+@Composable
+private fun Key(theirs: Color, yours: Color, who: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        KeyDot(theirs, who)
+        KeyDot(yours, MY_NAME)
+    }
+}
+
+@Composable
+private fun KeyDot(color: Color, label: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(color))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** The name at the top of the map: whose place it is, in the fewest words. */
+internal fun mapHeadline(ask: MapAsk): String = ask.who.ifBlank { ask.title }
+
+/** And what is being shown, when there is a name above it to say it under. */
+internal fun mapSubtitle(ask: MapAsk): String = if (ask.who.isBlank()) "" else "Live location"
+
+/**
+ * A name short enough to write under a dot. The map is the wrong place for a
+ * sentence: a long title is cut rather than allowed to cover the street it is
+ * standing on.
+ */
+internal fun mapLabel(name: String): String = when {
+    name.isBlank() -> "Their place"
+    name.length <= MAX_NAME -> name
+    else -> name.take(MAX_NAME - 1).trimEnd() + "…"
+}
+
+/** This phone's own dot, as it is written on the map and in the key. */
+internal const val MY_NAME = "You"
 
 /** The camera that has both dots on it, with room for the bars above and below. */
 private fun MapLibreMap.cameraFor(theirs: LivePoint, mine: LivePoint?): CameraPosition? {
@@ -562,7 +716,7 @@ private fun MapLibreMap.cameraFor(theirs: LivePoint, mine: LivePoint?): CameraPo
         .include(LatLng(mine.lat, mine.lon))
         .build()
     // Left, top, right, bottom: the distance card sits at the bottom.
-    return getCameraForLatLngBounds(bounds, intArrayOf(120, 260, 120, 360))
+    return getCameraForLatLngBounds(bounds, intArrayOf(120, 300, 120, 440))
 }
 
 /** Nobody's place, for the source that waits until somebody asks for theirs. */
@@ -634,34 +788,106 @@ private const val MY_DOT_LAYER = "maun-me-dot"
 private const val ZOOM = 16.0
 
 /**
+ * The other phone's dot: the bigger one, in a red that no road, water or park
+ * on the map is drawn in.
+ */
+internal val THEIR_DOT: Int = 0xFFD93025.toInt()
+internal const val THEIR_DOT_RADIUS = 11f
+
+/**
+ * This phone's own dot: smaller, and the app's green, so that a glance says
+ * which of the two is which without reading anything.
+ */
+internal const val MY_DOT_RADIUS = 7f
+
+/** The name written under each dot, and how far under it, in text heights. */
+private const val PIN_NAME_LAYER = "maun-pin-name"
+private const val MY_NAME_LAYER = "maun-me-name"
+private const val LABEL_PROPERTY = "label"
+private const val THEIR_NAME_OFFSET = 1.35f
+private const val MY_NAME_OFFSET = 0.95f
+
+/**
+ * The font the map's own labels are set in, asked for by the name the style
+ * serves its glyphs under. It is written into the same style the map already
+ * downloads tiles for, so nothing new is fetched for it.
+ */
+private const val TEXT_FONT = "Noto Sans Bold"
+private const val NAME_SIZE = 11.5f
+
+/** How many characters of a name are written under a dot before it is cut. */
+internal const val MAX_NAME = 18
+
+/**
  * A map of [point], with the point already on it, ready to hand to MapLibre.
  *
  * The point is put into the style rather than added afterwards, so the first
  * draw of the map has it: there is no frame where the map is there and the dot
  * is not.
  */
-private fun styleFor(point: LivePoint, theirs: Int, yours: Int): Style.Builder = Style.Builder()
+private fun styleFor(point: LivePoint, theirName: String, theirs: Int, yours: Int): Style.Builder = Style.Builder()
     .fromUri(MAP_STYLE)
-    .withSource(GeoJsonSource(PIN_SOURCE, pin(point)))
+    .withSource(GeoJsonSource(PIN_SOURCE, pin(point, theirName)))
     // Empty until somebody asks for it, so the second dot is a setGeoJson
     // rather than the whole style being built again under the map.
     .withSource(GeoJsonSource(MY_SOURCE, nobody()))
-    .withLayer(dot(PIN_DOT_LAYER, PIN_SOURCE, theirs))
-    .withLayer(dot(MY_DOT_LAYER, MY_SOURCE, yours))
+    .withLayer(dot(PIN_DOT_LAYER, PIN_SOURCE, theirs, THEIR_DOT_RADIUS))
+    .withLayer(dot(MY_DOT_LAYER, MY_SOURCE, yours, MY_DOT_RADIUS))
+    // After the dots, so that a name is drawn over the map and not under it.
+    .withLayer(nameUnder(PIN_NAME_LAYER, PIN_SOURCE, theirs, THEIR_NAME_OFFSET))
+    .withLayer(nameUnder(MY_NAME_LAYER, MY_SOURCE, yours, MY_NAME_OFFSET))
 
-/** A dot with a white edge, so it is the same dot on a pale street and on a dark park. */
-private fun dot(id: String, source: String, color: Int): CircleLayer = CircleLayer(id, source).withProperties(
-    circleRadius(9f),
-    circleColor(color),
-    circleOpacity(1f),
-    circleStrokeColor(android.graphics.Color.WHITE),
-    circleStrokeWidth(3f),
-)
+/**
+ * A dot with a white edge, so it is the same dot on a pale street and on a dark
+ * park, and at [radius] so that the two dots are told apart by size as well as
+ * by colour.
+ */
+private fun dot(id: String, source: String, color: Int, radius: Float): CircleLayer =
+    CircleLayer(id, source).withProperties(
+        circleRadius(radius),
+        circleColor(color),
+        circleOpacity(1f),
+        circleStrokeColor(android.graphics.Color.WHITE),
+        circleStrokeWidth(3f),
+    )
+
+/**
+ * The name of a dot, written under it in its own colour with a white edge, so
+ * that the map says which dot is which without the key being read.
+ *
+ * Nothing here is placed against anything else: two names that would touch both
+ * get drawn, because the dots are what is being read and a name that went
+ * missing would be worse than one drawn over another. If the font cannot be
+ * fetched, this draws nothing at all and the key under the map still says who
+ * is who.
+ */
+private fun nameUnder(layerId: String, source: String, color: Int, offset: Float): SymbolLayer =
+    SymbolLayer(layerId, source).withProperties(
+        textField(Expression.get(LABEL_PROPERTY)),
+        textFont(arrayOf(TEXT_FONT)),
+        textSize(NAME_SIZE),
+        textColor(color),
+        textHaloColor(android.graphics.Color.WHITE),
+        textHaloWidth(1.8f),
+        textAnchor(Property.TEXT_ANCHOR_TOP),
+        textOffset(arrayOf(0f, offset)),
+        textAllowOverlap(true),
+        textIgnorePlacement(true),
+    )
 
 /** The point as GeoJSON: MapLibre wants longitude first, and this is the one place that flips it. */
-private fun pin(point: LivePoint): FeatureCollection = FeatureCollection.fromFeature(
-    Feature.fromGeometry(Point.fromLngLat(point.lon, point.lat)),
+private fun pin(point: LivePoint, label: String): FeatureCollection = FeatureCollection.fromFeature(
+    Feature.fromGeometry(Point.fromLngLat(point.lon, point.lat)).apply {
+        addStringProperty(LABEL_PROPERTY, label)
+    },
 )
+
+/** Opens a page in whatever the phone uses for pages. */
+private fun openUri(context: Context, url: String) {
+    runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+}
 
 /** Hands the point to the phone's own maps app, without asking it where it is. */
 private fun openInMaps(context: Context, point: LivePoint, title: String) {

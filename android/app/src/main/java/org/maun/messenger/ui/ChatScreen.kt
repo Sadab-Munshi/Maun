@@ -229,8 +229,8 @@ fun ChatScreen(
     var showLiveSheet by rememberSaveable { mutableStateOf(false) }
     // The phone's own location is switched off: say so, and offer the switch.
     var locationOff by remember { mutableStateOf(false) }
-    // The point being shown on a map, and whose it is. Drawn over everything.
-    var mapOf by remember { mutableStateOf<Pair<org.maun.messenger.LivePoint, String>?>(null) }
+    // The point being shown on a map, whose it is, and what to call it. Drawn over everything.
+    var mapOf by remember { mutableStateOf<MapAsk?>(null) }
 
     val currentMessages by rememberUpdatedState(messages)
     val fileOf = { seq: Long ->
@@ -498,7 +498,7 @@ fun ChatScreen(
                                                         message = item.message,
                                                         name = contactName ?: "They",
                                                         live = live,
-                                                        onOpenMap = { point, title -> mapOf = point to title },
+                                                        onOpenMap = { ask -> mapOf = ask },
                                                     )
                                                 }
                                             } else {
@@ -664,8 +664,8 @@ fun ChatScreen(
         )
     }
 
-    mapOf?.let { (point, title) ->
-        LiveMapScreen(title = title, point = point, onClose = { mapOf = null })
+    mapOf?.let { ask ->
+        LiveMapScreen(ask = ask, onClose = { mapOf = null })
     }
 
     viewing?.let { seq ->
