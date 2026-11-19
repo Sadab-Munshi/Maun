@@ -36,12 +36,6 @@ import org.robolectric.annotation.Config
 @Config(application = Application::class)
 class RingServiceTest {
 
-    /** A [RingService] whose idea of the call is the test's, not a Messenger's. */
-    class TestRingService : RingService() {
-        var stillRinging = true
-        override fun callStillRinging(): Boolean = stillRinging
-    }
-
     private val context: Context get() = ApplicationProvider.getApplicationContext()
 
     /** What a wake-up that says "a call" starts: the service, with no action. */
@@ -50,11 +44,14 @@ class RingServiceTest {
     /** What the call itself starts when it has been fetched. */
     private fun ring(): Intent = Intent(context, RingService::class.java).setAction(RingService.ACTION_RING)
 
-    private fun begin(): ServiceController<TestRingService> =
-        Robolectric.buildService(TestRingService::class.java, getReady()).create()
+    /** A service behind an incoming call that is ringing, unless a test says otherwise. */
+    private fun begin(ringing: Boolean = true): ServiceController<RingService> =
+        Robolectric.buildService(RingService::class.java, getReady()).create().also {
+            it.get().callStillRinging = { ringing }
+        }
 
     /** The notification the service is showing, as Android would show it. */
-    private fun shown(controller: ServiceController<TestRingService>): Notification? =
+    private fun shown(controller: ServiceController<RingService>): Notification? =
         shadowOf(controller.get()).lastForegroundNotification
 
     private fun isRinging(notification: Notification): Boolean =
@@ -109,8 +106,7 @@ class RingServiceTest {
 
     @Test
     fun `a call that has stopped ringing takes the service away`() {
-        val controller = begin()
-        controller.get().stillRinging = false
+        val controller = begin(ringing = false)
         controller.withIntent(ring()).startCommand(0, 0)
         assertTrue("the service stayed for a call that was over", shadowOf(controller.get()).isStoppedBySelf)
     }

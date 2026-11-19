@@ -67,13 +67,13 @@ class RingService : Service() {
     }
 
     /**
-     * Whether the call this start belongs to is still ringing, from the app's
-     * own state. In a function of its own so that a test can say what the call
-     * is doing without a whole app behind it.
+     * Whether the call this start belongs to is still ringing. From the app's
+     * own state, unless a test has said otherwise: the question is asked of a
+     * function so that the answer can be given without a whole app behind it.
      */
-    internal open fun callStillRinging(): Boolean {
+    internal var callStillRinging: () -> Boolean = {
         val call = (application as MaunApp).messenger.calls.state.value
-        return call != null && call.incoming && call.phase == CallUi.Phase.Ringing
+        call != null && call.incoming && call.phase == CallUi.Phase.Ringing
     }
 
     private fun stop() {
