@@ -1,0 +1,216 @@
+package org.maun.messenger
+
+import java.security.SecureRandom
+import java.util.Base64
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import org.json.JSONException
+import org.json.JSONObject
+
+/**
+ * One point of a live-location share: where this phone was, how well it knew,
+ * and when.
+ *
+ * Nothing of this ever reaches the relay in the clear. It is sealed with the
+ * share's own key first, and that key only ever travels inside an encrypted
+ * message ([Payload.LiveLocation]), so the relay holds a few dozen bytes it
+ * cannot read.
+ */
+data class LivePoint(val lat: Double, val lon: Double, val accuracy: Double, val at: Long) {
+
+    fun toJson(): String = JSONObject()
+        .put("la", lat)
+        .put("lo", lon)
+        .put("ac", accuracy)
+        .put("at", at)
+        .toString()
+
+    companion object {
+        /** The most accurate a phone can be, in metres; anything else is a reading gone wrong. */
+        private const val MAX_ACCURACY = 100_000.0
+
+        fun fromJson(text: String): LivePoint? = try {
+            from(JSONObject(text))
+        } catch (_: JSONException) {
+            null
+        }
+
+        fun from(json: JSONObject): LivePoint? {
+            val lat = json.optDouble("la", Double.NaN)
+            val lon = json.optDouble("lo", Double.NaN)
+            val at = json.optLong("at", 0L)
+            if (!lat.isFinite() || !lon.isFinite() || at <= 0L) return null
+            if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) return null
+            val accuracy = json.optDouble("ac", 0.0).takeIf { it.isFinite() && it in 0.0..MAX_ACCURACY } ?: 0.0
+            return LivePoint(lat, lon, accuracy, at)
+        }
+    }
+}
+
+/** What the person watching knows about a share right now. */
+enum class LiveState {
+    /** The share is running: [LiveView.point] is where the other phone was, as it last said. */
+    LIVE,
+
+    /** It is over. Nothing of where anybody was comes with it. */
+    ENDED,
+
+    /** There is no such share: never one, or the relay has forgotten it. */
+    GONE,
+}
+
+/** A share as the relay tells it: the newest point, or that it has ended. */
+data class LiveView(val state: LiveState, val until: Long, val point: LivePoint?) {
+
+    /** True while the last point is older than [STALE_MS]: the other phone may have lost its signal. */
+    fun stale(now: Long): Boolean = point == null || now - point.at > STALE_MS
+
+    companion object {
+        /**
+         * How old the newest point may be before the card says updates have
+         * paused. A phone sends one every half minute, so a minute and a half
+         * of silence means something is wrong rather than that nothing moved.
+         */
+        const val STALE_MS = 90_000L
+    }
+}
+
+/** Where a share stands, for the card in the conversation. */
+enum class LivePhase {
+    /** This phone is sharing, and the other person may be looking. */
+    SHARING,
+
+    /** The other person has shared, and this phone has not opened it yet. */
+    OFFER,
+
+    /** This phone opened it and is watching. */
+    WATCHING,
+
+    /** Over, on either side. */
+    ENDED,
+}
+
+/**
+ * What a live-location message carries on this phone, kept in the message's
+ * own text. The relay knows the share by [share] and the minute it ends by
+ * [until]; [key] never leaves an encrypted message, and is what opens the
+ * points.
+ */
+data class LiveShare(
+    val share: String,
+    val key: String,
+    val minutes: Int,
+    val until: Long,
+    val state: Int = LIVE,
+) {
+
+    /** True when this phone is the one the location belongs to. */
+    fun phase(outgoing: Boolean, now: Long): LivePhase = when {
+        state == STOPPED || now >= until -> LivePhase.ENDED
+        outgoing -> LivePhase.SHARING
+        state == WATCHING -> LivePhase.WATCHING
+        else -> LivePhase.OFFER
+    }
+
+    fun toLocal(): String = JSONObject()
+        .put("share", share)
+        .put("key", key)
+        .put("mins", minutes)
+        .put("until", until)
+        .put("state", state)
+        .toString()
+
+    companion object {
+        /** Running, and this phone is sharing where it is. */
+        const val LIVE = 0
+
+        /** The person it was started for has opened it: this phone is watched. */
+        const val WATCHING = 1
+
+        /** Over, because somebody stopped it, or its minutes ran out. */
+        const val STOPPED = 2
+
+        /** What a share may be started for. The app offers both, and nothing else. */
+        val CHOICES = listOf(15, 60)
+
+        private val SHARE = Regex("^[0-9a-f]{32}$")
+
+        fun fromLocal(text: String): LiveShare? = try {
+            val json = JSONObject(text)
+            val share = json.optString("share")
+            val key = json.optString("key")
+            val minutes = json.optInt("mins", 0)
+            val until = json.optLong("until", 0L)
+            if (SHARE.matches(share) && key.isNotEmpty() && minutes in 1..60 && until > 0L) {
+                LiveShare(share, key, minutes, until, json.optInt("state", LIVE))
+            } else {
+                null
+            }
+        } catch (_: JSONException) {
+            null
+        }
+
+        /** What a message that is not a share says instead of a card. */
+        const val UNREADABLE = "Live location"
+    }
+}
+
+/**
+ * Sealing a point, and opening one.
+ *
+ * AES-GCM with the share's own 256-bit key, a fresh 96-bit IV for every
+ * point, and the share's ID as associated data, so a point cannot be lifted
+ * from one share into another. Sealed, a point is its IV followed by the
+ * ciphertext and its tag: about a hundred and twenty bytes.
+ */
+object LiveSeal {
+    private const val KEY_BYTES = 32
+    private const val IV_BYTES = 12
+    private const val TAG_BITS = 128
+    private const val TRANSFORM = "AES/GCM/NoPadding"
+
+    private val random = SecureRandom()
+
+    /** A new key for one share, base64 as it travels in a message. */
+    fun newKey(): String {
+        val key = ByteArray(KEY_BYTES)
+        random.nextBytes(key)
+        return Base64.getEncoder().encodeToString(key)
+    }
+
+    /** A new ID for one share: 16 random bytes in lower-case hex. */
+    fun newShareId(): String {
+        val bytes = ByteArray(16)
+        random.nextBytes(bytes)
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    /** The sealed point: its IV, then the ciphertext and its tag. */
+    fun seal(key: String, share: String, point: LivePoint): ByteArray {
+        val secret = SecretKeySpec(Base64.getDecoder().decode(key), "AES")
+        val iv = ByteArray(IV_BYTES)
+        random.nextBytes(iv)
+        val cipher = Cipher.getInstance(TRANSFORM)
+        cipher.init(Cipher.ENCRYPT_MODE, secret, GCMParameterSpec(TAG_BITS, iv))
+        cipher.updateAAD(share.toByteArray(Charsets.UTF_8))
+        val body = cipher.doFinal(point.toJson().toByteArray(Charsets.UTF_8))
+        return iv + body
+    }
+
+    /** Opens a sealed point, or null when it is not one or not this share's. */
+    fun open(key: String, share: String, sealed: ByteArray): LivePoint? {
+        if (sealed.size <= IV_BYTES) return null
+        return try {
+            val secret = SecretKeySpec(Base64.getDecoder().decode(key), "AES")
+            val cipher = Cipher.getInstance(TRANSFORM)
+            cipher.init(Cipher.DECRYPT_MODE, secret, GCMParameterSpec(TAG_BITS, sealed, 0, IV_BYTES))
+            cipher.updateAAD(share.toByteArray(Charsets.UTF_8))
+            val plain = cipher.doFinal(sealed, IV_BYTES, sealed.size - IV_BYTES)
+            LivePoint.fromJson(String(plain, Charsets.UTF_8))
+        } catch (_: Exception) {
+            // Not this key, not this share, or not a point at all.
+            null
+        }
+    }
+}

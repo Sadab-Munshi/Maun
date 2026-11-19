@@ -7,6 +7,7 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
 import org.maun.messenger.Attachment
+import org.maun.messenger.LiveShare
 import org.maun.messenger.data.ChatSummary
 import org.maun.messenger.data.ContactEntity
 import org.maun.messenger.data.MessageEntity
@@ -54,6 +55,10 @@ fun previewOf(last: ChatSummary?): String = when {
             else -> it.name
         }
     } ?: "File"
+    // A location's text is its record, not a sentence: the list says what it is.
+    last.kind == MessageKind.LOCATION -> LiveShare.fromLocal(last.text)?.let { share ->
+        if (System.currentTimeMillis() < share.until && share.state != LiveShare.STOPPED) "Live location" else "Live location ended"
+    } ?: "Live location"
     else -> last.text.replace('\n', ' ')
 }
 

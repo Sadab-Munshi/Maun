@@ -35,6 +35,8 @@ import {
   FILE_DAILY_COUNT,
   MAX_FILE_BYTES,
   MAX_ONE_TIME_KEYS,
+  MAX_SHARES,
+  MAX_SHARE_POINT_BYTES,
   MEMBER_CHECK_MS,
   NONCE_BYTES,
   PROTOCOL_VERSION,
@@ -54,6 +56,12 @@ import {
   QUEUE_CAP,
   QUEUE_CAP_PER_SENDER,
   QUEUE_TTL_MS,
+  SHARE_ID_BYTES,
+  SHARE_KEEP_MS,
+  SHARE_MAX_MINUTES,
+  SHARE_MIN_INTERVAL_MS,
+  SHARE_MIN_MINUTES,
+  type SharePeek,
   fromBase64,
   fromHex,
   isMailboxId,
@@ -629,6 +637,139 @@ export class Mailbox extends DurableObject<Env> {
     return "ok";
   }
 
+  // ---- Live location ---------------------------------------------------------
+  //
+  // A share is a row in the mailbox of the phone that shares: who may watch,
+  // until when, and the newest sealed point. The point is sealed on the phone
+  // with a key that travels only inside an end-to-end encrypted message, so
+  // this table holds one blob per share that nobody here can open. Each new
+  // point replaces the last: the relay never learns where anybody has been,
+  // only, for a few minutes, where they said they were.
+
+  /**
+   * Starts a share for [viewer], ending any older one to the same person: two
+   * live cards in one conversation would be two answers to one question.
+   * [minutes] is clamped to what the app offers.
+   */
+  async shareStart(
+    self: string,
+    viewer: string,
+    minutes: number,
+  ): Promise<{ share: string; until: number } | "no_account" | "bad_viewer" | "full"> {
+    if (!this.account()) return "no_account";
+    this.ensureTables();
+    if (!isMailboxId(viewer) || viewer === self) return "bad_viewer";
+    const now = Date.now();
+    const sql = this.ctx.storage.sql;
+    this.forgetShares(now);
+    if (Number(sql.exec("SELECT COUNT(*) AS n FROM shares").one().n) >= MAX_SHARES) return "full";
+    sql.exec("UPDATE shares SET stopped = 1, point = NULL, point_at = NULL WHERE viewer = ? AND stopped = 0", viewer);
+    const share = [...crypto.getRandomValues(new Uint8Array(SHARE_ID_BYTES))]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    const minutesWanted = Number.isFinite(minutes) ? Math.round(minutes) : SHARE_MIN_MINUTES;
+    const until = now + Math.min(Math.max(minutesWanted, SHARE_MIN_MINUTES), SHARE_MAX_MINUTES) * 60_000;
+    sql.exec(
+      "INSERT INTO shares (id, viewer, expires, point, point_at, stopped, created) VALUES (?, ?, ?, NULL, NULL, 0, ?)",
+      share,
+      viewer,
+      until,
+      now,
+    );
+    await this.armAlarm(until);
+    return { share, until };
+  }
+
+  /**
+   * Stores the newest sealed point of [share]. One that arrives closer than
+   * [SHARE_MIN_INTERVAL_MS] to the last is dropped: a share is a position, not
+   * a record of a journey.
+   */
+  async sharePoint(
+    self: string,
+    share: string,
+    point: Uint8Array,
+  ): Promise<"ok" | "too_soon" | "ended" | "gone" | "too_large" | "no_account"> {
+    if (!this.account()) return "no_account";
+    this.ensureTables();
+    if (point.length === 0 || point.length > MAX_SHARE_POINT_BYTES) return "too_large";
+    const sql = this.ctx.storage.sql;
+    const row = sql.exec("SELECT expires, point_at, stopped FROM shares WHERE id = ?", share).toArray()[0];
+    if (!row) return "gone";
+    const now = Date.now();
+    if (row.stopped === 1 || (row.expires as number) <= now) {
+      sql.exec("UPDATE shares SET point = NULL, point_at = NULL WHERE id = ?", share);
+      return "ended";
+    }
+    const last = row.point_at as number | null;
+    if (last !== null && now - last < SHARE_MIN_INTERVAL_MS) return "too_soon";
+    sql.exec("UPDATE shares SET point = ?, point_at = ? WHERE id = ?", point, now, share);
+    return "ok";
+  }
+
+  /**
+   * Ends [share] now and throws the point away. The row stays until the minute
+   * it was promised for has passed, so that the person watching is told it was
+   * stopped rather than that it was never there.
+   */
+  async shareStop(self: string, share: string): Promise<"ok" | "gone" | "no_account"> {
+    if (!this.account()) return "no_account";
+    this.ensureTables();
+    const sql = this.ctx.storage.sql;
+    const row = sql.exec("SELECT expires FROM shares WHERE id = ?", share).toArray()[0];
+    if (!row) return "gone";
+    sql.exec("UPDATE shares SET stopped = 1, point = NULL, point_at = NULL WHERE id = ?", share);
+    await this.armAlarm((row.expires as number) + SHARE_KEEP_MS);
+    return "ok";
+  }
+
+  /**
+   * What [viewer] may see of a share this mailbox owns. Anyone else is told
+   * only that there is no such share: who shares with whom is not a thing this
+   * relay answers.
+   */
+  async sharePeek(self: string, share: string, viewer: string): Promise<SharePeek> {
+    if (!this.account()) return { state: "gone" };
+    this.ensureTables();
+    const sql = this.ctx.storage.sql;
+    // A mailbox whose owner has gone takes its shares with it, at once.
+    if (await this.givenUp(self)) {
+      sql.exec("DELETE FROM shares");
+      return { state: "gone" };
+    }
+    const row = sql
+      .exec("SELECT viewer, expires, point, point_at, stopped FROM shares WHERE id = ?", share)
+      .toArray()[0];
+    if (!row || row.viewer !== viewer) return { state: "gone" };
+    const until = row.expires as number;
+    // SQL storage hands a BLOB back as an ArrayBuffer.
+    const point = row.point === null ? null : bytes(row.point);
+    if (row.stopped === 1) return { state: "ended", until };
+    if (until <= Date.now()) {
+      if (point !== null) sql.exec("UPDATE shares SET point = NULL, point_at = NULL WHERE id = ?", share);
+      return { state: "ended", until };
+    }
+    return {
+      state: "live",
+      until,
+      point: point === null ? null : toBase64(point),
+      at: (row.point_at as number | null) ?? null,
+    };
+  }
+
+  /**
+   * Clears the points of shares that have run out, and forgets shares that
+   * ended a day ago. Returns when the next share runs out, so the alarm can
+   * come back for it.
+   */
+  private forgetShares(now: number): number | null {
+    const sql = this.ctx.storage.sql;
+    sql.exec("UPDATE shares SET point = NULL, point_at = NULL WHERE expires <= ? AND point IS NOT NULL", now);
+    sql.exec("DELETE FROM shares WHERE expires <= ?", now - SHARE_KEEP_MS);
+    const next = sql.exec("SELECT MIN(expires) AS at FROM shares WHERE expires > ?", now).toArray()[0]?.at;
+    return typeof next === "number" ? next : null;
+  }
+
   // ---- Called by other mailboxes -------------------------------------------
   //
   // These are reachable only through the MAILBOX binding, that is, from this
@@ -705,7 +846,9 @@ export class Mailbox extends DurableObject<Env> {
     this.ensureTables();
     const sql = this.ctx.storage.sql;
     sql.exec("INSERT OR REPLACE INTO retired (id, at) VALUES (1, ?)", Date.now());
-    for (const table of ["queue", "keys", "otks", "push", "push_since", "push_result", "wake_retry"]) sql.exec(`DELETE FROM ${table}`);
+    for (const table of ["queue", "keys", "otks", "push", "push_since", "push_result", "wake_retry", "shares"]) {
+      sql.exec(`DELETE FROM ${table}`);
+    }
     this.queueSize = null;
     this.standing = null;
     for (const ws of this.ctx.getWebSockets()) closeQuietly(ws, CLOSE_ACCESS_REQUIRED, "access_required");
@@ -968,22 +1111,28 @@ export class Mailbox extends DurableObject<Env> {
     if (waiting.length > 0) this.wake(Date.now());
   }
 
-  /** Deletes messages nobody collected in time. */
+  /** Deletes messages nobody collected in time, and the points of shares that have run out. */
   override async alarm(): Promise<void> {
     this.expiryArmed = false;
     if (!this.account()) return;
     this.ensureTables();
     const sql = this.ctx.storage.sql;
-    sql.exec("DELETE FROM queue WHERE at <= ?", Date.now() - QUEUE_TTL_MS);
+    const now = Date.now();
+    sql.exec("DELETE FROM queue WHERE at <= ?", now - QUEUE_TTL_MS);
     this.queueSize = null;
     // A phone that was woken and has not come is woken again.
     await this.retryWake();
+    let next: number | null = null;
     // Whatever is still waiting keeps its own appointment to be forgotten.
     const oldest = sql.exec("SELECT MIN(at) AS at FROM queue").toArray()[0]?.at;
     if (typeof oldest === "number") {
-      await this.armAlarm(oldest + QUEUE_TTL_MS);
+      next = oldest + QUEUE_TTL_MS;
       this.expiryArmed = true;
     }
+    // A share that has run out loses its point now, not when somebody looks.
+    const share = this.forgetShares(now);
+    if (share !== null) next = next === null ? share : Math.min(next, share);
+    if (next !== null) await this.armAlarm(next);
   }
 
   /**
@@ -1087,6 +1236,21 @@ export class Mailbox extends DurableObject<Env> {
     sql.exec("CREATE TABLE IF NOT EXISTS turn_use (id INTEGER PRIMARY KEY CHECK (id = 1), day INTEGER NOT NULL, count INTEGER NOT NULL)");
     // One row while this mailbox's owner has moved to another ID.
     sql.exec("CREATE TABLE IF NOT EXISTS retired (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL)");
+    // Live location: one row per share, kept in the mailbox of the phone that
+    // shares. `point` is the newest sealed one and only ever one; it is
+    // cleared the moment `expires` passes, and the row is forgotten a day
+    // after that, which is how the person watching learns it ended.
+    sql.exec(
+      `CREATE TABLE IF NOT EXISTS shares (
+         id TEXT PRIMARY KEY,
+         viewer TEXT NOT NULL,
+         expires INTEGER NOT NULL,
+         point BLOB,
+         point_at INTEGER,
+         stopped INTEGER NOT NULL DEFAULT 0,
+         created INTEGER NOT NULL
+       )`,
+    );
     sql.exec(
       `CREATE TABLE IF NOT EXISTS queue (
          seq INTEGER PRIMARY KEY,

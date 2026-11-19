@@ -1,6 +1,7 @@
 package org.maun.messenger.ui
 
 import android.net.Uri
+import android.widget.Toast
 import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
@@ -26,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -383,6 +385,15 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             val voice by viewModel.voice.collectAsStateWithLifecycle()
                             // Leaving the conversation ends what was playing in it.
                             DisposableEffect(chatPeer) { onDispose { viewModel.stopVoice() } }
+                            // A share that could not be started says why, once.
+                            val liveProblem by viewModel.liveProblem.collectAsStateWithLifecycle()
+                            val liveContext = LocalContext.current
+                            LaunchedEffect(liveProblem) {
+                                liveProblem?.let { why ->
+                                    Toast.makeText(liveContext, why, Toast.LENGTH_LONG).show()
+                                    viewModel.clearLiveProblem()
+                                }
+                            }
                             ChatScreen(
                                 peerId = chatPeer,
                                 contactName = contacts.firstOrNull { it.id == chatPeer }?.name,
@@ -435,6 +446,12 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                                     viewModel.block(chatPeer)
                                     goHome()
                                 },
+                                live = LiveActions(
+                                    onShare = { peer, minutes -> viewModel.startLiveShare(peer, minutes) },
+                                    onStop = { peer, share -> viewModel.stopLiveShare(peer, share) },
+                                    onWatch = { peer, share -> viewModel.watchLiveShare(peer, share) },
+                                    onFetch = { peer, share, key -> viewModel.liveView(peer, share, key) },
+                                ),
                             )
                         }
 

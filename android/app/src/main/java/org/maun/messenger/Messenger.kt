@@ -1,10 +1,14 @@
 package org.maun.messenger
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
+import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import org.maun.messenger.network.AuthApi
 import org.maun.messenger.webrtc.CallManager
 import org.maun.messenger.webrtc.CallSignals
@@ -12,6 +16,9 @@ import org.maun.messenger.webrtc.CallUi
 import org.maun.messenger.webrtc.RingService
 import org.maun.messenger.network.AvatarApi
 import org.maun.messenger.network.FileApi
+import org.maun.messenger.network.LocationApi
+import org.maun.messenger.network.LocationException
+import org.maun.messenger.push.LocationService
 import org.maun.messenger.network.Usernames
 import org.maun.messenger.security.DeviceFingerprint
 import kotlinx.coroutines.CoroutineScope
@@ -207,6 +214,9 @@ class Messenger(context: Context) {
 
     @Volatile
     private var pictures: ProfilePictures? = null
+
+    /** The relay's live-location routes, once there is an account to sign in with. */
+    private var places: LocationApi? = null
 
     private val _avatarChanges = MutableStateFlow(0)
 
@@ -526,6 +536,12 @@ class Messenger(context: Context) {
             onChanged = { _avatarChanges.update { it + 1 } },
         )
         pictures = avatars
+        places = LocationApi(
+            relayUrl = relayUrl,
+            selfId = identity.id,
+            token = { created.ready?.filesToken },
+            onBanned = { scope.launch { onBanned() } },
+        )
         chat.myAvatar = { avatars.mine() }
         chatScope.launch { avatars.load() }
         chatScope.launch { avatars.sync() }
@@ -537,6 +553,8 @@ class Messenger(context: Context) {
             engine = chat
             engineScope = chatScope
             connection = created
+            // A share that was still running when the app was last closed carries on.
+            chatScope.launch { resumeLiveShares() }
             // Publish the account only after the engine and file loader exist.
             // Otherwise the first conversation can try to load a preview too early.
             _account.value = AccountState.Present(
@@ -968,6 +986,105 @@ class Messenger(context: Context) {
     // ---- Files -----------------------------------------------------------------
 
     /** Encrypts the file at [uri] and starts sending it to [peer]. Returns why it could not be, or null. */
+    // ---- Live location -------------------------------------------------------
+
+    /**
+     * Starts sharing where this phone is with [peer], for [minutes] (fifteen
+     * or sixty), and says so in the conversation. Returns why it could not, or
+     * null when the share is running.
+     */
+    suspend fun startLiveShare(peer: String, minutes: Int): String? {
+        val api = places ?: return "Not connected to the relay yet."
+        val engine = engine ?: return "Not connected to the relay yet."
+        if (!mayShareLocation()) return "Maun needs to be allowed to use this phone's location."
+        val started = try {
+            withContext(Dispatchers.IO) { api.start(peer, minutes) }
+        } catch (e: LocationException) {
+            return e.message ?: "The relay could not start the share."
+        } catch (_: IOException) {
+            return "The connection was lost. Try again."
+        }
+        val (share, until) = started
+        // The key is made here and travels only inside the encrypted message
+        // below; the points kept on the relay are opened by it and nothing else.
+        val key = LiveSeal.newKey()
+        engine.addLiveShare(peer, share, key, minutes, until)
+        LocationService.start(appContext, peer, share, key, until, nameOf(peer))
+        return null
+    }
+
+    /**
+     * The share is over, whoever ended it: the button on the card, the one in
+     * the notification, the minute running out, or the relay saying so. The
+     * relay is told, [peer] is told, and the card says so.
+     */
+    fun finishLiveShare(peer: String, share: String) {
+        LocationService.stop(appContext, share)
+        scope.launch {
+            places?.let { api -> runCatching { withContext(Dispatchers.IO) { api.stop(share) } } }
+            engine?.endLiveShare(peer, share)
+        }
+    }
+
+    /** This phone opened [peer]'s share: they are told, and the card starts asking for points. */
+    suspend fun watchLiveShare(peer: String, share: String) {
+        engine?.watchLive(peer, share)
+    }
+
+    /**
+     * What [peer]'s share looks like now. Null when the relay could not be
+     * asked: the card keeps the point it has rather than claiming the share
+     * has ended.
+     */
+    suspend fun liveView(peer: String, share: String, key: String): LiveView? {
+        val api = places ?: return null
+        val remote = try {
+            withContext(Dispatchers.IO) { api.peek(peer, share) }
+        } catch (_: IOException) {
+            return null
+        }
+        return when {
+            remote.gone -> LiveView(LiveState.GONE, remote.until, null)
+            remote.ended -> LiveView(LiveState.ENDED, remote.until, null)
+            // A point that will not open is not a point this phone can use.
+            else -> LiveView(LiveState.LIVE, remote.until, remote.sealed?.let { LiveSeal.open(key, share, it) })
+        }
+    }
+
+    /**
+     * Hands one fix to the relay, sealed. Called by [LocationService] while a
+     * share runs. False only when the relay says the share is over; a lost
+     * network is not an end, and the next fix tries again.
+     */
+    suspend fun liveFix(share: String, key: String, point: LivePoint): Boolean {
+        val api = places ?: return false
+        val sealed = LiveSeal.seal(key, share, point)
+        return try {
+            withContext(Dispatchers.IO) { api.point(share, sealed) }
+        } catch (_: IOException) {
+            true
+        }
+    }
+
+    private fun mayShareLocation(): Boolean =
+        ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    /** What to call [peer] where a notification may be read on a locked screen. */
+    private fun nameOf(peer: String): String =
+        _contacts.value.firstOrNull { it.id == peer }?.name ?: "One of your contacts"
+
+    /** A share still running when the app opens carries on, notification and all. */
+    private suspend fun resumeLiveShares() {
+        val engine = engine ?: return
+        val now = System.currentTimeMillis()
+        for (message in engine.runningShares()) {
+            val record = LiveShare.fromLocal(message.text) ?: continue
+            if (record.phase(outgoing = true, now = now) != LivePhase.SHARING) continue
+            LocationService.start(appContext, message.peer, record.share, record.key, record.until, nameOf(message.peer))
+        }
+    }
+
     suspend fun sendFile(peer: String, uri: Uri): String? {
         val transfers = files ?: return "Maun is not ready yet. Try again in a moment."
         return transfers.send(peer, uri)
