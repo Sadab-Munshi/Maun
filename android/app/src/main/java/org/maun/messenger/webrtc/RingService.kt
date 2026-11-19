@@ -31,13 +31,8 @@ class RingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val ring = intent?.action == ACTION_RING
-        // The relay looks for a call again at 8 s and at 28 s, and each of those
-        // says "a call" again, so being told to get ready while the call is
-        // already ringing is ordinary. It must change nothing: the ringing
-        // notification is the one thing between a locked phone and a missed call.
-        if (!ring && ringing) return START_NOT_STICKY
         val notifications = Notifications(this)
+        val ring = intent?.action == ACTION_RING
         val notification = if (ring) {
             notifications.incomingCall(
                 name = intent?.getStringExtra(EXTRA_NAME) ?: "Maun",
@@ -46,11 +41,8 @@ class RingService : Service() {
         } else {
             notifications.callComing()
         }
-        // Two states, two notifications, so that getting ready can never be
-        // shown in place of a ring, whatever order the two arrive in.
-        val id = if (ring) Notifications.ID_RINGING else Notifications.ID_PREPARING
         try {
-            startForeground(id, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
+            startForeground(Notifications.ID_RINGING, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
         } catch (_: Exception) {
             // Android would not let the service stay. The notification rings without it.
             if (ring) notifications.showIncomingCall(notification)
@@ -59,11 +51,11 @@ class RingService : Service() {
         }
         if (ring) {
             ringing = true
-            notifications.clearComing()
             handler.removeCallbacks(giveUp)
             // Started, then the call was over before this ran.
-            if (!callStillRinging()) stop()
-        } else {
+            val call = (application as MaunApp).messenger.calls.state.value
+            if (call == null || !call.incoming || call.phase != CallUi.Phase.Ringing) stop()
+        } else if (!ringing) {
             handler.removeCallbacks(giveUp)
             handler.postDelayed(giveUp, PREPARE_MILLIS)
         }
@@ -75,23 +67,13 @@ class RingService : Service() {
         super.onDestroy()
     }
 
-    /**
-     * Whether the call this start belongs to is still ringing. From the app's
-     * own state, unless a test has said otherwise: the question is asked of a
-     * function so that the answer can be given without a whole app behind it.
-     */
-    internal var callStillRinging: () -> Boolean = {
-        val call = (application as MaunApp).messenger.calls.state.value
-        call != null && call.incoming && call.phase == CallUi.Phase.Ringing
-    }
-
     private fun stop() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     companion object {
-        internal const val ACTION_RING = "org.maun.messenger.RING"
+        private const val ACTION_RING = "org.maun.messenger.RING"
         private const val EXTRA_NAME = "name"
         private const val EXTRA_VIDEO = "video"
 

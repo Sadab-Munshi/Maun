@@ -16,20 +16,6 @@ import org.unifiedpush.android.connector.UnifiedPush
 data class PushApp(val packageName: String, val label: String, val google: Boolean = false)
 
 /**
- * What one look at what wakes this phone turned up.
- */
-enum class PushLookup {
-    /** A push app answered and has been asked for an address. The address arrives later. */
-    Ready,
-
-    /** Nothing on this phone can wake Maun, or the user turned it off. */
-    NoPushApp,
-
-    /** The answer did not come: the push app is not running yet, or it failed. */
-    Trouble,
-}
-
-/**
  * What can wake Maun on this phone (UnifiedPush "distributors") and which of
  * them does.
  *
@@ -75,7 +61,7 @@ object PushApps {
      * app. With several push apps the user is asked. Returns whether
      * something is in use; its answer arrives later, at [WakeService].
      */
-    fun refresh(context: Context): PushLookup =
+    fun refresh(context: Context): Boolean =
         try {
             var chosen = UnifiedPush.getSavedDistributor(context)
             if (chosen == null) {
@@ -84,11 +70,10 @@ object PushApps {
                 chosen = (apps.singleOrNull() ?: all.singleOrNull())?.packageName
                 if (chosen != null) UnifiedPush.saveDistributor(context, chosen)
             }
-            if (chosen == null) return PushLookup.NoPushApp
-            register(context)
-            PushLookup.Ready
+            if (chosen != null) register(context)
+            chosen != null
         } catch (_: Exception) {
-            PushLookup.Trouble
+            false
         }
 
     /** The user does not want Google's push service to wake Maun. */
@@ -233,22 +218,10 @@ object Background {
     fun resume(context: Context) {
         val app = context.applicationContext as MaunApp
         enforceDefaultOffOnUpgrade(app)
-        if (forgetAddressOn(PushApps.refresh(app))) app.messenger.onPushAddress(null)
+        if (!PushApps.refresh(app)) app.messenger.onPushAddress(null)
         if (stayConnected(app)) ConnectedService.start(app) else ConnectedService.stop(app)
     }
 }
-
-/**
- * Whether the address the relay holds for this phone has to be taken away,
- * given how the look at what wakes it went.
- *
- * Only two things say the address is no use: there is nothing on this phone to
- * wake it any more, or a push app has said the address is gone. A look that
- * did not answer says nothing about the address at all — the phone that has
- * just booted, with its push app not running yet, is exactly the phone that
- * must not be made to depend on being opened before it can be woken again.
- */
-internal fun forgetAddressOn(outcome: PushLookup): Boolean = outcome == PushLookup.NoPushApp
 
 /** Runs after the phone has restarted or Maun was updated, when nothing of Maun is running. */
 class StartReceiver : BroadcastReceiver() {
