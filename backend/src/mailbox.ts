@@ -226,7 +226,7 @@ export class Mailbox extends DurableObject<Env> {
       const sql = this.ctx.storage.sql;
       const vapid = await this.vapidKeys();
       // The phone is here: whatever wake-up was on its way has done its job.
-      sql.exec("UPDATE push SET pending = 0 WHERE id = 1 AND pending = 1");
+      sql.exec("UPDATE push SET pending = 0, call_wake = 0 WHERE id = 1 AND pending = 1");
       // The retry chain is *not* called off here. A socket that has logged in
       // is not the same thing as messages being taken: a connection that
       // reports itself alive can have nothing on the other end of it, which is
@@ -379,7 +379,8 @@ export class Mailbox extends DurableObject<Env> {
         // and over does not buy more wake-ups.
         sql.exec(
           `INSERT INTO push (id, url, key, auth, last, pending, day, sent) VALUES (1, ?, ?, ?, 0, 0, 0, 0)
-           ON CONFLICT (id) DO UPDATE SET url = excluded.url, key = excluded.key, auth = excluded.auth, pending = 0`,
+           ON CONFLICT (id) DO UPDATE SET url = excluded.url, key = excluded.key, auth = excluded.auth,
+             pending = 0, call_wake = 0`,
           frame.url,
           blob(frame.key),
           blob(frame.auth),
@@ -761,16 +762,29 @@ export class Mailbox extends DurableObject<Env> {
    */
   private wake(now: number, urgent = false, armRetry = true): void {
     const sql = this.ctx.storage.sql;
-    const row = sql.exec("SELECT url, key, auth, last, pending, day, sent FROM push WHERE id = 1").toArray()[0];
+    const row = sql.exec("SELECT url, key, auth, last, pending, call_wake, day, sent FROM push WHERE id = 1").toArray()[0];
     if (!row) return;
     // One is on its way and the phone has not come yet. Sending more would
     // only tell the push service how many messages are waiting.
-    // A ringing call cannot wait for that; it only has to keep a few seconds' distance.
-    if (row.pending === 1 && now - (row.last as number) < (urgent ? PUSH_URGENT_REPEAT_MS : PUSH_REPEAT_MS)) return;
+    // A ringing call cannot wait for that; it only has to keep a few seconds'
+    // distance. A wake-up that is already on its way speaks for one sent for
+    // the same reason, but never for a call: a phone woken for a message has
+    // not been told to get ready to ring, so the call goes out at once.
+    if (row.pending === 1) {
+      const since = now - (row.last as number);
+      const sentForCall = Number(row.call_wake) === 1;
+      if (urgent ? sentForCall && since < PUSH_URGENT_REPEAT_MS : since < PUSH_REPEAT_MS) return;
+    }
     const today = Math.floor(now / 86_400_000);
     const sentToday = row.day === today ? (row.sent as number) : 0;
     if (sentToday >= PUSH_DAILY_CAP) return;
-    sql.exec("UPDATE push SET last = ?, pending = 1, day = ?, sent = ? WHERE id = 1", now, today, sentToday + 1);
+    sql.exec(
+      "UPDATE push SET last = ?, pending = 1, call_wake = ?, day = ?, sent = ? WHERE id = 1",
+      now,
+      urgent ? 1 : 0,
+      today,
+      sentToday + 1,
+    );
     sql.exec("INSERT OR REPLACE INTO push_result (id, status) VALUES (1, ?)", PUSH_UNFINISHED);
     this.ctx.waitUntil(this.deliverWake(row.url as string, bytes(row.key), bytes(row.auth), urgent));
     // The push service answering is not the phone answering. The phone is
@@ -791,6 +805,12 @@ export class Mailbox extends DurableObject<Env> {
       sql.exec("DELETE FROM wake_retry");
       return;
     }
+    // A call that is still being looked for keeps its own appointment: a
+    // wake-up sent for a message afterwards joins that chain rather than
+    // replacing it with one that looks for the phone later, and a second call
+    // does not move the moment already promised either.
+    const armed = sql.exec("SELECT at, urgent FROM wake_retry WHERE id = 1").toArray()[0];
+    if (armed && Number(armed.urgent) === 1 && (!urgent || (armed.at as number) <= now + wait)) return;
     // `seen` is how much was waiting when this try was arranged. The next try
     // compares it with how much is waiting then: only a message that was
     // actually taken counts as the phone having come.
@@ -822,7 +842,7 @@ export class Mailbox extends DurableObject<Env> {
    */
   private async retryWake(): Promise<void> {
     const sql = this.ctx.storage.sql;
-    const row = sql.exec("SELECT at, count, urgent FROM wake_retry WHERE id = 1").toArray()[0];
+    const row = sql.exec("SELECT at, count, seen, urgent FROM wake_retry WHERE id = 1").toArray()[0];
     if (!row) return;
     const now = Date.now();
     const at = row.at as number;
@@ -889,7 +909,7 @@ export class Mailbox extends DurableObject<Env> {
       sql.exec("DELETE FROM push WHERE id = 1 AND url = ?", url);
     } else {
       // It did not get through, so the next message may try again at once.
-      sql.exec("UPDATE push SET pending = 0 WHERE id = 1 AND url = ?", url);
+      sql.exec("UPDATE push SET pending = 0, call_wake = 0 WHERE id = 1 AND url = ?", url);
     }
   }
 
@@ -1050,15 +1070,21 @@ export class Mailbox extends DurableObject<Env> {
     // deleted. `at` is when it arrived, used only to expire it.
     // One row: where to send a wake-up, and the keys to encrypt it with.
     // `last` is when one was last sent, `pending` whether the phone has yet
-    // to answer it, `day` and `sent` count the day's wake-ups.
+    // to answer it, `call_wake` whether the one on its way was sent for a
+    // ringing call, `day` and `sent` count the day's wake-ups.
     sql.exec(
       `CREATE TABLE IF NOT EXISTS push (
          id INTEGER PRIMARY KEY CHECK (id = 1),
          url TEXT NOT NULL, key BLOB NOT NULL, auth BLOB NOT NULL,
          last INTEGER NOT NULL, pending INTEGER NOT NULL,
+         call_wake INTEGER NOT NULL DEFAULT 0,
          day INTEGER NOT NULL, sent INTEGER NOT NULL
        )`,
     );
+    // A mailbox written to before the call word existed has no `call_wake`.
+    if (!sql.exec("SELECT name FROM pragma_table_info('push')").toArray().some((row) => row.name === "call_wake")) {
+      sql.exec("ALTER TABLE push ADD COLUMN call_wake INTEGER NOT NULL DEFAULT 0");
+    }
     // One row: when the address in `push` was first left here.
     sql.exec("CREATE TABLE IF NOT EXISTS push_since (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL)");
     // One row: the key pair wake-ups are signed with.
