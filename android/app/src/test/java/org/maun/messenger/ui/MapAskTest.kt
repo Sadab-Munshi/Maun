@@ -1,6 +1,7 @@
 package org.maun.messenger.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -28,6 +29,19 @@ class MapAskTest {
         val ask = MapAsk(somewhere, "Where you were")
         assertEquals("Where you were", mapHeadline(ask))
         assertEquals("", mapSubtitle(ask))
+    }
+
+    @Test
+    fun `a name written under a dot is short enough to leave the street readable`() {
+        assertEquals("Sabad1", mapLabel("Sabad1"))
+        // A card with no name at all still puts something under the dot.
+        assertEquals("Their place", mapLabel("  "))
+        val long = mapLabel("Sabad1's live location, somewhere out past Antila")
+        assertTrue("a name that long would cover the map", long.length <= MAX_NAME)
+        assertTrue("and it says that it was cut", long.endsWith("…"))
+        assertFalse("cut at a space, never in the middle of a word", long.endsWith(" …"))
+        // This phone's own dot is always the same word.
+        assertEquals("You", MY_NAME)
     }
 
     @Test

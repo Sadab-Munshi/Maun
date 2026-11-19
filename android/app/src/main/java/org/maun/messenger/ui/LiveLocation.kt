@@ -70,12 +70,25 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory.circleColor
 import org.maplibre.android.style.layers.PropertyFactory.circleOpacity
 import org.maplibre.android.style.layers.PropertyFactory.circleRadius
 import org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor
 import org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth
+import org.maplibre.android.style.layers.PropertyFactory.textAllowOverlap
+import org.maplibre.android.style.layers.PropertyFactory.textAnchor
+import org.maplibre.android.style.layers.PropertyFactory.textColor
+import org.maplibre.android.style.layers.PropertyFactory.textField
+import org.maplibre.android.style.layers.PropertyFactory.textFont
+import org.maplibre.android.style.layers.PropertyFactory.textHaloColor
+import org.maplibre.android.style.layers.PropertyFactory.textHaloWidth
+import org.maplibre.android.style.layers.PropertyFactory.textIgnorePlacement
+import org.maplibre.android.style.layers.PropertyFactory.textOffset
+import org.maplibre.android.style.layers.PropertyFactory.textSize
+import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
@@ -446,6 +459,11 @@ private fun Card(
 fun LiveMapScreen(ask: MapAsk, onClose: () -> Unit) {
     val context = LocalContext.current
     val point = ask.point
+    // The name goes on the map as well as in the bar: a dot with its name
+    // under it needs no key, and a name in the bar needs no dot.
+    val header = mapHeadline(ask)
+    val under = mapSubtitle(ask)
+    val theirName = mapLabel(header)
     val theirs = Color(THEIR_DOT)
     val yours = MaterialTheme.colorScheme.primary
     // Where this phone is, when the person looking has said Maun may ask. It
@@ -501,21 +519,20 @@ fun LiveMapScreen(ask: MapAsk, onClose: () -> Unit) {
             // the card under the map cannot cover it up.
             isAttributionEnabled = false
         }
-        loaded.setStyle(styleFor(point, theirs.toArgb(), yours.toArgb()))
+        loaded.setStyle(styleFor(point, theirName, theirs.toArgb(), yours.toArgb()))
     }
     // The point moves while a share is being watched, so the map follows it.
     LaunchedEffect(map, point.lat, point.lon, mine?.lat, mine?.lon) {
         val loaded = map ?: return@LaunchedEffect
-        loaded.style?.getSourceAs<GeoJsonSource>(PIN_SOURCE)?.setGeoJson(pin(point))
-        loaded.style?.getSourceAs<GeoJsonSource>(MY_SOURCE)?.setGeoJson(mine?.let { pin(it) } ?: nobody())
+        loaded.style?.getSourceAs<GeoJsonSource>(PIN_SOURCE)?.setGeoJson(pin(point, theirName))
+        loaded.style?.getSourceAs<GeoJsonSource>(MY_SOURCE)
+            ?.setGeoJson(mine?.let { pin(it, MY_NAME) } ?: nobody())
         loaded.cameraPosition = loaded.cameraFor(point, mine) ?: CameraPosition.Builder()
             .target(LatLng(point.lat, point.lon))
             .zoom(ZOOM)
             .build()
     }
     val distance = mine?.let { metresBetween(it, point) }
-    val header = mapHeadline(ask)
-    val under = mapSubtitle(ask)
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
 
@@ -614,7 +631,7 @@ fun LiveMapScreen(ask: MapAsk, onClose: () -> Unit) {
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
-                        Key(theirs = theirs, yours = yours, who = header)
+                        Key(theirs = theirs, yours = yours, who = theirName)
                     }
                     Text(
                         text = if (distance != null) {
@@ -650,7 +667,7 @@ private fun Key(theirs: Color, yours: Color, who: String) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         KeyDot(theirs, who)
-        KeyDot(yours, "You")
+        KeyDot(yours, MY_NAME)
     }
 }
 
@@ -676,6 +693,20 @@ internal fun mapHeadline(ask: MapAsk): String = ask.who.ifBlank { ask.title }
 
 /** And what is being shown, when there is a name above it to say it under. */
 internal fun mapSubtitle(ask: MapAsk): String = if (ask.who.isBlank()) "" else "Live location"
+
+/**
+ * A name short enough to write under a dot. The map is the wrong place for a
+ * sentence: a long title is cut rather than allowed to cover the street it is
+ * standing on.
+ */
+internal fun mapLabel(name: String): String = when {
+    name.isBlank() -> "Their place"
+    name.length <= MAX_NAME -> name
+    else -> name.take(MAX_NAME - 1).trimEnd() + "…"
+}
+
+/** This phone's own dot, as it is written on the map and in the key. */
+internal const val MY_NAME = "You"
 
 /** The camera that has both dots on it, with room for the bars above and below. */
 private fun MapLibreMap.cameraFor(theirs: LivePoint, mine: LivePoint?): CameraPosition? {
@@ -769,6 +800,24 @@ internal const val THEIR_DOT_RADIUS = 11f
  */
 internal const val MY_DOT_RADIUS = 7f
 
+/** The name written under each dot, and how far under it, in text heights. */
+private const val PIN_NAME_LAYER = "maun-pin-name"
+private const val MY_NAME_LAYER = "maun-me-name"
+private const val LABEL_PROPERTY = "label"
+private const val THEIR_NAME_OFFSET = 1.35f
+private const val MY_NAME_OFFSET = 0.95f
+
+/**
+ * The font the map's own labels are set in, asked for by the name the style
+ * serves its glyphs under. It is written into the same style the map already
+ * downloads tiles for, so nothing new is fetched for it.
+ */
+private const val TEXT_FONT = "Noto Sans Bold"
+private const val NAME_SIZE = 11.5f
+
+/** How many characters of a name are written under a dot before it is cut. */
+internal const val MAX_NAME = 18
+
 /**
  * A map of [point], with the point already on it, ready to hand to MapLibre.
  *
@@ -776,14 +825,17 @@ internal const val MY_DOT_RADIUS = 7f
  * draw of the map has it: there is no frame where the map is there and the dot
  * is not.
  */
-private fun styleFor(point: LivePoint, theirs: Int, yours: Int): Style.Builder = Style.Builder()
+private fun styleFor(point: LivePoint, theirName: String, theirs: Int, yours: Int): Style.Builder = Style.Builder()
     .fromUri(MAP_STYLE)
-    .withSource(GeoJsonSource(PIN_SOURCE, pin(point)))
+    .withSource(GeoJsonSource(PIN_SOURCE, pin(point, theirName)))
     // Empty until somebody asks for it, so the second dot is a setGeoJson
     // rather than the whole style being built again under the map.
     .withSource(GeoJsonSource(MY_SOURCE, nobody()))
     .withLayer(dot(PIN_DOT_LAYER, PIN_SOURCE, theirs, THEIR_DOT_RADIUS))
     .withLayer(dot(MY_DOT_LAYER, MY_SOURCE, yours, MY_DOT_RADIUS))
+    // After the dots, so that a name is drawn over the map and not under it.
+    .withLayer(nameUnder(PIN_NAME_LAYER, PIN_SOURCE, theirs, THEIR_NAME_OFFSET))
+    .withLayer(nameUnder(MY_NAME_LAYER, MY_SOURCE, yours, MY_NAME_OFFSET))
 
 /**
  * A dot with a white edge, so it is the same dot on a pale street and on a dark
@@ -799,9 +851,35 @@ private fun dot(id: String, source: String, color: Int, radius: Float): CircleLa
         circleStrokeWidth(3f),
     )
 
+/**
+ * The name of a dot, written under it in its own colour with a white edge, so
+ * that the map says which dot is which without the key being read.
+ *
+ * Nothing here is placed against anything else: two names that would touch both
+ * get drawn, because the dots are what is being read and a name that went
+ * missing would be worse than one drawn over another. If the font cannot be
+ * fetched, this draws nothing at all and the key under the map still says who
+ * is who.
+ */
+private fun nameUnder(layerId: String, source: String, color: Int, offset: Float): SymbolLayer =
+    SymbolLayer(layerId, source).withProperties(
+        textField(Expression.get(LABEL_PROPERTY)),
+        textFont(arrayOf(TEXT_FONT)),
+        textSize(NAME_SIZE),
+        textColor(color),
+        textHaloColor(android.graphics.Color.WHITE),
+        textHaloWidth(1.8f),
+        textAnchor(Property.TEXT_ANCHOR_TOP),
+        textOffset(arrayOf(0f, offset)),
+        textAllowOverlap(true),
+        textIgnorePlacement(true),
+    )
+
 /** The point as GeoJSON: MapLibre wants longitude first, and this is the one place that flips it. */
-private fun pin(point: LivePoint): FeatureCollection = FeatureCollection.fromFeature(
-    Feature.fromGeometry(Point.fromLngLat(point.lon, point.lat)),
+private fun pin(point: LivePoint, label: String): FeatureCollection = FeatureCollection.fromFeature(
+    Feature.fromGeometry(Point.fromLngLat(point.lon, point.lat)).apply {
+        addStringProperty(LABEL_PROPERTY, label)
+    },
 )
 
 /** Opens a page in whatever the phone uses for pages. */

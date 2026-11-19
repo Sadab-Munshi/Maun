@@ -171,9 +171,16 @@ Three things make that different from what other apps do with it:
 
 The two dots are never the same dot. The other phone's is the bigger one, in a
 red that no road, water or park on the map is drawn in; this phone's own is
-smaller and the app's green. Under the distance there is a key with the same two
-colours, naming the person who is sharing and **You**, so that a glance at the
-map is enough — on a phone held in one hand, in the dark, walking.
+smaller and the app's green. Each dot has its name written under it, in its own
+colour with a white edge, so the map says which is which without anything else
+being read; and under the distance there is a key in the same two colours, naming
+the person who is sharing and **You**. That is a glance rather than a comparison,
+which is what a phone held in one hand, in the dark, walking, can spare.
+
+The names are a style's own business, not Maun's: they are drawn by the same
+renderer as the street names, in the font the style already serves its glyphs in,
+so a map with no font draws the dots and the key without them. The key is not
+decoration — it is the one that cannot fail.
 
 The distance is the great-circle distance between the two points: right to
 within a few metres across a street, and within about a fifth of a percent
@@ -258,8 +265,9 @@ first things to look at:
   not just a beige field, and that the dot is where the phone is;
 - that **How far?** puts both dots on one map, that the camera keeps both of
   them on it, and that the number matches what a walk says it is;
-- that the two dots are told apart at a glance, and that the key under the
-  distance names the right colour for the right person;
+- that the two dots are told apart at a glance, that each name is drawn under
+  its own dot and not over the street, and that the key under the distance names
+  the right colour for the right person;
 - that the top bar sits below the phone's clock rather than under it, that a
   long name is cut rather than wrapped, and that the credit at the bottom of the
   map is not covered by the card;
