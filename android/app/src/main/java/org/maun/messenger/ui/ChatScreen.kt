@@ -225,6 +225,8 @@ fun ChatScreen(
     val byId = remember(messages) { messages.associateBy { it.id } }
     var showAttachSheet by rememberSaveable { mutableStateOf(false) }
     var showLiveSheet by rememberSaveable { mutableStateOf(false) }
+    // The phone's own location is switched off: say so, and offer the switch.
+    var locationOff by remember { mutableStateOf(false) }
     // The point being shown on a map, and whose it is. Drawn over everything.
     var mapOf by remember { mutableStateOf<Pair<org.maun.messenger.LivePoint, String>?>(null) }
 
@@ -282,10 +284,17 @@ fun ChatScreen(
         val allowed = granted[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             granted[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (minutes == null) return@rememberLauncherForActivityResult
-        if (allowed) {
-            live.onShare(peerId, minutes)
-        } else {
-            Toast.makeText(context, "Maun was not allowed to use this phone's location.", Toast.LENGTH_LONG).show()
+        when {
+            // Agreed to, but the phone's location is still switched off: the
+            // dialog that follows is the one that can put that right, and the
+            // share waits behind it rather than running empty.
+            !allowed -> Toast.makeText(
+                context,
+                "Maun was not allowed to use this phone's location.",
+                Toast.LENGTH_LONG,
+            ).show()
+            !locationSwitchedOn(context) -> locationOff = true
+            else -> live.onShare(peerId, minutes)
         }
     }
     val askForCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -599,17 +608,44 @@ fun ChatScreen(
                     context,
                     Manifest.permission.ACCESS_COARSE_LOCATION,
                 ) == PackageManager.PERMISSION_GRANTED
-                if (already) {
-                    live.onShare(peerId, minutes)
-                } else {
-                    shareAfter = minutes
-                    askForLocation.launch(
-                        arrayOf(
-                            Manifest.permission.ACCESS_FINE_LOCATION,
-                            Manifest.permission.ACCESS_COARSE_LOCATION,
-                        ),
-                    )
+                when {
+                    // Permission is one switch; the phone's own location is
+                    // another, and a share started with it off would be a card
+                    // that never fills in.
+                    already && !locationSwitchedOn(context) -> locationOff = true
+                    already -> live.onShare(peerId, minutes)
+                    else -> {
+                        shareAfter = minutes
+                        askForLocation.launch(
+                            arrayOf(
+                                Manifest.permission.ACCESS_FINE_LOCATION,
+                                Manifest.permission.ACCESS_COARSE_LOCATION,
+                            ),
+                        )
+                    }
                 }
+            },
+        )
+    }
+
+    if (locationOff) {
+        AlertDialog(
+            onDismissRequest = { locationOff = false },
+            title = { Text("Location is switched off") },
+            text = {
+                Text(
+                    "Maun is allowed to use this phone's location, but the phone itself has location " +
+                        "switched off, so there is nowhere to share from. Switch it on, then share again.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    locationOff = false
+                    openLocationSettings(context)
+                }) { Text("Location settings") }
+            },
+            dismissButton = {
+                TextButton(onClick = { locationOff = false }) { Text("Not now") }
             },
         )
     }
@@ -1020,8 +1056,8 @@ private fun AttachmentSheet(
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.Top,
             ) {
                 AttachmentChoice(
                     icon = MaunIcons.Image,
@@ -1029,6 +1065,7 @@ private fun AttachmentSheet(
                     tint = Color(0xFF1F7A58),
                     container = Color(0xFFD5F0E3),
                     onClick = onGallery,
+                    modifier = Modifier.weight(1f),
                 )
                 AttachmentChoice(
                     icon = MaunIcons.Camera,
@@ -1036,6 +1073,7 @@ private fun AttachmentSheet(
                     tint = Color(0xFF9C3D54),
                     container = Color(0xFFF8DCE3),
                     onClick = onCamera,
+                    modifier = Modifier.weight(1f),
                 )
                 AttachmentChoice(
                     icon = MaunIcons.File,
@@ -1043,6 +1081,7 @@ private fun AttachmentSheet(
                     tint = Color(0xFF2E5C8A),
                     container = Color(0xFFD9E8F7),
                     onClick = onDocument,
+                    modifier = Modifier.weight(1f),
                 )
                 AttachmentChoice(
                     icon = MaunIcons.Pin,
@@ -1050,6 +1089,7 @@ private fun AttachmentSheet(
                     tint = Color(0xFF7A5A1F),
                     container = Color(0xFFF3E6C8),
                     onClick = onLocation,
+                    modifier = Modifier.weight(1f),
                 )
             }
             Text(
@@ -1068,29 +1108,33 @@ private fun AttachmentChoice(
     tint: Color,
     container: Color,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .padding(vertical = 8.dp),
     ) {
         Surface(
             color = container,
             shape = CircleShape,
             shadowElevation = 1.dp,
-            modifier = Modifier.size(56.dp),
+            modifier = Modifier.size(52.dp),
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(26.dp))
+                Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(25.dp))
             }
         }
         Text(
             text = label,
-            style = MaterialTheme.typography.labelLarge,
+            // One line each, or "Location" is printed a letter at a time.
+            style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            textAlign = TextAlign.Center,
         )
     }
 }

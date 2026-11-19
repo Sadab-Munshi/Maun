@@ -192,10 +192,15 @@ export function isShareId(value: string): boolean {
   return SHARE_ID.test(value);
 }
 
-/** How long a share may be offered for. The app offers the two. */
-export const SHARE_MINUTES = [15, 60];
+/**
+ * How long a share may be offered for. Sharing where you are is a safety
+ * feature as much as a convenience: somebody walking home at night wants it to
+ * last until they are in, not to be told to start it again every quarter of an
+ * hour. The app offers these; the mailbox clamps to the same range.
+ */
+export const SHARE_MINUTES = [15, 60, 4 * 60, 8 * 60, 24 * 60];
 export const SHARE_MIN_MINUTES = 15;
-export const SHARE_MAX_MINUTES = 60;
+export const SHARE_MAX_MINUTES = 24 * 60;
 
 /**
  * The largest sealed point the relay takes: a latitude, a longitude, an

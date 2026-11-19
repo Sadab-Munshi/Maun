@@ -55,7 +55,15 @@ class LocationService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
+        // Started again by Android after it was killed: the share itself is on
+        // the phone's storage, so ask for it rather than guessing from an
+        // intent that is not there.
+        if (intent == null) {
+            messenger().resumeLiveShares()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent.action == ACTION_STOP) {
             // Tapped "Stop" in the shade: say so everywhere, then go.
             endShare(intent.getStringExtra(EXTRA_SHARE) ?: share)
             return START_NOT_STICKY
@@ -89,7 +97,9 @@ class LocationService : Service() {
             }
             endShare(share)
         }
-        return START_NOT_STICKY
+        // A safety share is worth being brought back after Android has put the
+        // app away; the time it was promised for is what ends it, not a kill.
+        return START_STICKY
     }
 
     override fun onDestroy() {
@@ -225,20 +235,20 @@ class LocationService : Service() {
         private const val EXTRA_UNTIL = "until"
         private const val EXTRA_WHO = "who"
 
-        /** How often a phone with a fix is asked about: a point every half minute. */
-        private const val INTERVAL_MS = 20_000L
+        /** How often a phone with a fix is asked about. */
+        private const val INTERVAL_MS = 10_000L
 
         /** Closer than this, and it is not worth waking the radio for. */
         private const val MIN_METRES = 10f
 
-        /** Two points are at least this far apart in time, which is what the relay also asks. */
-        private const val SEND_EVERY_MS = 25_000L
+        /** Two points are at least this far apart in time, well inside what the relay asks. */
+        private const val SEND_EVERY_MS = 15_000L
 
         /** Sitting still, a phone still says where it is this often. */
         private const val HEARTBEAT_MS = 4 * 60_000L
 
         /** Moved this far, and it is worth a new point even before [SEND_EVERY_MS]. */
-        private const val MIN_MOVE_METRES = 15.0
+        private const val MIN_MOVE_METRES = 10.0
 
         private const val TICK_MS = 15_000L
 
@@ -257,7 +267,12 @@ class LocationService : Service() {
                 .putExtra(EXTRA_KEY, key)
                 .putExtra(EXTRA_UNTIL, until)
                 .putExtra(EXTRA_WHO, who)
-            ContextCompat.startForegroundService(context, intent)
+            try {
+                ContextCompat.startForegroundService(context, intent)
+            } catch (_: Exception) {
+                // Android would not let a service start from here. The card
+                // still says what the share is; it stops when its time is up.
+            }
         }
 
         /** Ends the service for [share] without telling anybody: the caller does that. */
