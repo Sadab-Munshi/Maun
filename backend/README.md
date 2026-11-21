@@ -1,11 +1,15 @@
 # The relay
 
 One Cloudflare Worker and one Durable Object per account. TypeScript, no
-framework. It stores encrypted bytes and nothing it can read, and it wakes
-phones that are not connected.
+application framework. It holds a bounded, expiring queue of ciphertext and
+routing metadata it can read (IDs, timing and sizes), but no message contents;
+it wakes phones that are not connected.
 
 Read [../docs/NOTIFICATIONS.md](../docs/NOTIFICATIONS.md) before touching the
 wake-up path, and [../AGENTS.md](../AGENTS.md) for how work is done here.
+[../docs/API.md](../docs/API.md) is the index of every route and frame;
+[../docs/DATABASE.md](../docs/DATABASE.md) is what the two stores hold;
+[../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) is how it fits together.
 
 ## Commands
 
@@ -39,7 +43,7 @@ npx vitest run --config vitest.config.ts test/push.test.ts -t "wake"
 
 | File | What it does |
 |---|---|
-| `src/index.ts` | The stateless front door: health, WebSocket upgrade, avatars, files |
+| `src/index.ts` | The stateless front door: health, the WebSocket upgrade, avatars, files, live-location routes |
 | `src/mailbox.ts` | One account's Durable Object: the encrypted queue, wake-ups and their retries, push address, limits, retirement |
 | `src/protocol.ts` | Frame shapes and every shared number: queue limits, timings, byte sizes |
 | `src/crypto/webpush.ts` | Encrypting and signing a wake-up the way a push service expects |

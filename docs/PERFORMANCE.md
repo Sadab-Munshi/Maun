@@ -24,18 +24,28 @@ does by inspection, and what would need a trace to confirm.
   again.
 * **Avatars.** Their own 8 MB cache, decoded off the main thread.
 
-## Worth knowing, and not changed here
+## Fixed since this was written (Round 10)
 
-* `FileActions` is rebuilt on every recomposition of the conversation, and it is
-  part of every row's parameters, so a progress tick on an upload can recompose
-  the visible rows. The fix is to lift the progress map out of the row
-  parameters and let each row read the one value it needs; that touches the
-  file and voice bubbles' whole surface, so it wants a device trace first to
-  show it is the thing that hurts.
-* `observeChats` recomputes the newest message per conversation with a
-  correlated subquery on every message change, including a read tick. It is one
-  query over an indexed table; a device trace would say whether the chat list
-  redraw is ever the slow part.
+`FileActions` was rebuilt on every recomposition of the conversation and was
+part of every row's parameters, so a progress tick on an upload recomposed the
+visible rows. It is now `@Immutable` with an `equals` over what a row actually
+draws — the transfers under way, the two messages to be said once, the notice
+and the voice state — while the callbacks are deliberately left out of that
+comparison, because they are made again on every recomposition and comparing
+them by identity is exactly what caused the redraws. The item building was
+fixed in the same round: the item list's `ZonedDateTime` per message and the
+parse of every file record are kept in small bounded caches instead of being
+recomputed. See `ui/FileBubble.kt` (the comment above `FileActions`) and
+[CHAT.md](CHAT.md) → Scrolling, which is where the reasoning lives. None of it
+has been confirmed with a device trace.
+
+## Worth knowing, and still not measured
+
+* `observeChats` finds each conversation's newest message with a subquery
+  (`SELECT MAX(seq) … GROUP BY peer`) and counts unread per conversation, on
+  every message change, including a read tick. It is one query over an indexed
+  table; a device trace would say whether the chat list redraw is ever the slow
+  part.
 
 ## What a device trace should collect
 

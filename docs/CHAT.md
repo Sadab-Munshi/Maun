@@ -41,10 +41,11 @@ this phone…") are not messages and cannot be selected.
 A reaction is a message of its own, sealed with the same Double Ratchet session
 as everything else, so the relay carries it without learning who felt what about
 which message. What travels is a payload with the message's ID, the emoji, and
-the time it was chosen (`Payload.Reaction`). Only emoji from a fixed list travel
-— the six on the bar and the twelve behind `+` — so a reaction cannot be used to
-send text past the reader's expectations, and a character a newer Maun knows is
-dropped by an older one instead of being shown as something else.
+the time it was chosen (`Payload.Reaction`). Only emoji from a fixed list travel. Five appear on the bar at the tapped
+bubble (👍 ❤️ 😂 😢 🙏); twelve more are accepted by the decoder, making 17 in
+all. The bar offers no `+` and no way to send those other twelve from the app.
+A character a newer Maun knows is dropped by an older one instead of being shown
+as something else.
 
 Storage is one row per message and side (`reactions`, primary key on
 `message_id` and `mine`), so each side has at most one emoji on a message and a
@@ -69,9 +70,15 @@ whose ID is not a message ID is dropped at the payload, and the text arrives
 without it. Deleting the quoted message leaves the answer without a quote rather
 than removing the answer.
 
-The database is version 6. The migration from 5 is Room's own: one new table and
-one new column (`outbox.wakes`, which says that an entry with no message of its
-own — a reaction — should still wake the other phone, unlike a receipt).
+The database is version 7 (`data/AppDatabase.kt`), and every step from 2 to it
+is Room's own `AutoMigration`; there is no hand-written migration and no
+destructive fallback past version 1. Replies are what version 7 adds
+(`messages.reply_to`); the step before it added `outbox.wakes` — an entry with
+no message of its own, a reaction, should still wake the other phone, unlike a
+receipt — and the `reactions` table. The committed schemas in
+`android/app/schemas/org.maun.messenger.data.AppDatabase/` are what CI checks
+against; [DATABASE.md](DATABASE.md) lists what each version added and what each
+table holds.
 
 ## Scrolling (Round 10)
 

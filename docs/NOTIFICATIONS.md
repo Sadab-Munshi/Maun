@@ -17,10 +17,11 @@ phone: what has been *proved* and what is still *suspected* are kept apart.
    says one word: `message` (or `call`, for a call that is ringing). It carries
    no plaintext, no sender and no message bytes. Headers: `TTL: 86400`,
    `Urgency: high`.
-4. **Google's push service** — there is no Firebase project and no Firebase SDK
-   anywhere in Maun. `org.unifiedpush.android:embedded-fcm-distributor:3.1.0`
-   asks Play services for a Web Push endpoint using the app's VAPID key, and
-   Play services delivers to the app. This is why requests to
+4. **Google's push service** — there is no Firebase project and no
+   `FirebaseMessagingService` in the app. UnifiedPush's
+   `org.unifiedpush.android:embedded-fcm-distributor:3.1.0` asks Play services
+   for a Web Push endpoint using the app's VAPID key, and Play services delivers
+   to the app. This is why requests to
    `fcm.googleapis.com` show up in the Worker's metrics: they are step 3.
    (A UnifiedPush app such as Sunup, when one is installed, is the same step
    with a different operator.)
@@ -91,8 +92,8 @@ by a test that fails without the change.
    The relay allowed one outstanding wake-up (`pending`) and then waited for
    the phone. If the push service accepted it but the phone never connected —
    a dozing device, a distributor that dropped the message, a fetch that failed
-   — nothing tried again until *the next message*, or until the queue's 7-day
-   expiry. That is the shape of "the message sat at one tick until I opened the
+   — nothing tried again until *the next message*, or until the queue's 30-day
+   expiry (`QUEUE_TTL_MS`). That is the shape of "the message sat at one tick until I opened the
    app": the phone had been told once, silently failed, and was never told
    again.
    → Fixed: every wake-up now arms a short retry chain on the relay's own
@@ -117,6 +118,15 @@ by a test that fails without the change.
    next interval; a queue that did not move means another wake-up, whatever the
    socket says. Only an empty queue ends it. Test: *keeps looking while nothing
    is taken, even on a socket that says it is connected*.
+
+   **A brand-new address gets a little patience.** A push service that answers
+   *gone* for an address the phone left less than ten minutes ago
+   (`PUSH_SETTLE_MS`) has almost certainly not finished registering it, not
+   rejected it. The relay therefore tries that address again after 5 s, 10 s and
+   15 s (`PUSH_SETTLE_WAITS_MS`), stopping early if the phone connects by
+   itself, and only then records the answer the phone sees at its next login.
+   Without this, the first message after a fresh install could be marked
+   undeliverable by a service that was about to work.
 
 5. **Nothing measured the part of the delay the relay cannot see.**
    The mailbox records the push service's HTTP status (`push_result`) and the
@@ -172,13 +182,19 @@ trace above can settle them on a real phone.
   Telecom, `RingService` with a 30-second wake-up TTL and cancellation, and
   urgent repeat at 2 s; no always-on call service. Nothing needed changing.
 * **Delivery and read receipts, `ack`, queue deletion.** Untouched.
-* **No polling was added.** No battery-optimisation bypass is requested by the
-  app; the only background schedule is the existing hourly catch-up worker.
+* **No polling was added.** There is an hourly catch-up worker. Maun does not
+  silently exempt itself from battery optimisation: the home screen offers an
+  explicit **Let Maun run in the background** action to open Android's own
+  exemption prompt (`DeliveryCard.kt`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`).
 * **"Stay connected"** stays off by default and remains a fallback, not a
-  requirement. It is no longer offered in Settings (Round 8: the technical
+  requirement. Settings no longer offers it (Round 8: the technical
   push/background controls came out, and a plain Notifications section went in
-  their place); the fallback still exists inside the app for phones where
-  nothing can wake Maun.
+  their place), and in 0.29.0 nothing on any screen turns it on either — no
+  caller of `MainViewModel.setStayConnected` exists in `ui/`. The preference,
+  `push/ConnectedService.kt` and the home screen's delivery card that explains
+  it when it *is* on all still exist, so a phone that had it switched on in an
+  earlier version keeps it, and the card tells it the truth. Re-offering a
+  switch is an open question, not a built feature.
 
 ## Messages that cannot leave yet (Round 10)
 
@@ -210,9 +226,10 @@ with the same ID, and the receiving phone ignores a message ID it already has
   already accepts *any* UnifiedPush distributor, which is what HMS-only phones
   would need to install (Sunup or ntfy work there). Adding a Huawei provider was
   therefore not attempted rather than added untested.
-* **De-Googled phones.** UnifiedPush is the supported path today, and Settings
-  lets the user pick a distributor and turn Google's service off. Nothing new
-  was needed.
+* **De-Googled phones.** UnifiedPush is the supported path today: the delivery
+  card at the top of the home screen lists the push apps the phone has and lets
+  the user pick one, or turn Google's service off, where there is more than one.
+  Nothing new was needed.
 * **`fcm.googleapis.com` is Google's own Web Push endpoint**, reached only
   because Play services hands out the address; Google sees the timing, the size
   of the wake-up and the mailbox's VAPID key — never the message.

@@ -8,7 +8,10 @@ did not.
 
 ## What the two builds actually differ in
 
-A real comparison of the two APKs, not a guess:
+A real comparison of the two APKs, not a guess. The table is taken from the
+0.24.0 release, the one the report was about; the differences it describes are
+in `android/app/build.gradle.kts` and have not changed since — only the version
+numbers on the file names have.
 
 | | debug (`app-arm64-v8a-debug.apk`) | release (`maun-0.24.0-29-arm64-v8a.apk`) |
 | --- | --- | --- |
@@ -18,13 +21,15 @@ A real comparison of the two APKs, not a guess:
 | permissions | the same list | the same list |
 | services and receivers | the same | the same |
 
-The permission, service and receiver lists are identical; the only manifest
-differences are the `.debug` package name, the FileProvider authority,
-androidx-startup's initializer and the debug-only
-`DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`. So nothing was added to the release
-build that could explain a warning by itself. What is different is that the
-release APK is **signed with a key Google has never seen**, is **new**, and is
-installed **from a file rather than from Google Play**.
+For that 0.24.0 comparison, the permission, service and receiver lists were
+identical; the manifest differences were the `.debug` package name, the
+FileProvider authority, androidx-startup's initializer and the debug-only
+`DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`. That comparison did not establish a
+manifest cause. The release was signed with Maun's permanent key and installed
+from a file rather than Google Play. Whether Google had seen that key, whether
+low install prevalence caused the warning, and whether anything else triggered
+it cannot be inferred from the APK comparison; the exact on-device wording is
+still needed.
 
 ## Telling the warnings apart
 
@@ -54,10 +59,11 @@ does declare, and why:
 | `POST_NOTIFICATIONS` | saying that a message arrived |
 | `VIBRATE`, `WAKE_LOCK`, `MODIFY_AUDIO_SETTINGS`, `USE_FULL_SCREEN_INTENT`, `MANAGE_OWN_CALLS`, `FOREGROUND_SERVICE(_MICROPHONE/_PHONE_CALL/_CAMERA/_REMOTE_MESSAGING)` | calls: ringing over the lock screen, the earpiece, the call continuing off screen |
 | `RECEIVE_BOOT_COMPLETED` | registering the wake-up address after a restart |
+| `ACCESS_COARSE_LOCATION`, `ACCESS_FINE_LOCATION`, `FOREGROUND_SERVICE_LOCATION` | sharing where you are with one person, for the minutes you chose; asked for when the button is pressed, used only while a share runs, and always with a notification that can stop it |
 | `USE_BIOMETRIC` | the optional app lock; Android does the check, Maun only learns whether it matched |
-| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | the user asking the phone not to put Maun to sleep, from Settings |
+| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | the user explicitly asking Android not to put Maun to sleep, from the home screen's delivery card |
 | `REQUEST_INSTALL_PACKAGES` | "Check for updates" hands a downloaded APK to Android's own installer |
-| `WRITE_EXTERNAL_STORAGE` (`maxSdkVersion=28`) | saving a received file on Android 9 and older only |
+| `WRITE_EXTERNAL_STORAGE` (`maxSdkVersion=28`) | saving a received file directly on Android 9 and older. Maun's `minSdk` is 29, so on every phone it installs on this permission is never granted and saving goes through MediaStore; it stays declared as the honest remainder of that fallback path |
 
 No advertising SDK, no analytics, no dynamic code loading, `allowBackup=false`,
 `usesCleartextTraffic=false`, `debuggable=false`, one ABI per APK, target SDK 36.
@@ -111,16 +117,21 @@ With that answer:
 
 ## Verifying a download before installing it
 
-Every release publishes both APKs. These are the checksums of the two files
-attached to the newest release, taken from the published assets:
+Every release publishes both APKs. These were the two files attached to the
+newest release when this section was last checked — 0.29.0, version code 36:
 
 ```
-9153ec04cc00254b689b4ce29acad980164c2c44b77dc1561a5b1ab4cddc115e  maun-0.24.2-31-arm64-v8a.apk
-623ae0bab3a9125cd5cf9b78d9ade56c1a70758a90c34f273dfcd29ab746f14b  maun-0.24.2-31-armeabi-v7a.apk
+9045f5b0bb35ec9e33639ef26c34194fcfdaca7ea98487ec6257a883ec9358c2  maun-0.29.0-36-arm64-v8a.apk
+7d54dfa6d6a1efc3d29f88d88b4c4d61e4a6c27585d3d4bd719cbab32e1179d0  maun-0.29.0-36-armeabi-v7a.apk
 ```
 
-(0.24.1: `29dbe9f1…a1f724f0` and `fb832c2e…5d46863d`. 0.24.0: `2119e617…2c470cc8`
-and `b7bd40a6…a32d8ce`. Every release page keeps its own files.)
+This list goes stale with every release, so treat the release page as the
+source, not this file: each one carries its two APKs, and these two sums were
+computed from those published files. `release.yml` attaches only the APKs and
+publishes no checksum file, so a release's sums have to be computed from its
+assets — by `sha256sum` on a computer, or by a file manager that shows one. (Older ones, for the record — 0.24.2:
+`9153ec04…4cddc115e` and `623ae0ba…ab746f14b`; 0.24.1: `29dbe9f1…a1f724f0` and
+`fb832c2e…5d46863d`; 0.24.0: `2119e617…2c470cc8` and `b7bd40a6…a32d8ce`.)
 
 On a phone, a file manager that shows a checksum, or `sha256sum` on a computer,
 confirms the file is the one the project published. The signing certificate is

@@ -3,7 +3,26 @@
 Based on `PROJECT.md` and `TECHNICAL.md`.
 App name: **Maun** (Hindi/Sanskrit for "silence"). Package ID: `org.maun.messenger`.
 
+> **This is a working record, not a description of the app.** It is the plan as
+> it was written and then changed while building: the milestones, the reasons
+> each decision went the way it did, and what was known at the time. Entries
+> below are frozen as they were written, including their state at that moment
+> ("not yet tried on a phone" in an entry from 0.12.0 does not mean that today).
+>
+> For what the app does **now**, read [README.md](README.md) for the product,
+> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the system, and the topic
+> documents it links — [NOTIFICATIONS.md](docs/NOTIFICATIONS.md),
+> [LOCATION.md](docs/LOCATION.md), [CHAT.md](docs/CHAT.md),
+> [SECURITY.md](docs/SECURITY.md), [DATABASE.md](docs/DATABASE.md),
+> [RECOVERY.md](docs/RECOVERY.md). Where this file and those disagree, they are
+> right: the code is the source of truth, and they were written against it.
+
 ## Progress
+
+**Historical snapshots, not a live dashboard.** Each row preserves the state
+and verification available when that milestone was recorded; dates/version
+numbers within a row identify that snapshot. For current behavior and open
+verification, use the linked topic documents and code above.
 
 | Milestone | State |
 |---|---|
@@ -23,7 +42,7 @@ App name: **Maun** (Hindi/Sanskrit for "silence"). Package ID: `org.maun.messeng
 | M5. Calls | **Voice and video calls confirmed working on the owner's phones (0.9.0, 0.10.0).** How video was built: camera on the call's connection at 640x480 and at most 800 kbit/s, the other person full screen with one's own picture in a corner, camera off and front/back, and a long video description packed (deflate) so that it still fits one message. Earlier: Relay: short-lived TURN credentials from the owner's key, with a daily limit; a message can be marked urgent to wake a phone that was woken a moment ago; messages say how long they waited. App: offer, answer and candidates travel as encrypted messages and are never queued; relay-only WebRTC; ringing on both sides, earpiece and loudspeaker, mute, a screen over the lock screen, a foreground service while a call lasts, and a line in the conversation afterwards. The message path of a call is tested between two test phones through the relay. **The call itself (WebRTC, sound, ringing, the service) has not run anywhere**: there is no phone or emulator here. Also in 0.9.0: recording a voice message is now tap, then pause, delete or send; and the CI build really has the relay address built in. |
 | App 0.7.0 and relay: starting over, phone bans, admin page | **Built, tested in CI and deployed.** Contacts follow a member to their new ID after a reinstall; members who write are added by username; phones are reported with the login and can be banned; the admin page needs a password as well as the email code, can have its own host name, and shows a searchable table. Run once end to end against a local member-only relay (two phones, two reinstalls, a phone ban) and in a real browser. Database version 4. Restoring old messages after a reinstall is **not** built: see "Open: encrypted backup". |
 | App 0.6.0: no loading flicker | **Built, tested in CI.** Chats at the top of the list are read ahead and recent ones kept in memory; pictures get a small encrypted copy and keep their room in the list; "Connecting…" appears only after three seconds. Not measured on a phone. |
-| M6. Hardening and release | Not started |
+| M6. Hardening and release | **Partly done, long after this table stopped being updated.** History; versioning; the permanent signing key; `release.yml`, which builds, checks the certificate and publishes a GitHub Release with both APKs; the in-app "Check for updates", which verifies the application id, the version code and the signature before handing anything to Android; the Play Protect work in [docs/PLAY_PROTECT.md](docs/PLAY_PROTECT.md); no analytics; `allowBackup=false`. **Android Key Attestation is not built** (§M6 below still describes it as planned), and neither is the pre-registration "delete my ID and start again" flow. See [docs/RELEASE.md](docs/RELEASE.md) and [docs/SECURITY.md](docs/SECURITY.md). |
 
 ### M3 results
 
@@ -77,17 +96,17 @@ A backup that the relay cannot read needs a secret that only the user has and th
 Asked for by the project's owner, and each a departure from the original overview ("no phone number, SIM or email", "no analytics"):
 
 - **A relay can be member-only.** An email address is then tied to each ID and kept on the relay with the phone's make, model and a fingerprint. The owner of such a relay knows which person writes to which. It is a mode of the relay, off unless `ADMIN_EMAIL` and a mail key are set; an open relay still knows nobody.
-- **The email login is used once per phone, not on every request.** The request was to attach a login token to every request. Such tokens expire and a closed app cannot do an email login, so messages would stop arriving until the user logged in again. Instead the login ties the address to the ID once and its ticket is then deleted; every connection is still signed by the phone's hardware key, and the relay asks its member list at every login and at most a minute late on an open connection. Chosen by the owner when asked.
+- **The email login is used once per phone, not on every request.** The request was to attach a login token to every request. Such tokens expire and a closed app cannot do an email login, so messages would stop arriving until the user logged in again. Instead the login ties the address to the ID once and its ticket is then deleted; every connection is still signed by the phone's Android Keystore key (hardware backing is attempted where available, but software fallback is allowed and the relay does not validate attestation; see [docs/SECURITY.md](docs/SECURITY.md)), and the relay asks its member list at every login and at most a minute late on an open connection. Chosen by the owner when asked.
 - **Files go through the Worker, not to a presigned R2 link.** A presigned link cannot cap the size on the server and needs R2 API keys kept as secrets. The Worker checks the sender and the size, then streams to the bucket. Chosen by the owner when asked.
 - **HTTP requests carry a token from the relay login.** `ready` hands out a `files` token, valid until the next login; the app's OkHttp interceptor adds it and watches for `403 {"error":"banned"}`.
 - **Messages are still fetched over the WebSocket after a wake-up**, not over an HTTP API: that part was already built and delivers in order with acknowledgements.
 - **The fingerprint is recorded, not enforced.** It includes the system build, so an Android update changes it; blocking on a change would lock members out. `users.device_changed_at` shows the change to the owner.
-- **A ban deletes messages and files on the phone, not contacts or the ID**, so that it can be undone.
+- **Original M3 plan:** a ban deleted messages and files on the phone, not contacts or the ID. **Current behavior:** a ban retires the relay mailbox queue and shares and prevents relay access; it does not delete the local database or immediately delete R2 files. Lifting the ban lets the phone keep using its local history. See [README.md](README.md) and [docs/SECURITY.md](docs/SECURITY.md).
 
 ### Changed while building M3
 
 - **Google's push service wakes the phone where no push app is installed (0.3.1).** This reverses the spec's "without Google Firebase (FCM)". Reason: the alternatives each ask something of the user, a second app to install or a permanent notification, and the request was for delivery that works like WhatsApp's with nothing running. How it is done keeps most of what the spec was after:
-  - No Firebase project, no Google library in the app, no Google account or key for the relay. The app asks Google Play services, which the phone already runs, for a standard Web Push address. The relay sends it the same encrypted, signed wake-up it would send any push service.
+  - **Original intent (0.3.1):** no Firebase project, no Google account or key for the relay. **Current implementation (0.29.0):** still no Firebase project; the app does include UnifiedPush's `embedded-fcm-distributor` library to ask Google Play services for a standard Web Push address. There is no `FirebaseMessagingService`. The relay sends the same encrypted, signed wake-up it would send any push service. The user can choose a different installed distributor or turn Google's route off from the home screen's delivery card; see [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
   - **What Google learns:** that this phone has Maun, that it was woken, and when. Not who wrote, not the message, not the phone's Maun ID.
   - It is used only when no push app is installed, and "Do not use Google" on the home screen turns it off. A phone without Google Play services is unaffected.
 - **A new address may be refused for a few seconds.** Google answered "gone" (HTTP 410) for 8 of 20 addresses when a wake-up followed straight after creating them, and accepted every one within 10 seconds. The relay used to drop an address on "gone". For ten minutes after an address is left, it now tries again after 5, 10 and 15 seconds and keeps the address. Whether Play services on a phone shows the same delay is not known.
@@ -138,7 +157,7 @@ Not checked yet, because it needs phones:
 - **Messages arrive only while the app is open**, and for 10 seconds after leaving it. Background delivery is M3.
 - **Known limit, for M6:** if the connection drops in the instant between creating a batch of one-time keys and uploading it, those 50 keys stay on the phone unused. Nothing breaks, but they are never cleaned up.
 - **Known limit:** the conversation screen shows the newest 500 messages. Older ones stay on the phone but there is no way to scroll to them yet.
-- The database is at version 3. `android/app/schemas/3.json` is produced by the build; CI fails if the committed copy differs.
+- The database is at version 3. `android/app/schemas/3.json` is produced by the build; CI fails if the committed copy differs. *(Written when the path was assumed flat: Room actually writes `android/app/schemas/org.maun.messenger.data.AppDatabase/<version>.json`, which is where versions 2 to 7 now live. The check itself has been in `build-android.yml` since M2, and still compares the committed copy.)*
 
 ### M1 results
 

@@ -4,6 +4,11 @@ This is the follow-up sheet to `docs/PLAY_PROTECT.md`. It is for the one thing
 code cannot do: asking Google to correct a classification, and recording what
 the phone actually said.
 
+It was written when 0.24.2 was the newest release, and its example file names
+and the "Facts to paste" block have been brought up to 0.29.0 (versionCode 36).
+When a newer release exists, read the version and checksum off that release
+page — nothing else here changes.
+
 ## First: which file is on the phone
 
 The two workflows leave two different APKs behind, and they are not
@@ -11,7 +16,7 @@ interchangeable:
 
 | Artifact | Contains | Package id | Signed with |
 | --- | --- | --- | --- |
-| `maun-release-apk` (Release workflow) | `maun-0.24.2-31-arm64-v8a.apk`, `…-armeabi-v7a.apk` | `org.maun.messenger` | the permanent release key |
+| `maun-release-apk` (Release workflow) | `maun-<version>-<code>-arm64-v8a.apk`, `…-armeabi-v7a.apk` | `org.maun.messenger` | the permanent release key |
 | `maun-debug-apk` (Android workflow) | `app-arm64-v8a-debug.apk`, `app-armeabi-v7a-debug.apk` | `org.maun.messenger.debug` | a debug key made on the build machine |
 
 Both artifacts are **zip files**. The `.apk` has to be extracted first; handing
@@ -25,9 +30,9 @@ file being tested is not the release at all.
 To tell what a file is, on a computer:
 
 ```
-apksigner verify --print-certs maun-0.24.2-31-arm64-v8a.apk   # the certificate
-sha256sum maun-0.24.2-31-arm64-v8a.apk                        # compare with PLAY_PROTECT.md
-unzip -l maun-release-apk.zip                                 # what is inside the artifact
+apksigner verify --print-certs maun-0.29.0-36-arm64-v8a.apk  # the certificate
+sha256sum maun-0.29.0-36-arm64-v8a.apk                       # compare with PLAY_PROTECT.md
+unzip -l maun-release-apk.zip                                # what is inside the artifact
 ```
 
 On the phone, Settings → Apps → Maun shows the version; a debug install appears
@@ -67,9 +72,9 @@ Facts to paste, all of which are true of this repository:
 ```
 App name:      Maun
 Package name:  org.maun.messenger
-Version:       0.24.2 (versionCode 31), targetSdkVersion 36, minSdkVersion 29
-Binary:        https://github.com/Sadab-Munshi/Maun/releases/download/v0.24.2/maun-0.24.2-31-arm64-v8a.apk
-               sha256 9153ec04cc00254b689b4ce29acad980164c2c44b77dc1561a5b1ab4cddc115e
+Version:       0.29.0 (versionCode 36), targetSdkVersion 36, minSdkVersion 29
+Binary:        https://github.com/Sadab-Munshi/Maun/releases/download/v0.29.0/maun-0.29.0-36-arm64-v8a.apk
+               sha256 9045f5b0bb35ec9e33639ef26c34194fcfdaca7ea98487ec6257a883ec9358c2
 Source:        https://github.com/Sadab-Munshi/Maun
 Signing cert  35564CDE8213C64B4354421DC57523E7591979A466FD5E0EA81CF4D91C5B41FD
               (the same key for every release; apksigner verify --print-certs)

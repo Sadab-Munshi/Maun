@@ -8,14 +8,19 @@ A simple, fast, private messaging app—similar to WhatsApp—built from the gro
    - Instant one-on-one encrypted messaging.
    - Delivery indicators (Sent, Delivered, Read) without public "last seen" or online status surveillance.
 2. **Voice Messages**
-   - Hold-to-record lightweight voice notes that play smoothly even on slow connections.
+   - Lightweight voice notes that play smoothly even on slow connections. Press
+     the microphone once to start and once to stop; the recording can be paused,
+     thrown away or sent (it is tap-then-tap, not hold-to-talk).
 3. **Voice & Video Calls**
    - Encrypted one-on-one audio and video calls with IP-address protection so callers cannot see each other's physical location/IP.
 4. **Capped File Sharing**
    - Send documents, images, and files up to a strict size limit (e.g., 25 MB per file).
    - Shared files automatically self-destruct from the relay server after 24 hours.
 5. **Private Identity (No Phone Numbers)**
-   - Users connect using a generated private ID or username—no SIM card, phone number, or email required.
+   - Users connect using a generated private ID or username—no SIM card and no
+     phone number. An open relay asks for no email either. A member-only relay
+     (an option an operator can turn on) does: that is how it decides who may
+     join, and the address is used for nothing else.
 
 ## What We Are Intentionally Leaving Out
 - No status updates / stories

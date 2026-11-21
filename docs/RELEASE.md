@@ -2,7 +2,9 @@
 
 Everything about putting a new Maun into people's hands: the key it is signed
 with, the workflow that builds it, the number in its name, and what an update
-does to the data already on the phone.
+does to the data already on the phone. Checked against app 0.29.0 (versionCode
+36) at `acc3494`; release-specific numbers and file names go stale, so verify
+them against `android/app/build.gradle.kts` and the release assets before use.
 
 ## The identity of the app
 
@@ -42,16 +44,17 @@ copy of the file and its password somewhere that is not a phone.
    unit tests, lint, signed release APK, signature and size checks, and the APK
    as an artifact called `maun-release-apk`. It publishes nothing.
 3. Look at the checks: the certificate digest must be the one above, the size
-   must be under 40 MB (a release APK is about 30 MB), and the tests must be
-   green.
+   must be under 40 MB (at 0.29.0, the release APKs were 24.25 MB and 21.71 MB),
+   and the tests must be green.
 4. When it is right, run **Release → Run workflow** on `main` with `publish`
    ticked. That creates the GitHub Release `v<versionName>` with the APKs
    attached and marks it the latest.
-5. Write release notes in the release body: they are what the in-app update
-   check shows.
+5. The workflow creates the release with a short, fixed body. The in-app update
+   check shows the release body, so edit or expand it after publishing if the
+   release needs feature-specific notes; check what the updater will show.
 
 The APKs are named `maun-<versionName>-<versionCode>-<abi>.apk`, for example
-`maun-0.25.0-30-arm64-v8a.apk`. `arm64-v8a` is nearly every phone made since
+`maun-0.29.0-36-arm64-v8a.apk`. `arm64-v8a` is nearly every phone made since
 2016; `armeabi-v7a` is the 32-bit fallback. The build produces one file per
 architecture so nobody downloads a copy of both native libraries.
 
@@ -78,7 +81,9 @@ compares that APK's version code with `BuildConfig.VERSION_CODE`.
   says so in a line the reader can act on.
 
 The check runs only when it is tapped. Nothing is fetched in the background, and
-nothing asks GitHub anything on a schedule.
+nothing asks GitHub anything on a schedule. The request uses `Range` and
+`Content-Range` to resume an interrupted download; details and the checks before
+Android's installer are below.
 
 ## What an update keeps
 

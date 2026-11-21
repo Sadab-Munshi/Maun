@@ -15,7 +15,7 @@ The paperclip offers both, and they are not the same thing.
 | What runs on the sending phone | nothing | a foreground service and a notification |
 | What the other phone does | nothing: it already has it | asks the relay while its card is on screen |
 | Anything to end | no | yes: Stop, the clock, or the relay |
-| On the card | a preview, and no button: the whole card is the tap | **View**, then **Open the map** while it is still moving |
+| On the card | a text card with a small map icon; the whole card is the tap | **View**, then **Open the map** while it is still moving |
 | Tapped | opens the phone's map app at that place | opens Maun's map, both of you on it |
 | What it says | the place's name, from OpenStreetMap, then the numbers | the numbers, and how far from you |
 
@@ -69,8 +69,8 @@ One row per share, in the mailbox of the phone that **shares** it:
 | `stopped` | whether somebody ended it early |
 
 The point is sealed on the phone with AES-GCM and a key of its own. That key
-travels only inside an end-to-end encrypted message, so the relay stores a
-latitude and a longitude it cannot open. It keeps **one**, not a trail: each
+travels only inside an end-to-end encrypted message, so the relay stores
+ciphertext it cannot open. It keeps **one**, not a trail: each
 point replaces the last, and a point that arrives less than five seconds after
 the previous one is refused without complaint.
 
@@ -94,21 +94,22 @@ What it cannot do:
 
 | Route | Who may call it | What it does |
 |---|---|---|
-| `POST /v1/location` | the phone that shares | `{to, minutes}` → `{share, until}` |
+| `POST /v1/location` | the phone that shares | `{to, minutes}` → `201 {share, until}` |
 | `POST /v1/location/<share>` | the phone that shares | the sealed point, as the body; `410` when the share is over |
 | `DELETE /v1/location/<share>` | the phone that shares | ends it now |
 | `GET /v1/location/<sharer>/<share>` | the named viewer | `{state, until, point, at}`, or `{state:"ended"}` |
 
-All four take the same credential as the file routes: `Authorization: Bearer
+All of these take the same credential as the file routes: `Authorization: Bearer
 <mailbox id>.<token>`, where the token is handed out at each login. A banned
-account is refused everywhere, at once.
+account is refused on the next signed-in request or membership check; this does
+not imply an immediate push to disconnect an idle phone.
 
 Limits: a share is 15 minutes to a day, 1440 minutes (clamped in the mailbox,
 not trusted from the request); a mailbox holds at most 8 shares; a point may be at most 512
 bytes; one share per viewer, so a second offer replaces the first rather than
 stacking two cards in one conversation.
 
-## The card, in four states
+## The card, in six states
 
 | State | Card says | Can do |
 |---|---|---|
@@ -275,4 +276,5 @@ first things to look at:
   and what it costs a battery to move a point every fifteen seconds;
 - that Android brings the share back by itself after it has put the app away,
   which is what the sticky service is for;
-- that the sheet's four choices stay on one line each, "Location" included.
+- that the sheet's five choices — 15 minutes, 1 hour, 4 hours, 8 hours, a day
+  (`LiveShare.CHOICES`) — stay on one line each, "Location" included.

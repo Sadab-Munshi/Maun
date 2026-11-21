@@ -4,6 +4,11 @@ Kotlin and Jetpack Compose, one module (`app`), Android 10 and newer. Signal
 protocol sessions come from libsignal; calls are WebRTC through Cloudflare's
 TURN service; the database is encrypted on the phone.
 
+How the app fits together, and what each package is for, is
+[../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md); what is stored and how it
+migrates is [../docs/DATABASE.md](../docs/DATABASE.md); what is tested and what
+needs a handset is [../docs/TESTING.md](../docs/TESTING.md).
+
 **Build and test this in GitHub Actions, not here.** The Android workflow runs
 the unit tests, lint, the debug APK, the size check and the Room schema check on
 every change; the Release workflow builds the signed APK. Pushing a branch and
@@ -21,7 +26,7 @@ reading the run is the build. See [../AGENTS.md](../AGENTS.md).
 | `.../ui/` | Every screen and view model |
 | `.../security/`, `.../voice/`, `.../updates/` | App lock and fingerprints; recording and playing; the update check |
 | `app/src/test/java/...` | Robolectric and plain unit tests, in packages that mirror the above |
-| `app/schemas/` | Room schema JSON, committed; upgrades are generated from it |
+| `app/schemas/org.maun.messenger.data.AppDatabase/` | Room schema JSON, committed (versions 2 to 7); upgrades are generated from it |
 | `debug.keystore` | Signs debug builds only, on purpose, so one installs over the last. Protects nothing. |
 
 ## Gradle tasks

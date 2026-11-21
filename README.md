@@ -6,8 +6,13 @@ analytics, no phone number, and no chat history on any server.
 - What it is and is not: [PROJECT.md](PROJECT.md)
 - Original technical spec: [TECHNICAL.md](TECHNICAL.md)
 - Build plan, decisions and progress: [PLAN.md](PLAN.md)
+- How the pieces fit and how data moves between them: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - How a phone is woken, and why it is built that way: [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)
 - Sharing where you are, and what that leaves on the relay: [docs/LOCATION.md](docs/LOCATION.md)
+- What is protected, what is not, and what each party can see: [docs/SECURITY.md](docs/SECURITY.md)
+- What is stored where, and for how long: [docs/DATABASE.md](docs/DATABASE.md)
+- The routes, frames, limits and close codes: [docs/API.md](docs/API.md)
+- How anything here is tested, and what no test covers: [docs/TESTING.md](docs/TESTING.md)
 - Building, signing and publishing a version: [docs/RELEASE.md](docs/RELEASE.md)
 - Working on this repository, with or without an AI agent: [AGENTS.md](AGENTS.md)
 
@@ -56,8 +61,9 @@ public pre-keys others need to start a conversation, and — only if its owner
 chose one — a sealed profile picture under `avatar/<id>`; per waiting message, the
 encrypted bytes, the sender's ID and the arrival time, until the recipient's
 phone collects it or 30 days pass; and, if the phone left one, the address at
-which its push service takes wake-ups. It has no names, no phone numbers, no contact lists and
-no message history.
+which its push service takes wake-ups. An open relay has no names, phone numbers or contact lists, and neither relay
+mode has message history after delivery. A member-only relay additionally keeps
+its member email ↔ ID mapping and usernames in D1.
 
 What it can see: which ID sends to which, and when. It cannot read messages or
 tell a message from a read receipt.
@@ -93,10 +99,11 @@ arrived.
 
 Two notes on how this is built. The wake-up reaches Google's push service
 as standard Web Push, which that service delivers exactly like a
-high-priority data message of its own; it needs no Firebase project and no
-Google code in the app. And the fetch runs over the same encrypted
-connection the open app uses, because each message is deleted from the relay
-only once the phone has confirmed it over that connection.
+high-priority data message of its own; there is no Firebase project, and Maun
+uses the UnifiedPush embedded-FCM distributor to obtain the standard Web Push
+address. The fetch runs over the same encrypted connection the open app uses,
+because each message is deleted from the relay only once the phone has
+confirmed it over that connection.
 
 What the push service (Google's, or the push app's) learns from this: that
 this phone was woken, and when, once for every burst of messages. It does
@@ -109,17 +116,20 @@ wake-up to the phone:
 
 - **Google's push service (the default).** The one most Android apps use.
   Nothing to install, nothing of Maun running. Maun asks Google Play services
-  on the phone for a standard Web Push address; there is no Firebase project
-  and no Google code in the app. Google learns that the phone has Maun, that
+  on the phone for a standard Web Push address; there is no Firebase project.
+  The app includes UnifiedPush's optional embedded-FCM distributor so that
+  Google Play services can provide this address. Google learns that the phone has Maun, that
   it was woken, and when; not who wrote or what. "Do not use Google" on the
   home screen turns it off.
 - **A push app instead of Google.** Install [Sunup](https://f-droid.org/packages/org.unifiedpush.distributor.sunup/)
   from F-Droid, open it once and allow it to run in the background, then open
   Maun. Maun uses it in place of Google, and Mozilla's push service carries
   the wake-up.
-- **Stay connected.** A switch on Maun's home screen. Maun keeps its
-  connection open behind a permanent notification. Nobody else is involved; it
-  uses more battery.
+- **Stay connected.** Maun keeps its connection open behind a permanent
+  notification. Nobody else is involved; it uses more battery. It is off by
+  default, and in 0.29.0 there is no switch for it anywhere in the app: the
+  code is there (`push/ConnectedService.kt`) and a phone that turned it on in an
+  earlier version still has it, but a new install cannot turn it on.
 
 Without any of these, Maun looks for messages about once an hour.
 
@@ -153,7 +163,9 @@ npx wrangler deploy
 
 Either way the relay gets an address like
 `https://maun.<your-subdomain>.workers.dev`. Opening `<address>/health` in a
-browser should show `{"ok":true,"service":"maun-relay","proto":2}`.
+browser should show `ok: true` with `service: "maun-relay"` and `proto: 2`
+alongside `access`, `calls` and `files`, which say whether the member-only
+login, calls and file storage are set up on this relay.
 
 ### 2. Install the app
 
@@ -235,8 +247,8 @@ used. A voice call stays a voice call. The button for the sound switches between
 loudspeaker, and lists a wired or Bluetooth headset when one is connected
 (on Android 12 and newer; a headset that is connected during a call is used
 at once). Calls can be started from the top of a conversation and from the
-contact's page. Both phones need app 0.11.0 or newer; with an older one a
-call may not ring.
+contact's page. Both phones need app 0.11.0 or newer (every current release
+is); with an older one a call may not ring.
 
 **Ringing.** The wake-up for a call says "call" and is dropped by the push
 service after 30 seconds, so a phone that comes back later does not ring for
@@ -343,17 +355,21 @@ ID. You get an email when somebody asks to join.
   **Lift phone ban** undoes it.
 - **Remove** a member: they would have to log in and be approved again.
 
-A banned phone or person disconnects within a minute, deletes its login and
-every message and file it holds, and shows "You have been banned". Its
-contacts and ID stay, so lifting the ban and tapping **Check again** brings
-the account back, empty.
+A banned phone or person is refused at its next relay check, has its mailbox
+queue and live shares retired, and shows "You have been banned". Relay-held
+files remain encrypted in R2 until their 24-hour expiry; a ban prevents their
+retrieval but does not immediately remove the objects. Its contacts and ID stay
+on the phone, so lifting the ban and tapping **Check again** brings the account
+back with the local history still there.
 
 A phone's ID is a SHA-256 of Android's ID for Maun on that phone and its
 make and model. It is the same after the app's data is deleted. It is what
 an unmodified app reports: someone who rebuilds the app can make it report
 another, so a phone ban stops ordinary use, not a determined programmer.
-What cannot be faked is the login key in the phone's secure hardware, and
-the email code.
+The login key is held by Android Keystore and the app never exports it, but
+some phones may use a software-backed Keystore; this relay does not verify
+Android Key Attestation, so hardware backing is **unverified**. The email code
+is a separate check.
 
 The relay sends at most 90 emails a day (Resend's free plan allows 100), at
 most 4 codes a day to one address, and one a minute.

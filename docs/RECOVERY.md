@@ -12,8 +12,14 @@ and, where it says so, exercised by a test: 49 relay tests in
 phone-side crypto and parsing by `RecoveryTest` and `AuthApiTest` in CI. Nothing
 here was confirmed on a real phone.
 
-**State at `b73823d`:** §2's gap is closed and the backup in §3 is built. Chat
-history backup (§3.3) is not built, and is not claimed anywhere in the app.
+**State at `b73823d`, re-checked at `acc3494` (app 0.29.0):** §2's gap is closed
+and the backup in §3 is built. Chat history backup (§3.3) is not built, and is
+not claimed anywhere in the app. Nothing in the recovery path changed between
+those two commits — the work that touched `Messenger.kt` in between was replies,
+forwarding, selection and reactions, sending offline, the update check, and
+location — so everything below was verified against the current code, and the
+test counts still hold (49 relay tests in the member-only suite, run on
+2026-11-16).
 
 ---
 
@@ -197,7 +203,7 @@ will see a new safety number and your old chats cannot be restored."
 | **Log out** (shipped, this round) | yes | no | no | no — everything is still on the phone |
 | **Remove account from this phone** (not built) | yes | yes | no | only to come back with the same ID |
 | **Delete account** (admin-side today) | yes | yes | yes | no, and it must not be reachable from the same dialog as Log out |
-| **Recovery** (not built) | — | — | — | yes |
+| **Recover this ID on another phone** (built on member-only relays) | — | — | no — the backup stays on the relay | yes |
 
 ## 5. Status, and what is left
 

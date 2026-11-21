@@ -1,9 +1,9 @@
 # AGENTS.md
 
 Instructions for an AI agent working in this repository. The [README](README.md)
-is for people who use Maun; this file is for whoever maintains it. Read it before
-changing anything, and keep it true: when a command, a workflow or a rule here
-stops matching the repository, fix the file in the same change.
+is for people who use Maun; this file is for whoever maintains it. Read it
+before changing anything, and keep it true: when a command, a workflow or a rule
+here stops matching the repository, fix the file in the same change.
 
 ## What this is
 
@@ -15,10 +15,36 @@ Two parts, in one repository:
 | Part | What it is | Runs on |
 |---|---|---|
 | `backend/` | The relay: one Cloudflare Worker plus a Durable Object per account. TypeScript. | Cloudflare Workers, tested in Cloudflare's local runtime |
-| `android/` | The app: Kotlin, Jetpack Compose, libsignal, WebRTC. | Android 10 and newer |
+| `android/` | The app: Kotlin, Jetpack Compose, libsignal, WebRTC, MapLibre. | Android 10 and newer |
 
 The version is `versionCode` and `versionName` in
 `android/app/build.gradle.kts`. Nothing else is authoritative.
+
+## Before you change anything
+
+**Read the code that does the thing.** Every document here was written by
+reading it, and documents drift; the code does not. Then read the document that
+owns the area, because most of the non-obvious parts of this app are
+non-obvious on purpose and the reason is written down.
+
+| A task about… | Read first | The code is |
+|---|---|---|
+| How the pieces fit at all | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | — |
+| Waking a sleeping phone, notifications, background work | [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) | `android/.../push/`, `Mailbox.wake` in `backend/src/mailbox.ts` |
+| Sending, receiving, receipts, requests, blocking, reactions, replies | [docs/CHAT.md](docs/CHAT.md) | `ChatEngine.kt`, `Payload.kt`, `ui/ChatScreen.kt` |
+| Live location, the map, a place sent once | [docs/LOCATION.md](docs/LOCATION.md) | `LiveLocation.kt`, `network/LocationApi.kt`, the `/v1/location` routes in `backend/src/index.ts` |
+| Calls | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §4 | `webrtc/`, `backend/src/turn.ts` |
+| What a route, frame or limit is | [docs/API.md](docs/API.md) | `backend/src/protocol.ts` (canonical) |
+| Stored data, migrations, retention | [docs/DATABASE.md](docs/DATABASE.md) | `data/`, `ensureTables()` in `mailbox.ts`, `SCHEMA` in `members.ts` |
+| Anything cryptographic, or a boundary | [docs/SECURITY.md](docs/SECURITY.md) | `crypto/`, `backend/src/crypto/` |
+| Logging in, members, banning, the admin page, recovery | [docs/RECOVERY.md](docs/RECOVERY.md) | `backend/src/{auth,members,admin-page,mail}.ts` |
+| Tests, or what is not tested | [docs/TESTING.md](docs/TESTING.md) | `backend/test/`, `android/app/src/test/` |
+| Versioning, signing, publishing, the updater | [docs/RELEASE.md](docs/RELEASE.md) | `.github/workflows/release.yml`, `updates/` |
+| Why something was built the way it was | [PLAN.md](PLAN.md), [TECHNICAL.md](TECHNICAL.md) — both historical | the code |
+
+`PLAN.md` and `TECHNICAL.md` are records of decisions, not descriptions of the
+app. Do not "fix" them to match today; add a line to the deviations table in
+`TECHNICAL.md` or to the decision log in `PLAN.md` if a decision has changed.
 
 ## Never
 
@@ -40,10 +66,12 @@ The version is `versionCode` and `versionName` in
 - **Never claim something was verified on a phone when it was not.** Ringing,
   notifications, battery and background behaviour need a handset. Say
   "pending on a device" and mean it.
+- **Never change behaviour while claiming to change documentation.** Separate
+  commits, and say which is which.
 
 ## Commands
 
-Backend. Node 22.12 or newer is required by `wrangler`; CI uses 24.
+Backend. `wrangler` needs Node 22.12 or newer; CI uses 24.
 
 ```sh
 cd backend
@@ -53,6 +81,7 @@ npm test                           # open relay, then member mode
 npx vitest run --config vitest.config.ts test/push.test.ts     # one file
 npx vitest run --config vitest.config.ts test/push.test.ts -t "part of a name"
 npm run dev                        # local relay on http://127.0.0.1:8787
+npm run bench                      # signature verification benchmark
 ```
 
 `npm test` runs **two** configurations: `vitest.config.ts` (an open relay) and
@@ -62,21 +91,26 @@ npm run dev                        # local relay on http://127.0.0.1:8787
 Android. In CI, not locally:
 
 ```sh
-./gradlew :app:testDebugUnitTest   # unit tests, Robolectric
-./gradlew :app:lintDebug           # lint fails the build on errors
-./gradlew :app:assembleDebug       # app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:testDebugUnitTest              # unit tests, Robolectric
+./gradlew :app:testDebugUnitTest -Pmaun.screens=true   # draw the screens to app/build/screens
+./gradlew :app:lintDebug                      # lint fails the build on errors
+./gradlew :app:assembleDebug                  # app/build/outputs/apk/debug/
 ```
 
 The connection and messaging tests need a relay: start
 `backend/scripts/test-relay.sh` and run them with
 `MAUN_TEST_RELAY_URL=http://127.0.0.1:8787`. Without it they are skipped, which
-is why CI runs them with a relay started first.
+is why CI runs them with a relay started first — and fails if they skipped.
+
+Counts, what each suite covers and what no test can cover are in
+[docs/TESTING.md](docs/TESTING.md). Do not copy numbers out of it into a report
+as if you had run them; run them, or say "not run".
 
 ## Which workflow answers what
 
 | Workflow | Answers |
 |---|---|
-| **Android** (`build-android.yml`) | Do the app's unit tests pass, does lint pass, does the debug APK build, is it under the size limit, is the Room schema committed |
+| **Android** (`build-android.yml`) | Do the app's unit tests pass, do the relay tests really run, does lint pass, does the debug APK build, is it under the size limit, is the Room schema committed |
 | **Backend** (`deploy-backend.yml`) | Do the relay tests pass in both modes, does TypeScript type-check; deploys on `main` **if** `CLOUDFLARE_API_TOKEN` is set |
 | **Release** (`release.yml`) | Does the signed release APK build, is it signed with the permanent key, is the version right, is it under 40 MB; publishes only when started by hand with `publish` ticked |
 | **Screens** (`screens.yml`) | Draws the main screens with made-up people, for looking at. Nothing is compared. |
@@ -85,121 +119,116 @@ is why CI runs them with a relay started first.
 Read the run's steps, not just the colour: a green run with a skipped step is
 not a step that passed.
 
-## Definition of done
+## How to approach a change
 
-1. A behaviour change comes with a test that **fails before** it and **passes
-   after** it, and the report quotes both outputs. Adding the test and the fix
-   in one commit is fine only when the test is a pure-function test of something
-   that did not exist before; otherwise land the test first and show it red.
-2. Backend: `npm run typecheck` and `npm test` both clean.
-3. Android: the **Android** workflow green on the branch you are proposing.
-4. Docs that the change makes wrong are updated — `README.md` for what users
-   see, `docs/` for the deep explanations, this file if a command or a rule moved.
-5. The report says: what you ran, what you did not run, what still needs a
-   phone, and anything you could not do because it needs the owner (deploy,
-   publish, a device).
+**A bug.** Reproduce it first, in a test if the bug is in code a test can reach
+(`backend/test/`, `android/app/src/test/`), otherwise in a written account of
+what was seen and on which build. Then find the layer the bug is really in
+before editing: a message that arrives late can be the relay's retry chain, the
+push address, the fetch worker, or the notification — `docs/NOTIFICATIONS.md`
+lists what has been blamed for that symptom and what it turned out to be. Fix
+the cause, keep the shape of the surrounding code, and say in the commit body
+what was seen before and after.
 
-## Things only the owner can do
+**A feature.** Establish what already exists. Several features have been
+half-built twice here because the second attempt did not read the first. Then
+decide where it belongs: the phone, the relay, or both. If it changes what
+crosses the wire, `protocol.ts` is edited first, both sides in the same pull
+request, and [docs/API.md](docs/API.md) with them. If it changes what is stored,
+[docs/DATABASE.md](docs/DATABASE.md) and the Room schema as well.
 
-- **Deploy the relay.** This repository has no `CLOUDFLARE_API_TOKEN`, so the
-  Backend workflow's deploy step is *skipped* and says so. Do not report a
-  deploy as done. The command, if they want it, is `cd backend && npx wrangler deploy`.
-- **Sign a release.** The release key is in GitHub secrets. CI signs with it;
-  nothing on a laptop can produce an APK that installs over an existing one.
-- **Run anything on a phone.**
+**A refactor.** Change one thing. Nothing in this repository is refactored
+"while I am here": the value of a refactor is that a test failure afterwards
+has one possible cause. If a rename or a move touches a canonical implementation
+listed below, it is not a refactor — it is a change that needs its own test.
 
-## Where things are
+**A documentation change.** Do not touch code, configuration, schemas,
+dependencies or workflows. Verify every claim against the code and say where it
+was checked; mark anything that would need a phone as **unverified**; keep
+historical decisions in `PLAN.md` rather than rewriting them out of existence.
 
-| Path | What lives there |
-|---|---|
-| `backend/src/protocol.ts` | Frame shapes, limits, the timings the app and relay both rely on |
-| `backend/src/mailbox.ts` | One account's Durable Object: the queue, wake-ups, retries, limits, retirement |
-| `backend/src/index.ts` | The stateless front door, WebSocket upgrade, files, avatars |
-| `backend/src/auth.ts`, `members.ts`, `mail.ts` | Member-only mode: email codes, usernames, approvals, bans |
-| `backend/src/admin-page.ts` | The administrator's page |
-| `backend/src/turn.ts` | Short-lived TURN credentials for calls |
-| `backend/test/` | Relay tests, run in Cloudflare's local runtime |
-| `android/app/src/main/java/org/maun/messenger/` | The app. `ChatEngine.kt` and `Messenger.kt` are the centre; `crypto/`, `network/`, `push/`, `webrtc/`, `ui/`, `security/`, `voice/` around it |
-| `android/app/src/test/java/org/maun/messenger/` | Robolectric and plain unit tests, mirroring the packages above |
-| `android/app/schemas/` | Room schema JSON, committed. A database change without it fails CI. |
-| `docs/` | The long explanations: notifications, releases, recovery, Play Protect, performance |
+## Finish and report
 
-## Canonical implementations — follow these, do not invent a second way
+- Backend: run `npm run typecheck` and both halves of `npm test` when relevant.
+- Android: the Android workflow must run; do not build it locally. Device-only
+  behavior stays **unverified** until a person tests it on a phone.
+- Add a test for behavior changes; update the owning docs in the same change.
+- Report exactly what ran, what did not, what remains device-only, and anything
+  that needs the owner. Never call an unrun check successful.
+- Deploys and releases require the owner's explicit approval. The backend
+  deploy is skipped unless `CLOUDFLARE_API_TOKEN` is configured; signing uses
+  GitHub secrets.
 
-- **A wake-up.** `Mailbox.wake` in `backend/src/mailbox.ts`, with the timing
-  constants in `protocol.ts`, and `docs/NOTIFICATIONS.md` for why. The chain
-  of retries, the `seen` count and the call word are subtle; read all three
-  before touching any of them.
-- **A notification.** `push/Notifications.kt` makes every one; nothing else
-  calls `NotificationManager.notify` directly.
-- **The app's connection.** `network/RelayConnection.kt`. Nothing opens a
-  socket to the relay on its own.
-- **Encryption.** `crypto/Sessions.kt` and libsignal. Nothing hand-rolls a
-  ratchet or a key exchange.
-- **A live location.** `LiveLocation.kt` on the phone (sealing, the record,
-  the four states) and `shareStart`/`sharePoint`/`shareStop`/`sharePeek` in
-  `mailbox.ts`. Read `docs/LOCATION.md` first: the point is sealed on the phone
-  and the relay must never be handed anything it could read.
-- **Tests.** Look at the nearest existing test file and match its shape,
-  including how it names cases (a sentence, no prefix).
+## Canonical implementations
+
+- Wake-ups: `Mailbox.wake` in `backend/src/mailbox.ts`; timings in
+  `backend/src/protocol.ts`; rationale in `docs/NOTIFICATIONS.md`.
+- Relay connection: `network/RelayConnection.kt`. No second socket client.
+- Messages and payloads: `ChatEngine.kt`, `Payload.kt`, and
+  `backend/src/protocol.ts`; change both ends together.
+- Encryption: `crypto/Sessions.kt` and libsignal. Other sealed objects use
+  `crypto/FileCipher.kt` or `crypto/Recovery.kt`; do not invent ciphers.
+- Live location: `LiveLocation.kt` and `share*` in `mailbox.ts`; read
+  `docs/LOCATION.md` first.
+- Notifications: `push/Notifications.kt`; the live-location foreground service
+  posts its own ongoing notification in `push/LocationService.kt`.
+- Tests: copy the nearest test's style; sentence-case test names.
+
+## Security-sensitive areas
+
+Any change in these needs the whole path read, not the diff:
+`crypto/`, `Payload.kt`, `backend/src/protocol.ts`, `backend/src/mailbox.ts`
+(auth, queue, wake-ups, shares), `backend/src/{auth,members}.ts`,
+`data/DatabaseKey.kt`, `data/AppDatabase.kt`, `network/`, `updates/`, and
+`push/Notifications.kt` (what a locked screen may say). The rules those areas
+must keep — nothing readable by the relay, no identifiers in logs, limits as
+named constants with tests, strict parsing of every frame — are written out in
+[docs/SECURITY.md](docs/SECURITY.md) §"If you are changing something
+security-sensitive". A change there is not done until that list has been
+checked line by line.
 
 ## Gotchas
 
-- `npm run typecheck` regenerates `backend/worker-configuration.d.ts`. Commit
-  it if it changed, or the next person's type-check disagrees with yours.
-- `wrangler` refuses to run on Node older than 22.12. CI pins 24.
-- Android lint fails the build on errors, not warnings — but a new
-  `MissingPermission` around a notification is an error. Do what
-  `Notifications.incomingCall` does: check, and say so.
-- Robolectric tests run with a plain `Application`
-  (`@Config(application = Application::class)`). The real `MaunApp` starts
-  background work a unit test cannot have.
-- A notification channel's sound is fixed when the channel is created. Changing
-  it means a new channel; see `docs/NOTIFICATIONS.md`.
-- The app's update check reads the repository's latest published release. A
-  `versionCode` that does not increase means phones refuse the update.
-- `backend/scripts/test-relay.sh` is the normal relay with per-address
-  connection limits lifted, because every test phone connects from one address.
-- Debug builds are signed with the committed `android/debug.keystore` on
-  purpose: it protects nothing, and it lets one debug build install over the last.
-- A `FOREGROUND_SERVICE_*` permission and its `android:foregroundServiceType`
-  go together, or the service is killed on Android 14 and later. The location
-  kind also needs the location permission *before* `startForeground`, not after.
-- Lint's `MissingPermission` does not follow a permission check that lives in
-  another method: annotate the method that calls, as `LocationService.listen`
-  does, or do the check inline as `Notifications.showMessages` does.
+- `npm run typecheck` regenerates `backend/worker-configuration.d.ts`; review
+  the diff rather than blindly reverting it.
+- CI uses Node 24; Wrangler needs Node 22.12 or newer.
+- Robolectric uses a plain `Application`, not `MaunApp`; its background work
+  does not run in a unit test.
+- Notification-channel sound is fixed when created; a sound change needs a new
+  channel (`docs/NOTIFICATIONS.md`).
+- Keep `versionCode` increasing: the updater refuses an equal or lower version.
+- Room schemas live at
+  `android/app/schemas/org.maun.messenger.data.AppDatabase/`; commit any
+  generated schema change with the migration.
+- Backend local integration tests use `backend/scripts/test-relay.sh`; per-IP
+  limits are lifted because all test phones share one address.
 
-## Git
+## Conventions
 
-- Branch from `main`, one idea per branch, one PR per idea.
-- Commit subjects are a sentence in the present tense saying what the change
-  does, not a ticket number: "A push app that did not answer is not a phone
-  without one." The body says why, and what was seen before and after.
-- Squash-merge. Roll back with `git revert <squash-commit>`; that is one step
-  and needs no re-deploy of anything else.
-- Do not merge your own PR, and do not deploy or publish, unless the owner has
-  said so in so many words.
-
-## Writing
-
-The repository has a voice: plain, specific, and honest about limits. No
-marketing, no exclamation marks, no "simply" or "just". Say what a thing does
-and what it cannot do. When something is unproven, write "pending" and say what
-would prove it.
+Branch from `main`; one idea per PR; squash-merge; never force-push or rewrite
+published history. Commit subjects say what changed, in a sentence; the body
+says why and what was observed. Follow the nearby code and tests. Keep writing
+plain and specific: no marketing, no unsupported security or privacy claims,
+and say **unverified** when a handset or outside review would be needed.
 
 ## The docs, and what each is for
 
 | File | For |
 |---|---|
-| `README.md` | A person deploying the relay and using the app |
+| `README.md` | A person deploying the relay and using the app. The product, in their words |
 | `PROJECT.md` | What Maun is and is not, in one page |
-| `TECHNICAL.md` | The original technical specification |
-| `PLAN.md` | Build plan, decisions taken, progress |
+| `TECHNICAL.md` | The original specification, plus a table of where the build differed |
+| `PLAN.md` | Build plan, decisions taken, progress as it was recorded |
+| `docs/ARCHITECTURE.md` | The system: parts, boundaries, data flows, module responsibilities |
+| `docs/API.md` | Routes, frames, limits, close codes — an index into `protocol.ts` |
+| `docs/DATABASE.md` | Every table in every store, the migration history, retention |
+| `docs/SECURITY.md` | What is encrypted with what, who sees what, and the honest limits |
+| `docs/TESTING.md` | What is tested by machine, what needs a phone, how to run it |
 | `docs/NOTIFICATIONS.md` | How a phone is woken, and why every part of it is shaped that way |
-| `docs/CHAT.md` | Sessions, receipts, message requests, blocking |
-| `docs/LOCATION.md` | Live location: what the relay keeps, what it cannot, and what is not in v1 |
+| `docs/CHAT.md` | Selection, reactions, replies, scrolling, what a notification targets |
+| `docs/LOCATION.md` | Live location and a place sent once: what the relay keeps, what it cannot |
 | `docs/RECOVERY.md` | What survives an uninstall, a reinstall, a new phone |
 | `docs/RELEASE.md` | Building, signing and publishing a version |
 | `docs/PLAY_PROTECT.md`, `docs/PLAY_PROTECT_APPEAL.md` | The Play Protect warning, and the appeal |
-| `docs/PERFORMANCE.md` | What was measured and what it cost |
+| `docs/PERFORMANCE.md` | What the conversation screen's work costs, and what was fixed |
 | `docs/AUTHORS.md` | Who wrote what |
