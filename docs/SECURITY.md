@@ -29,7 +29,7 @@ it cannot export.
 | A live-location point | AES-256-GCM, one key per share, a fresh 96-bit IV per point | Inside the encrypted message that starts the share | `LiveLocation.kt` |
 | The whole phone database | SQLCipher, AES-256, every page | A random 32-byte key in `noBackupFilesDir/db.key`, itself wrapped by an AES key in Android Keystore | `data/AppDatabase.kt`, `data/DatabaseKey.kt` |
 | The identity backup | AES-256-GCM, key derived by PBKDF2-HMAC-SHA256, 600 000 rounds, over a passphrase the relay never sees; the Maun ID is bound in as additional authenticated data | Nowhere but the member's head | `crypto/Recovery.kt` |
-| A wake-up | RFC 8291 encryption to the push app's own keys, signed with a VAPID key per mailbox | The push app has the private key; the relay keeps only the public one and the address | `crypto/webpush.ts` |
+| A wake-up | RFC 8291 to the receiving installation with per-mailbox VAPID | Maun's connector holds the receiver private key. The relay has the subscription public key, auth secret and address. Inline records additionally carry Signal ciphertext | `crypto/webpush.ts` |
 | Proving this is the same phone | A P-256 signing key generated through Android Keystore; the app never exports the private key | It stays behind the Keystore API. StrongBox / secure-hardware backing is attempted where available, but a software-backed fallback is allowed | `crypto/DeviceKey.kt` |
 
 Transport is TLS everywhere (Cloudflare terminates it; the phone speaks `wss://`
@@ -61,7 +61,7 @@ and `https://` only).
 |---|---|---|
 | Cloudflare, carrying the relay | IP addresses while a request is in flight; mailbox IDs; which mailbox sends to which; arrival times; sizes; the push endpoint a phone left | Any message, file, picture, point or backup in the clear. The Worker itself writes no log (`backend/src/index.ts` has no `console.` call) |
 | The relay's administrator (member-only mode) | The email address ↔ Maun ID link, usernames, phone models, app versions, login counts, who is awaiting approval | Messages, or the passphrase that opens a backup |
-| The phone's push service (Google's, Sunup, Mozilla's) | That a wake-up arrived, when, and for which app | What it was for. The payload is encrypted to the push app |
+| The phone's push service (Google's, Sunup, Mozilla's) | The endpoint, timing, record size and volume. Several fixed-size records may represent one larger chat | The sender ID, recipient ID and content inside the encrypted record |
 | The mail provider | The address and the login code, once per login | Anything else |
 | Cloudflare's call service | That credentials were issued, and the media it relays while a call runs | The conversation itself; both phones use `IceTransportsType.RELAY` |
 | OpenFreeMap (map tiles) | The area being looked at, by IP | Who is looking or who they are talking to |

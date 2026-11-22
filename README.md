@@ -39,7 +39,7 @@ contacts without the relay being able to open it.
 | Signal protocol sessions (PQXDH and Double Ratchet, via libsignal) | `android/.../crypto/Sessions.kt` |
 | Sending, receiving, Sent / Delivered / Read, message requests, blocking | `android/.../ChatEngine.kt` |
 | Offline queue that deletes each message once it is collected | `backend/src/mailbox.ts` |
-| Wake-ups for a phone that is not connected: encrypted, signed, content-free | `backend/src/crypto/webpush.ts`, `backend/src/mailbox.ts` |
+| Immediate encrypted chat push and legacy wake-up support | `backend/src/crypto/webpush.ts`, `backend/src/mailbox.ts` |
 | Being woken by Google's push service or a push app, fetching, notifying | `android/.../push/` |
 | "Stay connected" for phones without a push app | `android/.../push/ConnectedService.kt` |
 | App lock, hiding Maun in recent apps, blocking screenshots | `android/.../AppLock.kt` |
@@ -70,49 +70,11 @@ tell a message from a read receipt.
 
 ### Messages while the app is closed
 
-Nothing of Maun runs while nothing is happening. The path a message takes
-to a phone whose app is closed, with the screen locked:
+When the relay stores a chat, it immediately sends the same encrypted message down any live socket and through the receiving phone's registered push service. An updated receiving app can decrypt the chat locally and show the notification before it reconnects. A locked screen shows a discreet count. Message previews on an unlocked phone follow the user's settings.
 
-1. The relay stores the encrypted message and sends the phone a **wake-up**
-   through the push service: a high-priority, data-only push that says only
-   "message" (or "call"), encrypted for the phone. It never carries anything
-   of the message itself.
-2. The push wakes Maun, which starts an **expedited job** at once. Android
-   gives such a job the network straight away, also in Doze.
-3. The job connects to the relay, fetches what is waiting, decrypts it and
-   stores it in the phone's encrypted database.
-4. It sends the **delivered** receipt back, so the sender's one tick becomes
-   two right then, without the app being opened.
-5. It shows the notification, and Maun goes back to sleep.
+The relay keeps the original until the receiver acknowledges it over the socket. A clock means the chat is pending on the sending phone. One tick means the relay stored it. Two ticks mean the receiving phone sent a delivery receipt, and two blue ticks mean the conversation was read. Delivery and read receipts themselves are quiet. Older installations use a one-word wake and then fetch.
 
-The ticks, then: a clock while the message is only on the sender's phone;
-one tick when the relay has it; two when the other phone has fetched and
-decrypted it; two blue ones when that conversation was opened and looked at.
-
-Messages that come within five seconds of each other share one wake-up.
-Receipts ("delivered", "read") never wake a phone: they have nothing to
-show, and are handed over the next time the phone is connected, which is
-the moment its owner opens the app to look at the ticks. A notification
-shows who wrote and what, like other messengers do; the text can be turned
-off in Settings, and a locked screen is only ever told that a message
-arrived.
-
-Two notes on how this is built. The wake-up reaches Google's push service
-as standard Web Push, which that service delivers exactly like a
-high-priority data message of its own; there is no Firebase project, and Maun
-uses the UnifiedPush embedded-FCM distributor to obtain the standard Web Push
-address. The fetch runs over the same encrypted connection the open app uses,
-because each message is deleted from the relay only once the phone has
-confirmed it over that connection.
-
-What the push service (Google's, or the push app's) learns from this: that
-this phone was woken, and when, once for every burst of messages. It does
-not learn by whom, and the wake-up carries nothing of the message.
-
-When a message arrives for a phone that is not connected, the relay sends a
-wake-up: encrypted, signed, and saying nothing but "wake". Maun then connects,
-fetches, and shows a notification without the message text. Who carries the
-wake-up to the phone:
+The provider can observe the endpoint, timing and number of encrypted push records. The sender and message content are sealed. Handset latency depends on connectivity, the delivery service and Android. [Delivery flow and device verification](docs/NOTIFICATIONS.md)
 
 - **Google's push service (the default).** The one most Android apps use.
   Nothing to install, nothing of Maun running. Maun asks Google Play services

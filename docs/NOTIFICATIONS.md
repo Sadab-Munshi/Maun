@@ -1,44 +1,55 @@
-# How a message reaches a sleeping phone
+# How a chat reaches a sleeping phone
 
-This is the path a message takes when Maun is not on screen, what was found
-wrong with it, and what was changed. It was written from the code, not from a
-phone: what has been *proved* and what is still *suspected* are kept apart.
+The first delivery attempt starts when the recipient's mailbox stores the message. A reachable Android installation with an inline push subscription can display it while the relay WebSocket is unavailable. End-to-end latency on a sleeping handset still requires measurement.
 
-## The path
+## Current path
 
-1. **The sender's phone** encrypts the message (Signal/`libsignal`) and sends it
-   over its WebSocket to the recipient's mailbox Durable Object.
-2. **The mailbox** (`backend/src/mailbox.ts`) stores it in the `queue` table and,
-   if the owner is not connected, wakes the phone: `store()` → `wake()` →
-   `postWake()`.
-3. **The wake-up** is a Web Push request: `POST https://fcm.googleapis.com/fcm/send/<token>`
-   when Google's push service is what wakes the phone. It is signed with the
-   mailbox's own VAPID key, the body is RFC 8291 encrypted for the phone, and it
-   says one word: `message` (or `call`, for a call that is ringing). It carries
-   no plaintext, no sender and no message bytes. Headers: `TTL: 86400`,
-   `Urgency: high`.
-4. **Google's push service** — there is no Firebase project and no
-   `FirebaseMessagingService` in the app. UnifiedPush's
-   `org.unifiedpush.android:embedded-fcm-distributor:3.1.0` asks Play services
-   for a Web Push endpoint using the app's VAPID key, and Play services delivers
-   to the app. This is why requests to
-   `fcm.googleapis.com` show up in the Worker's metrics: they are step 3.
-   (A UnifiedPush app such as Sunup, when one is installed, is the same step
-   with a different operator.)
-5. **`WakeService`** (`push/WakeService.kt`) is the app's `PushService`. On a
-   wake-up it decrypts nothing itself — the connector hands it the plaintext
-   only when the Web Push decryption succeeded, and anything that did not
-   decrypt is dropped, so someone who merely knows the address cannot make the
-   phone work. For a `call` it starts `RingService` first.
-6. **The fetch.** `messenger.fetchSoon()` starts a connection in the process,
-   and `FetchWorker.schedule()` enqueues expedited work, which is what Android
-   lets finish if the process is killed. Either way: log in, the mailbox pumps
-   the queue down the socket, the phone decrypts, stores, and `ack`s each
-   message; the mailbox deletes what is acked.
-7. **The notification** comes from the database, not from the push: `Messenger`
-   collects the chat summaries, `announceUnread()` builds an `Announcement` and
-   `Notifications.showMessages()` posts it — on a channel chosen by the user's
-   sound setting, never quoting a message on a locked screen.
+1. The sender saves the pending message and outbox entry together. At authenticated readiness, `ChatEngine` drains the outbox independently of key publication, username lookup and subscription maintenance. The sender transmits Signal ciphertext. The recipient's Durable Object stores the bytes and queue sequence before acknowledging the sender.
+2. `Mailbox.store` pumps any ready socket and immediately starts high-urgency Web Push for an eligible chat. A capable subscription receives the same Signal ciphertext in one to four padded, independently encrypted records. Fast consecutive chats each have their own payload. Legacy subscriptions get the existing fetch word. Quiet receipts use the socket. Calls retain their separate wake word, TTL and connected-call fallback.
+3. The distributor delivers a record to Maun's UnifiedPush connector. `WakeService` accepts only successfully decrypted Web Push records. The app submits a Keystore-sealed copy to expedited local work, then starts the local receive directly. Neither local path requires network access. The account, block list and Signal session authorize the actual message. Calls and control frames encountered on this path leave the ratchet available to their ordered socket handler.
+4. The app assembles larger ciphertexts in SQLCipher. Both transports use the same Signal/Room transaction and message identity. Only committed unread rows can produce an alert. `Messenger.presentUnread` compares the newest unread sequence with the durable checkpoint and the currently posted Android notification. Foreground, request, preview and lock-screen policies still apply.
+5. A separate fetch reconciles the canonical mailbox row and sends receipts. A drain request captures the highest queued sequence including arrivals since login. Android accounts for a frame after its local disposition and ACK. A failed save reopens the connection for replay. A fresh wake can interrupt ordinary reconnect backoff and runs independently of delayed recovery work. An HTTP rate-limit backoff remains binding.
+
+## Where the old delay entered
+
+Evidence in this table is pinned to main before the change. The four-second delay was reproduced with the real mailbox decision code, a simulated socket and a mock provider. These observations end at provider handoff.
+
+| Cause and failure sequence | Change |
+|---|---|
+| 1. A ready socket received the frame but returned no ACK. The mailbox waited four seconds before its first push. [Mailbox.store and wakeIfNotTaken](https://github.com/Sadab-Munshi/Maun/blob/680a38276509a840ce3d21fc28647736d6924083/backend/src/mailbox.ts#L800-L814) | Dispatch chat push during insertion, independently of socket liveness. |
+| 2. Temporary distributor discovery failure, or a malformed replacement, could erase a usable subscription. A permanently rejected endpoint could later be uploaded again. [Background.resume](https://github.com/Sadab-Munshi/Maun/blob/680a38276509a840ce3d21fc28647736d6924083/android/app/src/main/java/org/maun/messenger/push/Background.kt#L218-L223) · [ChatEngine.syncPush](https://github.com/Sadab-Munshi/Maun/blob/680a38276509a840ce3d21fc28647736d6924083/android/app/src/main/java/org/maun/messenger/ChatEngine.kt#L1273-L1307) | Retain the usable address during discovery errors. Renew a definitively expired uploaded tuple and remember the rejection across process death. Explicit unregister and sign-out still withdraw the address. |
+| 3. The push contained only a word. Every chat alert required another successful relay login. A fresh expedited fetch could also queue behind delayed work. [WakeService.onMessage](https://github.com/Sadab-Munshi/Maun/blob/680a38276509a840ce3d21fc28647736d6924083/android/app/src/main/java/org/maun/messenger/push/WakeService.kt#L44-L64) · [FetchWorker.schedule](https://github.com/Sadab-Munshi/Maun/blob/680a38276509a840ce3d21fc28647736d6924083/android/app/src/main/java/org/maun/messenger/push/FetchWorker.kt#L140-L164) | Carry the original ciphertext. Use local expedited work to survive process death and a separate chain for network recovery. |
+| 4. A failed database write skipped ACK, yet the frame reduced the login backlog. After a successful save and ACK, process death before the observer ran could instead hide a new unread on restart. [ChatEngine.onFrame](https://github.com/Sadab-Munshi/Maun/blob/680a38276509a840ce3d21fc28647736d6924083/android/app/src/main/java/org/maun/messenger/ChatEngine.kt#L240-L273) · [Messenger.load](https://github.com/Sadab-Munshi/Maun/blob/680a38276509a840ce3d21fc28647736d6924083/android/app/src/main/java/org/maun/messenger/Messenger.kt#L344-L367) | Require a committed disposition, check a drain watermark, and reconcile notification presentation from persistent unread sequences. |
+| 5. A preceding generic wake could suppress the next chat or ringing call. Recovery omitted the stored progress count and could wake for quiet traffic. [Mailbox.wake and retryWake](https://github.com/Sadab-Munshi/Maun/blob/680a38276509a840ce3d21fc28647736d6924083/backend/src/mailbox.ts#L900-L1008) | Inline chat payloads bypass the generic repeat guard. Persist the wake class, eligible ACK progress and a dispatch token for handling overlapping provider responses. |
+| 6. The sender's pending outbox could sit behind account maintenance on login. [ChatEngine.onOnline](https://github.com/Sadab-Munshi/Maun/blob/680a38276509a840ce3d21fc28647736d6924083/android/app/src/main/java/org/maun/messenger/ChatEngine.kt#L203-L225) | Start draining on login. Keep unsent items durable when the sender really is offline. |
+
+## Platform boundaries
+
+Cloudflare preserves hibernating WebSockets and their attachments. A protocol pong or an attached socket cannot prove that Android saved a chat. Maun uses direct Durable Object RPC and SQLite for first delivery. Its existing single alarm handles bounded recovery and expiry. Changing a Queues batch interval or a cron schedule cannot affect this path. [Hibernating WebSockets](https://developers.cloudflare.com/durable-objects/best-practices/websockets/) · [Alarms](https://developers.cloudflare.com/durable-objects/api/alarms/) · [Queue batching](https://developers.cloudflare.com/queues/configuration/batching-retries/)
+
+A successful HTTP POST records provider acceptance. The provider controls transit, and Android controls callback execution and notification permission. The 24-hour chat TTL controls how long the provider may retain an undelivered record. Google recommends doing enough local work to show high-priority notifications promptly. External UnifiedPush distributors have their own delivery behavior. [RFC 8030](https://www.rfc-editor.org/rfc/rfc8030#section-5) · [FCM priority and processing time](https://firebase.google.com/docs/cloud-messaging/android-message-priority)
+
+The full path requires the new relay and an upgraded receiving app that registered `chatPush`. The sender may be older. A phone with no distributor, no usable subscription, no network, disabled notifications, or a user force-stop needs separate diagnosis. The relay's 2,000-record daily budget still applies. Shortening timers, adding polling or running a permanent service cannot repair any of those conditions.
+
+## Verification on two devices
+
+Use a staging relay, one sender and one receiver. Record the app builds, relay revision, distributor, battery state and notification permission. Use a distinct test message for each run. Record synchronized sender tap, relay store, provider response, device callback and Android notification post times. Record submission and handset transit separately. `MaunDelivery` logs the callback and successful notification submission. A tray observation confirms visibility. Aggregate repeated single-message runs into median and p95 for each condition.
+
+| Condition | Acceptance check |
+|---|---|
+| Foreground, background, ordinary process kill, then screen locked in Doze | Foreground sound follows user settings. With notifications enabled, a reachable background or ordinarily killed phone displays the chat within the test target of a few seconds. Use `adb shell am kill <package>` for ordinary death, after backgrounding. Use `adb shell dumpsys deviceidle force-idle` and restore with `unforce`. |
+| Stale authenticated socket | Leave its frame unacknowledged. The provider gets a POST before any grace timer, close or alarm. |
+| Push works but the phone cannot reach the staging relay | A new chat can be displayed from push. Re-enable relay connectivity and verify one chat, one alert, and a delivery receipt. Exercise a short message and a multi-record pre-key or long message. |
+| Burst, reordered records and replays | Test two senders, repeat a part, restart between parts and deliver the socket copy in either order. Confirm the final unread count and one local message per sender ID and message ID. |
+| Crash around presentation | Stop after local commit and before notify, then restart in background. The unread appears. Restart after notify with the notification present, or after a completed post and dismissal. It should not sound a second time. |
+| Block, sign-out, denied permission, exhausted relay budget, force-stop | Check expected suppression and retained queue rows independently of latency. A 2xx provider response alone passes none of the handset checks. |
+
+## Earlier implementation history
+
+<details>
+<summary>Behavior and investigations through Android 0.29.0</summary>
+
+The following notes describe earlier releases. Their socket-grace, one-word-only push and count-based presentation descriptions are historical.
 
 ## Confirmed causes (visible in the code)
 
@@ -345,23 +356,4 @@ phone, taken while a message arrives with Maun closed. It distinguishes "the
 channel is broken" from "Android is refusing to play it", and those two have
 nothing in common beyond the symptom.
 
-## What a device test should look at
-
-For each case, `adb logcat -s MaunDelivery` gives the four steps; compare the
-`afterWake` of `fetch-done` with the wall clock of the notification.
-
-| Case | What to expect |
-| --- | --- |
-| Chat open | no wake-up at all; message over the socket; no notification |
-| App in background, alive | `wake` → `shown` within a second or two |
-| Screen locked | same, notification discreet on the lock screen |
-| Doze (screen off, still, ~30 min) | `wake` still arrives; if it is late, Google held it |
-| Process killed (`adb shell am kill`) | `wake` cold-starts the process; `shown` follows |
-| Force-stop | nothing until the app is opened — Android's rule, documented |
-| Offline, then reconnect | phone logs in, mailbox pumps, one notification for the batch |
-| Offline when woken, network back later (Round 17) | `fetch-again` ×2, then `fetch-waiting-for-network`; the message arrives by itself in the same moment the network returns, not up to an hour later |
-| Network lost and regained while open (Round 17) | the retry follows at once instead of at the end of the backoff |
-| Written offline, app then closed (Round 10) | the hourly worker or the one asked for at the moment the message was queued connects, the outbox empties, and the message arrives once — no need to open the app |
-| Token refresh (new endpoint) | relay's `push` row replaced at next login; one wake-up per message still |
-| Many messages at once | one notification, counted; at most one wake-up per 5 s |
-| Incoming call | `step=call`; ring within the 30 s TTL, or nothing |
+</details>

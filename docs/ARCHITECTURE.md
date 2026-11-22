@@ -63,14 +63,7 @@ The frame shapes are `backend/src/protocol.ts`; the delivery logic is
 
 ### 2. A message, app closed
 
-The full narrative with reasons is [NOTIFICATIONS.md](NOTIFICATIONS.md). In
-short: the mailbox sees no connected socket, encrypts and signs a Web Push
-wake-up (a word, `message` or `call`), and posts it to the address the phone
-left. The phone's `push/WakeService.kt` is the push connector's endpoint;
-`push/FetchWorker.kt` runs an expedited one-shot job that connects, takes the
-queue, acks, and `push/Notifications.kt` posts the notification. A phone that
-never comes is woken again on the relay's own alarm
-(`WAKE_RETRY_WAITS_MS`).
+After storing the message, the mailbox sends the same Signal ciphertext over Web Push to a capable receiver and pumps any connected socket. The inline payload is also encrypted to the receiving installation. Android can save and announce the chat before reconnecting. The socket reconciles the retained queue row and receipts. Older installations use the one-word wake and fetch path. [Notification delivery](NOTIFICATIONS.md)
 
 ### 3. A file
 

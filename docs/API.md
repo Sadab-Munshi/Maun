@@ -78,7 +78,7 @@ One socket, one mailbox, one JSON object per frame. `MAX_FRAME_BYTES` is
 | Frame | Meaning |
 |---|---|
 | `hello` | `{proto, nonce, registered, access}`. The phone checks `proto` and signs `nonce`. |
-| `ready` | `{fresh, keys, otks, push, pushStatus, vapid, queued, email, name, verified, files}`. Sent after a successful register or login; the app uses `files` for the HTTPS routes and `vapid` for its push app. |
+| `ready` | `{fresh, keys, otks, push, chatPush, pushStatus, vapid, queued, email, name, verified, files}`. Sent after a successful register or login; the app uses `files` for the HTTPS routes and `vapid` for its push app. |
 
 ### Phone → relay
 
@@ -86,13 +86,13 @@ One socket, one mailbox, one JSON object per frame. `MAX_FRAME_BYTES` is
 |---|---|
 | `register` | Identity key, Keystore device key, and two signatures over the registration transcript, plus an access ticket on a member-only relay. |
 | `login` | A signature over the login transcript by the device key. |
-| `echo` | Round-trip check used by the diagnostics and the tests. |
+| `echo` | Round-trip check. With `drain: true`, the reply also gives `through`, the highest sequence still queued at the time of the request (zero for an empty mailbox). |
 | `put_keys`, `put_otks` | Publish the signed pre-key, the Kyber pre-key and a batch of one-time pre-keys. |
 | `get_keys` | Fetch another account's pre-key bundle. |
 | `send` | `{to, kind, body, urgent, quiet}` — one sealed message. `urgent` asks for an immediate wake-up, `quiet` asks for none. |
 | `ack` | `{seq}` — this message has been taken; delete it. |
 | `turn` | Ask for call credentials. |
-| `put_push`, `drop_push` | Leave or remove the wake-up address and its keys. |
+| `put_push`, `drop_push` | Leave or remove the wake-up address and its keys. Optional `chatPush: true` opts the receiving installation into encrypted inline records. The `ready.chatPush` flag reports the saved capability. |
 | `put_recovery`, `drop_recovery` | Store or remove the sealed identity backup. |
 | `find` | Look a username up (`{name}`) or ask what a given ID is called (`{user}`). |
 | `verified` | Ask whether a list of IDs wears the administrator's badge. |
@@ -113,6 +113,12 @@ One socket, one mailbox, one JSON object per frame. `MAX_FRAME_BYTES` is
 | `failed` | `{id, code}` — a specific request failed. The codes are in `FailureCode` in `protocol.ts`. |
 | `error` | `{code}` — the connection itself is in trouble. The codes are in `ErrorCode`. |
 
+### Inline chat Web Push
+
+The plaintext of each RFC 8291 record is 2,128 bytes. The first 80 bytes are the header. Bytes 0–3 are hex `4d 43 50 01`. Bytes 4–35 hold the raw recipient mailbox ID and 36–67 the raw sender ID. Bytes 68–75 hold the positive big-endian mailbox sequence. Byte 76 is Signal kind (2 or 3) and byte 77 is the zero-based part index. Bytes 78–79 hold the total ciphertext length as an unsigned big-endian integer (1–8,192). Each part carries up to 2,048 ciphertext bytes in order, followed by zero padding. All parts are independently encrypted to the subscription. Only a complete, authenticated Signal message can produce a chat alert.
+
+The existing `message` and `call` words are still valid. Old receivers do not advertise inline support. Old relays omit the capability and use the legacy wake. `pushStatus` reports provider HTTP status, zero for a failed request, −1 for a dispatch in flight, or −2 when the relay refused dispatch under its daily budget.
+
 ### Close codes
 
 | Code | Meaning |
@@ -132,8 +138,8 @@ All from `backend/src/protocol.ts` unless stated.
 |---|---|
 | Frame / message body | 16 384 / 8 192 bytes |
 | Queue | 1 000 messages, 300 from one sender, 30 days |
-| Delivery window per connection | 50 messages before the next `fetch` |
-| Wake-up repeat | 5 s (2 s for a call), 2 000 a day, 10 minutes of settling before a retry |
+| Delivery window per connection | 50 unacknowledged frames. Each ACK opens room in the window. |
+| Wake-up repeat | Inline chat dispatches on insertion. Legacy wake words coalesce for 5 s, repeated calls for 2 s. The daily budget is 2,000 records. A newly registered endpoint may be retried on 404/410 during its first 10 minutes. |
 | Wake retries | 20 s, 60 s, 180 s; a call 8 s, 20 s |
 | File | 25 MB + 65 536, one day, 250 MB and 200 uploads a day |
 | Avatar | 256 KB |

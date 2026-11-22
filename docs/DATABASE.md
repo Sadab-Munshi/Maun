@@ -44,7 +44,7 @@ identity key, so a later change needs a real migration or CI will refuse it.
 
 | Table | Rows | Notes |
 |---|---|---|
-| `meta` | key/value | Small app state. |
+| `meta` | key/value | The last announced unread sequence, current/uploaded/rejected push tuples, and temporary multipart Signal ciphertext. The newest 96 part rows are retained at most. Completion and logout clear parts. |
 | `account` | one | This phone's ID, its identity key pair (which exists nowhere else), the relay address, whether it has registered. |
 | `contacts` | one per person | ID (the identity public key in hex), name, whether the ID was read from their screen with the camera, when it was added, their username if the relay has usernames. |
 | `messages` | one per message | `seq` is the local order; `id` is the sender's. `reply_to` holds only an ID — the quote is drawn from this phone's own copy. `receipt` is the incoming receipt level, `status` the outgoing one, `unread` drives the badge, `saved_to_gallery` remembers a saved attachment. |
@@ -54,6 +54,8 @@ identity key, so a later change needs a real migration or CI will refuse it.
 | `signal_sessions` | one per conversation | libsignal session records. |
 | `signal_prekeys` | keyed by kind and key id | The private half of each of this phone's own pre-keys — signed, Kyber and one-time — as libsignal serializes them. |
 | `signal_kyber_used` | one per accepted session start | Kept so a replay of a session start is refused. |
+
+WorkManager may retain an inline record as input to expedited local work. The whole record is AES-GCM sealed under a separate Android Keystore key before it enters the scheduler's database. The partial records and presentation checkpoint reuse the existing SQLCipher `meta` table. The Room entity schema stays at version 7.
 
 Files and pictures are not in the database. Sealed copies live in
 `filesDir/media`, decrypted copies in `cacheDir/media`, and a sweep deletes what
@@ -76,12 +78,12 @@ Changes are additive `ALTER TABLE` guarded by a `pragma_table_info` check — th
 | `account` | The identity key, the registration nonce, the day it registered | Never; deleting it is what "leave" does |
 | `keys` | Signed pre-key and Kyber pre-key, with their signatures | Replaced by the next `put_keys` |
 | `otks` | One-time pre-keys | Used as handshakes take them; replenished by the phone |
-| `queue` | One row per waiting message: sender, kind, sealed body, arrival time | On `ack`, on expiry (30 days), on ban, or when the queue is full |
-| `push` | Where to wake this phone, its keys, when it was last woken, the day's count | On `drop_push`, or when the push service says the address is dead |
+| `queue` | One row per waiting message: sender, kind, sealed body, arrival time and wake class (quiet/chat/call) | On `ack`, on expiry (30 days), on ban, or when the queue is full |
+| `push` | Where to wake this phone, its keys, last dispatch, daily count, recipient ID, inline capability, outstanding call flag and dispatch token | On `drop_push`, or when the push service says the address is dead |
 | `push_since` | When that address was left | With it |
 | `vapid` | The key pair wake-ups are signed with | With the mailbox |
 | `push_result` | What the push service answered last | Overwritten each time |
-| `wake_retry` | The moment the relay looks for a phone again, how many times it has woken it, whether it is a call | Cleared when the phone arrives |
+| `wake_retry` | The moment the relay looks for a phone again, how many times it has woken it, wake class, eligible queue depth and ACK progress | Cleared at a retry after eligible rows are gone, or when the retry budget ends |
 | `files` | The token for the HTTPS routes, and the day's upload count and bytes | Renewed at every login; the day's counts reset at midnight UTC |
 | `turn_use` | How many sets of call credentials were handed out today | Reset daily |
 | `retired` | One row while this ID's owner has moved to another one, or a member-only relay has thrown it out | Until this same ID successfully logs in again; its queue and shares were already deleted when it was retired |
