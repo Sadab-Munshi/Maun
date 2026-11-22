@@ -55,7 +55,7 @@ identity key, so a later change needs a real migration or CI will refuse it.
 | `signal_prekeys` | keyed by kind and key id | The private half of each of this phone's own pre-keys — signed, Kyber and one-time — as libsignal serializes them. |
 | `signal_kyber_used` | one per accepted session start | Kept so a replay of a session start is refused. |
 
-WorkManager may retain an inline record as input to expedited local work. The whole record is AES-GCM sealed under a separate Android Keystore key before it enters the scheduler's database. The partial records and presentation checkpoint reuse the existing SQLCipher `meta` table. The Room entity schema stays at version 7.
+WorkManager may retain an inline record as input to expedited local work. The whole record is AES-GCM sealed under a separate Android Keystore key before it enters the scheduler's database. A private notification dismissal broadcast records its local sequence in settings, scoped by a random database epoch. The partial records, epoch and presentation checkpoint reuse the existing SQLCipher `meta` table. The Room entity schema stays at version 7.
 
 Files and pictures are not in the database. Sealed copies live in
 `filesDir/media`, decrypted copies in `cacheDir/media`, and a sweep deletes what
