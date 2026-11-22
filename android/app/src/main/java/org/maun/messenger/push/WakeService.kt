@@ -35,7 +35,6 @@ class WakeService : PushService() {
         val address = endpoint.pubKeySet?.let { PushAddress.fromWebPush(endpoint.url, it.pubKey, it.auth) }
         if (address == null) {
             messenger.onPushFailed("$waker gave Maun an address it cannot use.")
-            messenger.onPushAddress(null)
         } else {
             messenger.onPushAddress(address)
         }
@@ -50,7 +49,7 @@ class WakeService : PushService() {
         // right after an urgent wake-up Android allows the service that keeps
         // Maun up while the call is fetched and rings. For a message, nothing
         // of Maun stays running beyond the fetch.
-        val kind = if (String(message.content, Charsets.UTF_8) == WAKE_CALL) {
+        val kind = if (message.content.contentEquals(WAKE_CALL.toByteArray(Charsets.UTF_8))) {
             RingService.prepare(this)
             DeliveryTrace.CALL
         } else {
@@ -59,6 +58,7 @@ class WakeService : PushService() {
         DeliveryTrace.began(this, kind)
         // Start at once: every second counts for a call that is ringing. The
         // scheduled job does the same work, and is what Android lets finish.
+        ChatPushPart.parse(message.content)?.let(messenger::receiveChatPush)
         messenger.fetchSoon()
         FetchWorker.schedule(this)
     }

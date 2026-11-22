@@ -97,32 +97,12 @@ class AnnouncementTest {
     }
 
     @Test
-    fun whatWasUnreadAtStartIsNotNews() {
-        val tracker = UnreadTracker()
-        assertFalse(tracker.hasNew(listOf(chat(asha, 2))))
-        assertFalse(tracker.hasNew(listOf(chat(asha, 2))))
-    }
-
-    @Test
-    fun aNewMessageIsNews() {
-        val tracker = UnreadTracker()
-        tracker.hasNew(listOf(chat(asha, 2)))
-        assertTrue(tracker.hasNew(listOf(chat(asha, 3))))
-        // The same state again is not.
-        assertFalse(tracker.hasNew(listOf(chat(asha, 3))))
-        // A first message from someone else is.
-        assertTrue(tracker.hasNew(listOf(chat(asha, 3), chat(rohan, 1))))
-    }
-
-    @Test
-    fun readingIsNotNewsButTheNextMessageIs() {
-        val tracker = UnreadTracker()
-        tracker.hasNew(emptyList())
-        assertTrue(tracker.hasNew(listOf(chat(asha, 1))))
-        assertFalse(tracker.hasNew(listOf(chat(asha, 0))))
-        assertTrue(tracker.hasNew(listOf(chat(asha, 1))))
-        // A conversation that was deleted and starts again.
-        assertFalse(tracker.hasNew(emptyList()))
-        assertTrue(tracker.hasNew(listOf(chat(asha, 1))))
+    fun theCheckpointSurvivesEqualCountsReadsAndNewerOutgoingRows() {
+        val before = chat(asha, 1).copy(seq = 9, newestUnread = 7)
+        val both = listOf(before, chat(rohan, 1).copy(seq = 10, newestUnread = 10))
+        assertEquals(10L, newestUnread(both))
+        assertEquals(7L, newestUnread(listOf(before)))
+        assertEquals(12L, newestUnread(listOf(before.copy(seq = 13, newestUnread = 12))))
+        assertEquals(0L, newestUnread(emptyList()))
     }
 }

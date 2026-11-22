@@ -195,24 +195,18 @@ class Notifications(context: Context) {
     val allowed: Boolean
         get() = manager.areNotificationsEnabled()
 
+    /** Survives process death, including death after notify and before the local checkpoint. */
+    fun postedThrough(): Long? = manager.activeNotifications.firstOrNull { it.id == ID_MESSAGES }
+        ?.notification?.extras?.getLong(EXTRA_SEQUENCE)
+
     /** Shows or updates the one notification about unread messages. [alert] makes it sound. */
     // The permission is checked just above the call; lint does not follow that.
     @SuppressLint("MissingPermission")
-    fun showMessages(announcement: Announcement, alert: Boolean) {
-        if (!allowed) return
+    fun showMessages(announcement: Announcement, alert: Boolean, sequence: Long): Boolean {
+        if (!allowed) return false
         val channel = SoundSettings.incomingChannel(context)
-        // What Android was told, and what it will therefore do about the sound.
-        // The line that answers "it showed up but made no noise" on a phone
-        // that cannot be attached to anything.
         val made = manager.getNotificationChannelCompat(channel)
-        DeliveryTrace.stepped(
-            context,
-            DeliveryTrace.SHOWN,
-            "alert=$alert count=${announcement.total} channel=$channel" +
-                " importance=${made?.importance ?: -1}" +
-                " sound=${made?.sound ?: "none"}" +
-                (made?.sound?.let { " readable=${canRead(it)}" } ?: ""),
-        )
+        if (made?.importance == NotificationManager.IMPORTANCE_NONE) return false
         val onLockScreen = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Maun")
@@ -229,6 +223,7 @@ class Notifications(context: Context) {
                     NotificationCompat.InboxStyle().also { style -> announcement.lines.forEach(style::addLine) }
                 },
             )
+            .addExtras(android.os.Bundle().apply { putLong(EXTRA_SEQUENCE, sequence) })
             .setNumber(announcement.total)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
@@ -240,8 +235,13 @@ class Notifications(context: Context) {
         try {
             manager.notify(ID_MESSAGES, notification)
         } catch (_: SecurityException) {
-            // Permission was withdrawn between the check and the call.
+            return false
         }
+        DeliveryTrace.stepped(
+            context, DeliveryTrace.SHOWN,
+            "alert=$alert count=${announcement.total} channel=$channel importance=${made?.importance ?: -1}",
+        )
+        return true
     }
 
     fun clearMessages() {
@@ -443,6 +443,7 @@ class Notifications(context: Context) {
         )
 
     companion object {
+        private const val EXTRA_SEQUENCE = "org.maun.messenger.messageSequence"
         private const val KEY_SHOW_TEXT = "notify_text"
 
         /** The channels whose sound has already been looked at, so none is thrown away twice. */

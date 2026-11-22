@@ -110,7 +110,8 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         ForegroundInfo(Notifications.ID_FETCH, Notifications(applicationContext).fetching())
 
     companion object {
-        private const val NOW = "fetch"
+        private const val NOW = "fetch-now-v2"
+        private const val RECOVERY = "fetch" // includes delayed work scheduled by older releases
         private const val HOURLY = "fetch-hourly"
         private const val WHEN_ONLINE = "fetch-when-online"
         private const val KEY_ATTEMPT = "attempt"
@@ -131,10 +132,8 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
          * throw away the decryption and acknowledgements of a whole batch of
          * messages, and the next wake-up would start it all again. Appending
          * means the fetch that is running finishes, and the new one runs the
-         * moment it does. A fetch that is added while another is running has
-         * nothing to do but come back for the rest, so the queue cannot grow
-         * without bound: the relay wakes a phone at most once every five
-         * seconds.
+         * moment it does. Recovery jobs use a different chain so yesterday's
+         * backoff cannot become a prerequisite of a new push.
          */
         fun schedule(context: Context, attempt: Int = 0, delayMillis: Long = 0L, whenOnline: Boolean = false) {
             val request = OneTimeWorkRequestBuilder<FetchWorker>()
@@ -152,7 +151,8 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                     }
                 }
                 .build()
-            WorkManager.getInstance(context).enqueueUniqueWork(NOW, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+            val name = if (delayMillis > 0) RECOVERY else NOW
+            WorkManager.getInstance(context).enqueueUniqueWork(name, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
         }
 
         /**
@@ -176,6 +176,7 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         fun cancel(context: Context) {
             val work = WorkManager.getInstance(context)
             work.cancelUniqueWork(NOW)
+            work.cancelUniqueWork(RECOVERY)
             work.cancelUniqueWork(HOURLY)
             work.cancelUniqueWork(WHEN_ONLINE)
         }

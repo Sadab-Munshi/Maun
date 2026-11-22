@@ -84,4 +84,9 @@ interface PushState {
     suspend fun uploaded(): PushAddress?
 
     suspend fun setUploaded(address: PushAddress?)
+
+    /** Tuple for which the provider reported permanent expiry, retained across process death. */
+    suspend fun rejected(): PushAddress?
+    suspend fun setRejected(address: PushAddress?)
+    fun renew()
 }

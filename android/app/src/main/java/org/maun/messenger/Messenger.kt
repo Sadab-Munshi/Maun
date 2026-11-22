@@ -28,6 +28,7 @@ import org.maun.messenger.network.LocationException
 import org.maun.messenger.push.LocationService
 import org.maun.messenger.network.Usernames
 import org.maun.messenger.security.DeviceFingerprint
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -71,11 +72,13 @@ import org.maun.messenger.network.RelayClient
 import org.maun.messenger.network.RelayConnection
 import org.maun.messenger.network.RelayException
 import org.maun.messenger.network.RelayState
+import org.maun.messenger.push.PushApps
+import org.maun.messenger.push.ChatPushPart
 import org.maun.messenger.push.Background
 import org.maun.messenger.push.FetchWorker
 import org.maun.messenger.push.Notifications
 import org.maun.messenger.updates.Updater
-import org.maun.messenger.push.UnreadTracker
+import org.maun.messenger.push.newestUnread
 import org.maun.messenger.push.announce
 
 sealed interface AccountState {
@@ -314,10 +317,7 @@ class Messenger(context: Context) {
             null
         }
     }
-    private val unread = UnreadTracker()
-
-    /** Whether the notification about unread messages is showing. */
-    private var announced = false
+    private var announcedThrough = 0L
 
     private val setup = Mutex()
 
@@ -354,16 +354,18 @@ class Messenger(context: Context) {
                 // like the one that was on screen when it went offline.
                 _verified.value = Badges.parse(db.meta().get(Badges.KEY))
                 _chats.value = db.chat().observeChats().first()
-                // What was unread before this launch is not news, and must not be
-                // announced again in the first moment the app is awake. Noting it
-                // here, rather than at the first thing the flow emits, keeps a
-                // fetch that lands early from being taken for something already seen.
-                unread.hasNew(_chats.value)
+                // Only the first upgrade baselines existing history. Every later launch
+                // recovers unread rows committed after the last successful presentation.
+                announcedThrough = db.meta().get(KEY_ANNOUNCED)?.toLongOrNull() ?: newestUnread(_chats.value).also {
+                    db.meta().put(MetaEntry(KEY_ANNOUNCED, it.toString()))
+                }
                 scope.launch { db.contacts().observeAll().collect { _contacts.value = it } }
                 scope.launch {
+                    account.first { it !is AccountState.Loading }
                     db.chat().observeChats().collect {
                         _chats.value = it
-                        announceUnread(it)
+                        val checkpoint = announceUnread(it)
+                        if (checkpoint != null) db.meta().put(MetaEntry(KEY_ANNOUNCED, checkpoint.toString()))
                     }
                 }
                 scope.launch { db.chat().observeBlocked().collect { _blocked.value = it } }
@@ -472,6 +474,10 @@ class Messenger(context: Context) {
                 override suspend fun uploaded() = PushAddress.parse(db.meta().get(KEY_PUSH_UPLOADED))
                 override suspend fun setUploaded(address: PushAddress?) =
                     db.meta().put(MetaEntry(KEY_PUSH_UPLOADED, address?.serialize().orEmpty()))
+                override suspend fun rejected() = PushAddress.parse(db.meta().get(KEY_PUSH_REJECTED))
+                override suspend fun setRejected(address: PushAddress?) =
+                    db.meta().put(MetaEntry(KEY_PUSH_REJECTED, address?.serialize().orEmpty()))
+                override fun renew() = PushApps.startOver(appContext)
             },
         )
         chatScope.launch { chat.waiting.collect { _waiting.value = it } }
@@ -1261,7 +1267,6 @@ class Messenger(context: Context) {
         inForeground = true
         // The user is looking at the app; there is nothing left to announce.
         notifications.clearMessages()
-        announced = false
         connectOrDrop()
     }
 
@@ -1302,8 +1307,32 @@ class Messenger(context: Context) {
         synchronized(this) { connection }?.nudge()
     }
 
+    /** Present an authenticated chat locally even when a new relay connection cannot be made. */
+    internal fun receiveChatPush(part: ChatPushPart) {
+        scope.launch(Dispatchers.IO) {
+            val current = account.first { it !is AccountState.Loading }
+            if (current !is AccountState.Present || current.code.id != part.recipient || !current.registered) return@launch
+            val db = database ?: return@launch
+            val chat = engine ?: return@launch
+            try {
+                val body = db.inTransaction {
+                    if (_signedOut.value || _banned.value || _awaiting.value || db.chat().isBlocked(part.sender)) null
+                    else part.assemble(db.chatParts())
+                }
+                if (body != null && engine === chat && !_signedOut.value && !_banned.value && !_awaiting.value) {
+                    chat.receiveChatPush(part.sender, part.kind, body)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // The mailbox retains the original until a socket confirms a successful save.
+            }
+        }
+    }
+
     /** Starts fetching right away, without waiting for anything to be scheduled. For the moment a wake-up arrives. */
     fun fetchSoon() {
+        synchronized(this) { connection }?.nudge()
         scope.launch { fetch() }
     }
 
@@ -1403,25 +1432,27 @@ class Messenger(context: Context) {
     }
 
     /** Tells the user about messages that arrived while they were not looking. Never says what is in them. */
-    private fun announceUnread(chats: List<ChatSummary>) = synchronized(this) {
-        val news = unread.hasNew(chats)
+    private fun announceUnread(chats: List<ChatSummary>): Long? = synchronized(this) {
+        if (_signedOut.value || _banned.value || _awaiting.value) return@synchronized null
         val announcement = announce(chats, _contacts.value.associate { it.id to it.name }, showText = notifications.showsText)
-        when {
-            announcement == null -> {
-                notifications.clearMessages()
-                announced = false
-            }
-            // On screen: Android is shown nothing, so the app is what makes the
-            // sound. Exactly once, and only for a message that is actually new.
-            inForeground -> if (news) sounds.playIncoming()
-            news -> {
-                notifications.showMessages(announcement, alert = true)
-                announced = true
-            }
-            // Something was read elsewhere, or a contact was renamed: keep it accurate, quietly.
-            announced -> notifications.showMessages(announcement, alert = false)
-            else -> Unit
+        if (announcement == null) {
+            notifications.clearMessages()
+            return@synchronized null
         }
+        val newest = newestUnread(chats)
+        val posted = notifications.postedThrough()
+        if (newest <= announcedThrough) {
+            // An update to a dismissed notification must not put it back in the shade.
+            if (!inForeground && posted != null) notifications.showMessages(announcement, false, announcedThrough)
+            return@synchronized null
+        }
+        when {
+            posted != null && posted >= newest -> Unit
+            inForeground -> sounds.playIncoming()
+            !notifications.showMessages(announcement, true, newest) -> return@synchronized null
+        }
+        announcedThrough = newest
+        newest
     }
 
     /** Tries again after the relay refused the login. */
@@ -1450,6 +1481,7 @@ class Messenger(context: Context) {
         if (calls.busy) runCatching { calls.hangUp() }
         _signedOut.value = true
         withContext(Dispatchers.IO) {
+            db.chatParts().removeParts("chat-part/")
             db.meta().put(MetaEntry(KEY_SIGNED_OUT, "1"))
             // The wake-up address is put aside rather than forgotten, so that
             // signing back in does not have to wait for the push app again.
@@ -1470,7 +1502,6 @@ class Messenger(context: Context) {
         RingService.stop(appContext)
         notifications.clearIncomingCall()
         notifications.clearMessages()
-        announced = false
         setAwaiting(false)
     }
 
@@ -1668,8 +1699,10 @@ class Messenger(context: Context) {
         private const val KEY_PERMISSIONS_SETUP_PENDING = "permissions_setup_pending"
         private const val KEY_PERMISSIONS_SETUP_DONE = "permissions_setup_done"
         private const val KEY_REGISTRATION_ID = "signal_registration_id"
+        private const val KEY_ANNOUNCED = "last_announced_message_seq"
         private const val KEY_PUSH_WANTED = "push_wanted"
         private const val KEY_PUSH_HELD = "push_held"
+        private const val KEY_PUSH_REJECTED = "push_rejected"
         private const val KEY_PUSH_UPLOADED = "push_uploaded"
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_MEMBER_EMAIL = "member_email"

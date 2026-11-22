@@ -70,7 +70,11 @@ class ChatEngineTest {
         @Volatile
         var pushUploaded: PushAddress? = null
 
+        private var rejectedAddress: PushAddress? = null
         private val push = object : PushState {
+            override suspend fun rejected() = rejectedAddress
+            override suspend fun setRejected(address: PushAddress?) { rejectedAddress = address }
+            override fun renew() = Unit
             override suspend fun wanted() = pushWanted
             override suspend fun uploaded() = pushUploaded
             override suspend fun setUploaded(address: PushAddress?) {
@@ -637,6 +641,33 @@ class ChatEngineTest {
     }
 
     @Test
+    fun `push decrypts offline and the socket replay produces one chat and receipt`() {
+        val alice = Phone()
+        val bob = Phone()
+        alice.knows(bob).online()
+        bob.knows(alice).registeredAndOffline()
+        alice.send(bob, "comes through push")
+        eventually("stored") { alice.statusOf(bob, "comes through push") == MessageStatus.SENT }
+        // Capture exactly what the relay would put in both transports, without an ACK.
+        bob.withEngine = false
+        bob.online()
+        eventually("ciphertext captured") { bob.delivered.isNotEmpty() }
+        val frame = bob.delivered.first()
+        bob.offline()
+        bob.engine.link = null
+        val bytes = Base64.getDecoder().decode(frame.getString("body"))
+        repeat(2) { bob.engine.receiveChatPush(alice.id, frame.getInt("kind"), bytes) }
+        assertEquals(listOf("< comes through push"), bob.texts(alice))
+        assertEquals(1, bob.db.outboxSize())
+        bob.withEngine = true
+        bob.online()
+        eventually("receipt from the durable local save") {
+            alice.statusOf(bob, "comes through push") == MessageStatus.DELIVERED
+        }
+        assertEquals(1, bob.chat(alice).size)
+    }
+
+    @Test
     fun `a delivery that could not be saved comes again, exactly once`() {
         val alice = Phone()
         val bob = Phone()
@@ -648,13 +679,9 @@ class ChatEngineTest {
         alice.send(bob, "do not lose me")
         eventually("the relay delivered it") { bob.delivered.isNotEmpty() }
         eventually("stored by the relay") { alice.statusOf(bob, "do not lose me") == MessageStatus.SENT }
-        pause()
-        assertTrue(bob.chat(alice).isEmpty())
-        assertFalse("the session must not have moved without the message", bob.db.hasSession(alice.id))
-
-        bob.offline()
-        bob.online()
-        eventually("arrived the second time") { bob.texts(alice) == listOf("< do not lose me") }
+        // A failed save tears down the connection. The relay replays it without
+        // a second push, a manual reopen, or another outgoing chat.
+        eventually("replayed and saved once") { bob.texts(alice) == listOf("< do not lose me") }
         eventually("delivered") { alice.statusOf(bob, "do not lose me") == MessageStatus.DELIVERED }
 
         // And the session works in both directions afterwards.

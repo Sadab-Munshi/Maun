@@ -152,6 +152,8 @@ data class ChatSummary(
     val unread: Int,
     /** The newest message's own ID, as its sender chose it. */
     val id: String = "",
+    /** Local sequence of the newest unread row, even if the newest row is outgoing. */
+    val newestUnread: Long = 0,
 )
 
 /**
@@ -205,7 +207,8 @@ interface ChatDao {
         """
         SELECT m.peer AS peer, m.seq AS seq, m.kind AS kind, m.text AS text, m.outgoing AS outgoing,
                m.status AS status, m.at AS at, m.id AS id,
-               (SELECT COUNT(*) FROM messages u WHERE u.peer = m.peer AND u.unread = 1) AS unread
+               (SELECT COUNT(*) FROM messages u WHERE u.peer = m.peer AND u.unread = 1) AS unread,
+               COALESCE((SELECT MAX(seq) FROM messages u WHERE u.peer = m.peer AND u.unread = 1), 0) AS newestUnread
         FROM messages m
         WHERE m.seq IN (SELECT MAX(seq) FROM messages GROUP BY peer)
         ORDER BY m.seq DESC

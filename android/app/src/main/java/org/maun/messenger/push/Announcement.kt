@@ -70,24 +70,5 @@ private const val MAX_LINES = 6
 
 private fun count(total: Int): String = if (total == 1) "New message" else "$total new messages"
 
-/**
- * Notices when a message has arrived that was not there before, by watching
- * how many unread messages each conversation has.
- */
-class UnreadTracker {
-    private var known: Map<String, Int>? = null
-
-    /**
-     * Takes the current state of the conversations and says whether any of
-     * them has more unread messages than last time. The first call only notes
-     * where things stand: what was unread before the app started is not news.
-     */
-    @Synchronized
-    fun hasNew(chats: List<ChatSummary>): Boolean {
-        val now = chats.associate { it.peer to it.unread }
-        val before = known
-        known = now
-        if (before == null) return false
-        return now.any { (peer, unread) -> unread > (before[peer] ?: 0) }
-    }
-}
+/** A new unread row can replace an older one without changing the unread count. */
+internal fun newestUnread(chats: List<ChatSummary>): Long = chats.maxOfOrNull { it.newestUnread } ?: 0L

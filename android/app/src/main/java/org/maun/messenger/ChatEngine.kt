@@ -152,6 +152,8 @@ class ChatEngine(
 
     @Volatile
     private var relayHasPush = false
+    @Volatile
+    private var upgradePush = false
 
     init {
         // What a previous run left in the outbox counts from the first moment.
@@ -203,8 +205,10 @@ class ChatEngine(
     fun onOnline() {
         val ready = link?.ready
         relayHasPush = ready?.hasPush == true
+        upgradePush = ready?.chatPush == false
         settingUp.value = true
         backlog.value = ready?.queued ?: 0
+        kick()
         scope.launch {
             try {
                 // Each is tried again at the next login. Sending does not depend on either.
@@ -239,11 +243,8 @@ class ChatEngine(
     /** A message delivered by the relay. Called for one frame at a time, in order. */
     suspend fun onFrame(frame: JSONObject) {
         if (frame.optString("t") != "msg") return
-        try {
-            handle(frame)
-        } finally {
-            backlog.update { if (it > 0) it - 1 else it }
-        }
+        handle(frame)
+        backlog.update { if (it > 0) it - 1 else it }
     }
 
     private suspend fun handle(frame: JSONObject) {
@@ -256,16 +257,12 @@ class ChatEngine(
             null
         }
         arrivedCall = null
-        val replies = try {
-            withContext(io) { receive(from, frame.optInt("kind"), body) }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            // It could not be saved. Without an acknowledgement the relay
-            // keeps it and delivers it again on the next connection.
-            return
+        // A storage failure leaves the queue row unacknowledged. Let the connection
+        // reopen and replay it instead of declaring this fetch caught up.
+        val replies = withContext(io) { receive(from, frame.optInt("kind"), body) }
+        if (link?.send(JSONObject().put("t", "ack").put("seq", seq)) != true) {
+            throw RelayException("Connection lost before acknowledging the message")
         }
-        link?.send(JSONObject().put("t", "ack").put("seq", seq))
         if (replies) kick()
         arrivedCall?.let { call ->
             arrivedCall = null
@@ -989,13 +986,28 @@ class ChatEngine(
      * for good and can be acknowledged; the result says whether a receipt was
      * queued. Throws only when storage failed.
      */
-    private fun receive(from: String, kind: Int, body: ByteArray?): Boolean {
+    private class SocketPayload : RuntimeException()
+
+    /** Uses the same Signal state and message transaction as the WebSocket. Only the socket ACKs. */
+    internal fun receiveChatPush(from: String, kind: Int, body: ByteArray) {
+        if (receive(from, kind, body, chatOnly = true)) kick()
+    }
+
+    private fun receive(from: String, kind: Int, body: ByteArray?, chatOnly: Boolean = false): Boolean {
         // Nothing the relay should ever send; acknowledge it so it goes away.
         if (body == null || from == selfId || !ContactCode.isId(from)) return false
         return try {
             tx.inTransaction {
                 if (dao.isBlocked(from)) return@inTransaction false
-                when (val payload = Payload.decode(signal.decrypt(from, kind, body))) {
+                val payload = Payload.decode(signal.decrypt(from, kind, body))
+                if (chatOnly && payload !is Payload.Text && payload !is Payload.File && payload !is Payload.Pin &&
+                    !(payload is Payload.LiveLocation && payload.type == Payload.LIVE_SHARE)
+                ) {
+                    // Roll back the ratchet for a control frame. Its socket handler needs
+                    // to decrypt it and may depend on the relay-supplied age and ordering.
+                    throw SocketPayload()
+                }
+                when (payload) {
                     is Payload.Text ->
                         saveIncoming(from, payload.id, payload.sentAt, MessageKind.TEXT, payload.text, payload.replyTo)
                     is Payload.File ->
@@ -1043,11 +1055,13 @@ class ChatEngine(
                     Payload.Unknown -> false
                 }
             }
+        } catch (_: SocketPayload) {
+            false
         } catch (_: DuplicateMessageError) {
             // Saved during an earlier connection that ended before the acknowledgement.
             false
         } catch (_: UndecryptableException) {
-            noteUnreadable(from)
+            if (!chatOnly) noteUnreadable(from)
             false
         }
     }
@@ -1273,7 +1287,7 @@ class ChatEngine(
     private suspend fun syncPush(): Boolean = pushLock.withLock {
         val state = push ?: return@withLock false
         val link = link ?: return@withLock false
-        if (link.ready == null) return@withLock false
+        val ready = link.ready ?: return@withLock false
         val wanted = withContext(io) { state.wanted() }
         if (wanted == null) {
             _pushProblem.value = null
@@ -1285,17 +1299,31 @@ class ChatEngine(
         }
         // The relay forgets an address the push service says is dead, so its
         // word counts as well as this phone's memory.
-        if (relayHasPush && withContext(io) { state.uploaded() } == wanted) {
+        val uploaded = withContext(io) { state.uploaded() }
+        val rejected = withContext(io) { state.rejected() }
+        if (wanted == rejected || (!relayHasPush && ready.pushStatus in listOf(404, 410) && uploaded == wanted)) {
+            _pushProblem.value = "The push address expired. Waiting for the push service to issue a new one."
+            if (wanted != rejected) withContext(io) {
+                state.setRejected(wanted)
+                state.renew()
+            }
+            return@withLock false
+        }
+        if (relayHasPush && !upgradePush && uploaded == wanted) {
             _pushProblem.value = null
             return@withLock true
         }
         val answer = link.request(
-            JSONObject().put("t", "put_push").put("url", wanted.url).put("key", wanted.key).put("auth", wanted.auth),
+            JSONObject().put("t", "put_push").put("chatPush", true).put("url", wanted.url).put("key", wanted.key).put("auth", wanted.auth),
         )
         when (answer.optString("t")) {
             "saved" -> {
                 relayHasPush = true
-                withContext(io) { state.setUploaded(wanted) }
+                upgradePush = false
+                withContext(io) {
+                    state.setUploaded(wanted)
+                    state.setRejected(null)
+                }
                 _pushProblem.value = null
             }
             "failed" -> _pushProblem.value =

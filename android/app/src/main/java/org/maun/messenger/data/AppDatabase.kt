@@ -32,6 +32,21 @@ interface MetaDao {
     suspend fun put(entry: MetaEntry)
 }
 
+@Dao
+interface ChatPartDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun putPart(entry: MetaEntry)
+
+    @Query("SELECT * FROM meta WHERE `key` LIKE :prefix || '%' ORDER BY `key`")
+    fun parts(prefix: String): List<MetaEntry>
+
+    @Query("DELETE FROM meta WHERE `key` LIKE :prefix || '%'")
+    fun removeParts(prefix: String)
+
+    @Query("DELETE FROM meta WHERE rowid IN (SELECT rowid FROM meta WHERE `key` LIKE 'chat-part/%' ORDER BY rowid DESC LIMIT -1 OFFSET 96)")
+    fun trimParts()
+}
+
 /**
  * This phone's own account. There is only ever one row.
  *
@@ -127,6 +142,8 @@ interface ContactDao {
 abstract class AppDatabase : RoomDatabase(), Transactor {
 
     abstract fun meta(): MetaDao
+
+    abstract fun chatParts(): ChatPartDao
 
     abstract fun account(): AccountDao
 

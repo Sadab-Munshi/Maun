@@ -218,7 +218,9 @@ object Background {
     fun resume(context: Context) {
         val app = context.applicationContext as MaunApp
         enforceDefaultOffOnUpgrade(app)
-        if (!PushApps.refresh(app)) app.messenger.onPushAddress(null)
+        // Discovery can fail while the distributor or Android is starting. Only an explicit
+        // unregister or user opt-out withdraws an established subscription.
+        PushApps.refresh(app)
         if (stayConnected(app)) ConnectedService.start(app) else ConnectedService.stop(app)
     }
 }

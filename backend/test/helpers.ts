@@ -179,6 +179,7 @@ export async function register(identity: Identity, device: Device): Promise<Inbo
     keys: false,
     otks: 0,
     push: false,
+    chatPush: false,
     pushStatus: null,
     vapid: expect.any(String),
     queued: 0,

@@ -92,6 +92,8 @@ data class Ready(
     val filesToken: String? = null,
     /** True when Maun's administrators have given this account their tick. */
     val verified: Boolean = false,
+    /** Null for a relay predating encrypted chat push. */
+    val chatPush: Boolean? = null,
 )
 
 /** What the messaging code needs from a connection. */
@@ -275,7 +277,7 @@ class RelayConnection(
                     // network has just come back should not sit out a backoff
                     // that grew while there was nothing to connect to.
                     val nudge = CompletableDeferred<Unit>()
-                    synchronized(this@RelayConnection) { waiting = nudge }
+                    synchronized(this@RelayConnection) { waiting = if (end.rateLimited) null else nudge }
                     try {
                         withTimeoutOrNull(backoff.delayMillis(failures, end.rateLimited)) { nudge.await() }
                     } finally {
@@ -327,6 +329,7 @@ class RelayConnection(
                                         hasKeys = frame.optBoolean("keys"),
                                         oneTimeKeys = frame.optInt("otks"),
                                         hasPush = frame.optBoolean("push"),
+                                        chatPush = if (frame.has("chatPush")) frame.optBoolean("chatPush") else null,
                                         pushStatus = if (frame.isNull("pushStatus")) null else frame.optInt("pushStatus"),
                                         relayKey = frame.optString("vapid").ifEmpty { null },
                                         queued = frame.optInt("queued"),

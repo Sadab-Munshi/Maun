@@ -116,15 +116,32 @@ export const PUSH_SETTLE_WAITS_MS = [5_000, 10_000, 15_000];
 export const WAKE_RETRY_WAITS_MS = [20_000, 60_000, 180_000];
 /** The same for a call, whose wake-up is of no use once it has stopped ringing. */
 export const WAKE_RETRY_WAITS_CALL_MS = [8_000, 20_000];
-/**
- * A phone that is connected is not woken, because the message goes straight
- * down its connection. But a connection can be dead without either end knowing
- * yet: a phone that changed network, or that Android froze, leaves a socket
- * that still looks ready here. So this long after handing a message over, the
- * queue is looked at again: if the message is still waiting, the connection was
- * not really there, and the phone is woken as it would have been.
- */
+/** A connected call gets a short chance to ring directly before a call-service wake. */
 export const CONNECTED_GRACE_MS = 4_000;
+
+/** One fixed-size Web Push plaintext per part, with room for base64 transport on FCM. */
+export const CHAT_PART_BYTES = 2048;
+export const CHAT_HEADER_BYTES = 80;
+
+/** The same Signal ciphertext as the socket frame. The Web Push layer seals the whole record. */
+export function chatPushParts(to: string, from: string, seq: number, kind: number, body: Uint8Array): Uint8Array[] {
+  const parts: Uint8Array[] = [];
+  for (let offset = 0; offset < body.length; offset += CHAT_PART_BYTES) {
+    const part = new Uint8Array(CHAT_HEADER_BYTES + CHAT_PART_BYTES);
+    part.set([0x4d, 0x43, 0x50, 1]); // MCP, format 1
+    part.set(fromHex(to), 4);
+    part.set(fromHex(from), 36);
+    const header = new DataView(part.buffer);
+    header.setBigUint64(68, BigInt(seq));
+    part[76] = kind;
+    part[77] = offset / CHAT_PART_BYTES;
+    header.setUint16(78, body.length);
+    part.set(body.subarray(offset, offset + CHAT_PART_BYTES), CHAT_HEADER_BYTES);
+    parts.push(part);
+  }
+  return parts;
+}
+
 /** Recorded as the outcome of a wake-up that has been started and has not finished. */
 export const PUSH_UNFINISHED = -1;
 
@@ -289,7 +306,7 @@ export type ClientFrame =
   | { t: "turn"; id: string }
   | { t: "ack"; seq: number }
   /** `key` and `auth` are the Web Push keys the phone's push app handed out. */
-  | { t: "put_push"; id: string; url: string; key: Uint8Array; auth: Uint8Array }
+  | { t: "put_push"; id: string; url: string; key: Uint8Array; auth: Uint8Array; chatPush: boolean }
   | { t: "drop_push"; id: string }
   /**
    * Leaves a sealed copy of this account's identity on the relay, so that a
@@ -342,6 +359,7 @@ export type ServerFrame =
       keys: boolean;
       otks: number;
       push: boolean;
+      chatPush: boolean;
       pushStatus: number | null;
       vapid: string;
       queued: number;
@@ -526,7 +544,7 @@ export function parseClientFrame(raw: string | ArrayBuffer): ClientFrame | Error
       const key = fromBase64(frame.key, 128);
       const auth = fromBase64(frame.auth, 128);
       if (!isRequestId(frame.id) || typeof frame.url !== "string" || !key || !auth) return "bad_frame";
-      return { t: "put_push", id: frame.id, url: frame.url, key, auth };
+      return { t: "put_push", id: frame.id, url: frame.url, key, auth, chatPush: frame.chatPush === true };
     }
     case "drop_push":
       if (!isRequestId(frame.id)) return "bad_frame";
