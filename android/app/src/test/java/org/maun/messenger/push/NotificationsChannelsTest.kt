@@ -32,6 +32,19 @@ class NotificationsChannelsTest {
     private val messageChannelIds = SoundSettings.Channel.values().map { it.id }
 
     @Test
+    fun `a late dismissal only covers the original messages in the original database`() {
+        val receiver = MessageDismissed()
+        fun dismiss(seq: Long) {
+            val action = android.content.Intent().setData(android.net.Uri.parse("maun-notification://first/$seq"))
+            receiver.onReceive(context, action)
+        }
+        dismiss(32)
+        dismiss(8)
+        assertEquals(32L, Notifications(context).dismissedThrough("first"))
+        assertEquals(0L, Notifications(context).dismissedThrough("replacement"))
+    }
+
+    @Test
     fun `there is one message channel for each choice`() {
         Notifications(context).createChannels()
         for (id in messageChannelIds) {

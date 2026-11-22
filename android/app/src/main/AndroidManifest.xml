@@ -107,6 +107,8 @@
             </intent-filter>
         </service>
 
+        <receiver android:name=".push.MessageDismissed" android:exported="false" />
+
         <!-- Holds the connection open while "Stay connected" is on. -->
         <service
             android:name=".push.ConnectedService"

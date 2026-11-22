@@ -70,11 +70,12 @@ class ChatEngineTest {
         @Volatile
         var pushUploaded: PushAddress? = null
 
+        @Volatile var renewals = 0
         private var rejectedAddress: PushAddress? = null
         private val push = object : PushState {
             override suspend fun rejected() = rejectedAddress
             override suspend fun setRejected(address: PushAddress?) { rejectedAddress = address }
-            override fun renew() = Unit
+            override fun renew() { renewals++ }
             override suspend fun wanted() = pushWanted
             override suspend fun uploaded() = pushUploaded
             override suspend fun setUploaded(address: PushAddress?) {
@@ -920,6 +921,36 @@ class ChatEngineTest {
         assertEquals(1, bob.saved.count { it == "drop_push" })
         assertNull(bob.engine.pushProblem.value)
         bob.offline()
+    }
+
+    @Test
+    fun `an expired upload requests a new subscription and never reuploads the rejected tuple`() {
+        val bob = Phone()
+        val expired = PushAddress("https://push.example.org/old", "old-key", "old-auth")
+        bob.pushWanted = expired
+        bob.pushUploaded = expired
+        bob.engine.link = object : RelayLink {
+            override val ready = Ready(false, true, 100, hasPush = false, pushStatus = 410, chatPush = false)
+            override fun send(frame: JSONObject) = true
+            override suspend fun request(frame: JSONObject, timeoutMillis: Long): JSONObject {
+                val type = frame.getString("t")
+                if (type == "put_push") bob.saved += type
+                return if (type == "echo") JSONObject().put("t", "echo").put("through", 0)
+                else JSONObject().put("t", "saved")
+            }
+        }
+        bob.engine.onOnline()
+        bob.caughtUp()
+        assertEquals(1, bob.renewals)
+        assertTrue(bob.saved.isEmpty())
+        bob.engine.onOnline()
+        bob.caughtUp()
+        assertEquals(1, bob.renewals)
+        assertTrue(bob.saved.isEmpty())
+        bob.pushWanted = expired.copy(key = "renewed-key")
+        bob.engine.pushChanged()
+        eventually("renewed tuple accepted") { bob.pushUploaded == bob.pushWanted }
+        assertEquals(listOf("put_push"), bob.saved.toList())
     }
 
     @Test

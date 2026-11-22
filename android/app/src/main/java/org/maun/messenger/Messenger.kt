@@ -318,6 +318,7 @@ class Messenger(context: Context) {
         }
     }
     private var announcedThrough = 0L
+    private var notificationEpoch = ""
     private val presentation = Mutex()
 
     private val setup = Mutex()
@@ -357,6 +358,9 @@ class Messenger(context: Context) {
                 _chats.value = db.chat().observeChats().first()
                 // Only the first upgrade baselines existing history. Every later launch
                 // recovers unread rows committed after the last successful presentation.
+                notificationEpoch = db.meta().get(KEY_NOTIFICATION_EPOCH) ?: java.util.UUID.randomUUID().toString().also {
+                    db.meta().put(MetaEntry(KEY_NOTIFICATION_EPOCH, it))
+                }
                 announcedThrough = db.meta().get(KEY_ANNOUNCED)?.toLongOrNull() ?: newestUnread(_chats.value).also {
                     db.meta().put(MetaEntry(KEY_ANNOUNCED, it.toString()))
                 }
@@ -1461,16 +1465,17 @@ class Messenger(context: Context) {
             return@synchronized null
         }
         val newest = newestUnread(chats)
-        val posted = notifications.postedThrough()
+        val posted = notifications.postedThrough(notificationEpoch)
         if (newest <= announcedThrough) {
             // An update to a dismissed notification must not put it back in the shade.
-            if (!inForeground && posted != null) notifications.showMessages(announcement, false, announcedThrough)
+            if (!inForeground && posted != null) notifications.showMessages(announcement, false, announcedThrough, notificationEpoch)
             return@synchronized null
         }
         when {
+            notifications.dismissedThrough(notificationEpoch) >= newest -> Unit
             posted != null && posted >= newest -> Unit
             inForeground -> sounds.playIncoming()
-            !notifications.showMessages(announcement, true, newest) -> return@synchronized null
+            !notifications.showMessages(announcement, true, newest, notificationEpoch) -> return@synchronized null
         }
         announcedThrough = newest
         newest
@@ -1720,6 +1725,7 @@ class Messenger(context: Context) {
         private const val KEY_PERMISSIONS_SETUP_PENDING = "permissions_setup_pending"
         private const val KEY_PERMISSIONS_SETUP_DONE = "permissions_setup_done"
         private const val KEY_REGISTRATION_ID = "signal_registration_id"
+        private const val KEY_NOTIFICATION_EPOCH = "notification_epoch"
         private const val KEY_ANNOUNCED = "last_announced_message_seq"
         private const val KEY_PUSH_WANTED = "push_wanted"
         private const val KEY_PUSH_HELD = "push_held"

@@ -9,6 +9,7 @@ import {
   PUSH_CALL_TTL_SECONDS,
   PUSH_CONTACT,
   PUSH_DAILY_CAP,
+  PUSH_QUOTA,
   PUSH_PAYLOAD,
   PUSH_PAYLOAD_CALL,
   PUSH_REPEAT_MS,
@@ -770,6 +771,8 @@ describe("waking a phone", () => {
     await editPush(bob.id, "UPDATE push SET sent = ?, pending = 0", PUSH_DAILY_CAP);
     await sendMessage(a, bob.id, randomBytes(8));
     expect(await wakeCount(1)).toBe(1);
+
+    expect(await readyOf(bob)).toMatchObject({ pushStatus: PUSH_QUOTA });
 
     // A new address does not reset the count.
     const b = await online(bob);

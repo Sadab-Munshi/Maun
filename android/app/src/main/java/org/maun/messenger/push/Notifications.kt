@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.os.Build
 import androidx.core.app.Person
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -196,13 +197,16 @@ class Notifications(context: Context) {
         get() = manager.areNotificationsEnabled()
 
     /** Survives process death, including death after notify and before the local checkpoint. */
-    fun postedThrough(): Long? = manager.activeNotifications.firstOrNull { it.id == ID_MESSAGES }
+    fun postedThrough(epoch: String): Long? = manager.activeNotifications
+        .firstOrNull { it.id == ID_MESSAGES && it.notification.extras.getString(EXTRA_EPOCH) == epoch }
         ?.notification?.extras?.getLong(EXTRA_SEQUENCE)
+
+    fun dismissedThrough(epoch: String): Long = settings.getLong("dismissed/$epoch", 0L)
 
     /** Shows or updates the one notification about unread messages. [alert] makes it sound. */
     // The permission is checked just above the call; lint does not follow that.
     @SuppressLint("MissingPermission")
-    fun showMessages(announcement: Announcement, alert: Boolean, sequence: Long): Boolean {
+    fun showMessages(announcement: Announcement, alert: Boolean, sequence: Long, epoch: String): Boolean {
         if (!allowed) return false
         val channel = SoundSettings.incomingChannel(context)
         val made = manager.getNotificationChannelCompat(channel)
@@ -223,7 +227,11 @@ class Notifications(context: Context) {
                     NotificationCompat.InboxStyle().also { style -> announcement.lines.forEach(style::addLine) }
                 },
             )
-            .addExtras(android.os.Bundle().apply { putLong(EXTRA_SEQUENCE, sequence) })
+            .addExtras(android.os.Bundle().apply {
+                putLong(EXTRA_SEQUENCE, sequence)
+                putString(EXTRA_EPOCH, epoch)
+            })
+            .setDeleteIntent(MessageDismissed.intent(context, epoch, sequence))
             .setNumber(announcement.total)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
@@ -444,6 +452,7 @@ class Notifications(context: Context) {
         )
 
     companion object {
+        private const val EXTRA_EPOCH = "org.maun.messenger.notificationEpoch"
         private const val EXTRA_SEQUENCE = "org.maun.messenger.messageSequence"
         private const val KEY_SHOW_TEXT = "notify_text"
 
@@ -476,5 +485,28 @@ class Notifications(context: Context) {
         private const val LEGACY_MESSAGES = "messages"
         private const val CHANNEL_BACKGROUND = "background"
         private const val CHANNEL_LIVE = "live_location"
+    }
+}
+
+/** Android can deliver a dismissal after the posting process has died. */
+class MessageDismissed : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val uri = intent.data ?: return
+        val epoch = uri.host ?: return
+        val sequence = uri.lastPathSegment?.toLongOrNull() ?: return
+        val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val key = "dismissed/$epoch"
+        if (sequence > prefs.getLong(key, 0L)) prefs.edit().putLong(key, sequence).apply()
+    }
+
+    companion object {
+        fun intent(context: Context, epoch: String, sequence: Long): PendingIntent {
+            // Unique PendingIntent identity prevents a delayed swipe from dismissing a newer event.
+            val uri = Uri.Builder().scheme("maun-notification").authority(epoch).appendPath(sequence.toString()).build()
+            return PendingIntent.getBroadcast(
+                context, 0, Intent(context, MessageDismissed::class.java).setData(uri),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+        }
     }
 }

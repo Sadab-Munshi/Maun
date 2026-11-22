@@ -934,6 +934,7 @@ export class Mailbox extends DurableObject<Env> {
     const sentToday = row.day === today ? (row.sent as number) : 0;
     const cost = parts?.length ?? 1;
     if (sentToday + cost > PUSH_DAILY_CAP) {
+      sql.exec("UPDATE push SET attempt = NULL WHERE id = 1");
       sql.exec("INSERT OR REPLACE INTO push_result (id, status) VALUES (1, ?)", PUSH_QUOTA);
       return;
     }
@@ -1151,8 +1152,10 @@ export class Mailbox extends DurableObject<Env> {
   private left(ws: WebSocket): void {
     const state = getState(ws);
     if (state?.s !== "ready" || this.connected(ws)) return;
-    const waiting = this.ctx.storage.sql.exec("SELECT MAX(wake) AS kind FROM queue WHERE at >= ?", state.t).one().kind;
-    if (waiting === 2) this.wake(Date.now(), true);
+    const now = Date.now();
+    const since = Math.max(state.t, now - PUSH_CALL_TTL_SECONDS * 1000);
+    const call = this.ctx.storage.sql.exec("SELECT 1 FROM queue WHERE wake = 2 AND at >= ? LIMIT 1", since).toArray()[0];
+    if (call) this.wake(now, true);
   }
 
   /** Deletes messages nobody collected in time, and the points of shares that have run out. */

@@ -135,6 +135,7 @@ class ChatEngine(
     private val backlog = MutableStateFlow(-1)
     private val committedThrough = MutableStateFlow(-1L)
     private val settingUp = MutableStateFlow(false)
+    private var setupJob: Job? = null
     private val outboxRuns = MutableStateFlow(0)
 
     private val pushLock = Mutex()
@@ -214,6 +215,7 @@ class ChatEngine(
 
     /** The connection has just logged in. */
     fun onOnline() {
+        setupJob?.cancel()
         val ready = link?.ready
         relayHasPush = ready?.hasPush == true
         upgradePush = ready?.chatPush == false
@@ -221,7 +223,7 @@ class ChatEngine(
         committedThrough.value = 0
         backlog.value = ready?.queued ?: 0
         kick()
-        scope.launch {
+        setupJob = scope.launch {
             try {
                 coroutineScope {
                     launch { quietly { publishKeys() } }
@@ -231,14 +233,17 @@ class ChatEngine(
                     }
                 }
             } finally {
-                kick()
-                settingUp.value = false
+                if (link?.ready === ready) {
+                    kick()
+                    settingUp.value = false
+                }
             }
         }
     }
 
     /** The connection that had logged in is gone. */
     fun onOffline() {
+        setupJob?.cancel()
         backlog.value = -1
         committedThrough.value = -1
     }
