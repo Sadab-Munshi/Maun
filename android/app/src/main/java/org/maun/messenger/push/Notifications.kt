@@ -239,7 +239,8 @@ class Notifications(context: Context) {
         }
         DeliveryTrace.stepped(
             context, DeliveryTrace.SHOWN,
-            "alert=$alert count=${announcement.total} channel=$channel importance=${made?.importance ?: -1}",
+            "alert=$alert count=${announcement.total} channel=$channel importance=${made?.importance ?: -1}" +
+                " sound=${made?.sound ?: "none"}" + (made?.sound?.let { " readable=${canRead(it)}" } ?: ""),
         )
         return true
     }

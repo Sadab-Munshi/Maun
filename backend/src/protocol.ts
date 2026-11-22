@@ -68,14 +68,7 @@ export const DELIVERY_WINDOW = 50;
 export const KIND_MESSAGE = 2;
 export const KIND_PREKEY_MESSAGE = 3;
 
-/**
- * Wake-ups. One is sent when a message arrives and the phone is not connected,
- * so that the phone can fetch it and tell its owner at once. Messages that
- * come within PUSH_REPEAT_MS of a wake-up ride on that one; after that the
- * next message wakes the phone again, whether or not it came for the last.
- * PUSH_DAILY_CAP bounds what a mailbox can make the relay send to an address
- * of its choosing.
- */
+/** Repeat suppression for legacy and recovery wake words. Each inline chat carries its own ciphertext. */
 export const PUSH_REPEAT_MS = 5 * 1000;
 export const PUSH_DAILY_CAP = 2000;
 /** A message marked urgent (a call that is ringing) may wake the phone again this soon after the last wake-up. */
@@ -144,6 +137,8 @@ export function chatPushParts(to: string, from: string, seq: number, kind: numbe
 
 /** Recorded as the outcome of a wake-up that has been started and has not finished. */
 export const PUSH_UNFINISHED = -1;
+/** The relay refused dispatch under its per-mailbox daily budget. */
+export const PUSH_QUOTA = -2;
 
 export const NONCE_BYTES = 32;
 
@@ -292,7 +287,7 @@ export type ClientFrame =
   /** `dev`: which phone this is. A member-only relay looks at it before letting the phone in. */
   | { t: "register"; deviceKey: Uint8Array; identitySig: Uint8Array; deviceSig: Uint8Array; access: string | null; dev: DeviceReport | null }
   | { t: "login"; sig: Uint8Array; access: string | null; dev: DeviceReport | null }
-  | { t: "echo"; id: string; body: string }
+  | { t: "echo"; id: string; body: string; drain?: boolean }
   | { t: "put_keys"; id: string; regId: number; spk: SignedKey; kpk: SignedKey }
   | { t: "put_otks"; id: string; keys: OneTimeKey[] }
   | { t: "get_keys"; id: string; of: string }
@@ -368,7 +363,7 @@ export type ServerFrame =
       verified: boolean;
       files: string;
     }
-  | { t: "echo"; id: string; body: string; at: number }
+  | { t: "echo"; id: string; body: string; at: number; through?: number }
   | { t: "saved"; id: string; otks: number }
   | {
       t: "keys";
@@ -502,7 +497,7 @@ export function parseClientFrame(raw: string | ArrayBuffer): ClientFrame | Error
     }
     case "echo":
       if (typeof frame.id !== "string" || typeof frame.body !== "string") return "bad_frame";
-      return { t: "echo", id: frame.id, body: frame.body };
+      return { t: "echo", id: frame.id, body: frame.body, ...(frame.drain === true && { drain: true }) };
     case "put_keys": {
       const spk = signedKey(frame.spk, EC_KEY_BYTES);
       const kpk = signedKey(frame.kpk, KYBER_KEY_BYTES);

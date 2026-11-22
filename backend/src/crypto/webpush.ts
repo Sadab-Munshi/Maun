@@ -2,8 +2,8 @@
 //
 // A phone's push app gives it a public key and a shared secret. Whatever is
 // sent to the push service is encrypted to those, so the push service carries
-// bytes it cannot read. Maun only ever sends a fixed wake-up word, but
-// UnifiedPush requires the encryption, and it keeps even that word private.
+// bytes it cannot read. The plaintext is a fixed wake word or a padded
+// fragment of the existing Signal ciphertext with its routing header.
 
 /** An uncompressed P-256 point: 0x04, then X and Y. */
 export const PUSH_KEY_BYTES = 65;

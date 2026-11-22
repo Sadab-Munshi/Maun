@@ -16,12 +16,12 @@ internal class ChatPushPart private constructor(
     val length: Int,
     val bytes: ByteArray,
 ) {
+    private val prefix get() = "chat-part/$recipient/$seq/$sender/$kind/$length/"
     val count get() = (length + PART_BYTES - 1) / PART_BYTES
 
     /** Caller owns a Room transaction. Partial ciphertext survives an ordinary process death. */
     fun assemble(meta: ChatPartDao): ByteArray? {
         if (count == 1) return bytes
-        val prefix = "chat-part/$recipient/$seq/$sender/$kind/$length/"
         meta.putPart(MetaEntry(prefix + index, Base64.getEncoder().encodeToString(bytes)))
         meta.trimParts()
         val parts = meta.parts(prefix)
@@ -31,8 +31,11 @@ internal class ChatPushPart private constructor(
             if (part.key != prefix + i) return null
             Base64.getDecoder().decode(part.value).copyInto(body, i * PART_BYTES)
         }
-        meta.removeParts(prefix)
         return body
+    }
+
+    fun saved(meta: ChatPartDao) {
+        if (count > 1) meta.removeParts(prefix)
     }
 
     companion object {

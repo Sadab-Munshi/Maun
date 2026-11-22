@@ -678,7 +678,7 @@ class ChatEngineTest {
         bob.db.failNextMessageInsert = true
         alice.send(bob, "do not lose me")
         eventually("the relay delivered it") { bob.delivered.isNotEmpty() }
-        eventually("stored by the relay") { alice.statusOf(bob, "do not lose me") == MessageStatus.SENT }
+        eventually("stored by the relay") { alice.statusOf(bob, "do not lose me") >= MessageStatus.SENT }
         // A failed save tears down the connection. The relay replays it without
         // a second push, a manual reopen, or another outgoing chat.
         eventually("replayed and saved once") { bob.texts(alice) == listOf("< do not lose me") }

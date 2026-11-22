@@ -45,6 +45,7 @@ import {
   PUSH_CALL_TTL_SECONDS,
   PUSH_PAYLOAD,
   PUSH_PAYLOAD_CALL,
+  PUSH_QUOTA,
   PUSH_REPEAT_MS,
   PUSH_URGENT_REPEAT_MS,
   PUSH_SETTLE_MS,
@@ -102,6 +103,8 @@ type SocketState =
 
 type ReadyState = Extract<SocketState, { s: "ready" }>;
 
+type QueuedChat = { to: string; from: string; seq: number; kind: number; body: Uint8Array };
+
 type Account = { deviceKey: Uint8Array };
 
 /** What the front door is told when someone wants to upload or download a file. */
@@ -133,10 +136,10 @@ const STANDING_FRESH_MS = 10 * 60 * 1000;
  *     record of who wrote.
  *
  * A phone that is not always connected may also leave a wake-up address (a
- * Web Push endpoint from the push app it uses). When a message arrives and no
- * phone is connected, the mailbox sends one encrypted, content-free wake-up
- * there. The push service learns that this phone was woken and when; it does
- * not learn by whom or why.
+ * Web Push endpoint). When a chat arrives, the mailbox also sends it through
+ * Web Push if supported.
+ * The provider sees timing and the number of fixed-size parts. The routing
+ * header and Signal ciphertext are sealed to the receiving installation.
  */
 export class Mailbox extends DurableObject<Env> {
   // Mirrors of what is in storage, rebuilt after the object has been evicted.
@@ -282,10 +285,13 @@ export class Mailbox extends DurableObject<Env> {
     // request and at most MEMBER_CHECK_MS late.
     if (frame.t !== "ack" && frame.t !== "echo" && (await this.banned(state.m))) return;
     switch (frame.t) {
-      case "echo":
-        // Round-trip check used by the app's connection test.
-        send(ws, { t: "echo", id: frame.id, body: frame.body, at: Date.now() });
+      case "echo": {
+        // A fetch closing its socket asks for the highest queued sequence at this
+        // boundary, including messages that arrived after the login snapshot.
+        const through = frame.drain ? Number(sql.exec("SELECT COALESCE(MAX(seq), 0) AS seq FROM queue").one().seq) : undefined;
+        send(ws, { t: "echo", id: frame.id, body: frame.body, at: Date.now(), through });
         return;
+      }
 
       case "put_keys":
         // The signatures are not checked here. Whoever fetches the keys checks
@@ -364,9 +370,10 @@ export class Mailbox extends DurableObject<Env> {
       case "ack": {
         // Only something sent on this connection can be acknowledged on it.
         if (frame.seq > state.c) return;
-        const gone = sql.exec("DELETE FROM queue WHERE seq = ? RETURNING sender", frame.seq).toArray()[0];
+        const gone = sql.exec("DELETE FROM queue WHERE seq = ? RETURNING sender, wake", frame.seq).toArray()[0];
         if (gone) {
           this.forget(gone.sender as string);
+          if (gone.wake !== 0) sql.exec("UPDATE wake_retry SET progressed = 1 WHERE id = 1 AND progressed = 0");
           setState(ws, { ...state, o: Math.max(0, state.o - 1) });
         }
         this.pump(ws);
@@ -382,19 +389,20 @@ export class Mailbox extends DurableObject<Env> {
         }
         // When this address was first seen: a push service may need a
         // moment before it accepts a new one.
-        if (sql.exec("SELECT 1 FROM push WHERE id = 1 AND url = ?", frame.url).toArray().length === 0) {
+        if (!sql.exec("SELECT 1 FROM push WHERE id = 1 AND url = ? AND key = ? AND auth = ?", frame.url, blob(frame.key), blob(frame.auth)).toArray().length) {
           sql.exec("INSERT OR REPLACE INTO push_since (id, at) VALUES (1, ?)", Date.now());
         }
         // The daily count survives a change of address, so changing it over
         // and over does not buy more wake-ups.
         sql.exec(
-          `INSERT INTO push (id, url, key, auth, chat_push, last, pending, day, sent) VALUES (1, ?, ?, ?, ?, 0, 0, 0, 0)
+          `INSERT INTO push (id, url, key, auth, chat_push, owner, last, pending, day, sent) VALUES (1, ?, ?, ?, ?, ?, 0, 0, 0, 0)
            ON CONFLICT (id) DO UPDATE SET url = excluded.url, key = excluded.key, auth = excluded.auth,
-             pending = 0, call_wake = 0, chat_push = excluded.chat_push, attempt = NULL`,
+             pending = 0, call_wake = 0, chat_push = excluded.chat_push, owner = excluded.owner, attempt = NULL`,
           frame.url,
           blob(frame.key),
           blob(frame.auth),
           frame.chatPush ? 1 : 0,
+          state.m,
         );
         // What happened to the old address's wake-ups says nothing about this one.
         sql.exec("DELETE FROM push_result");
@@ -904,9 +912,7 @@ export class Mailbox extends DurableObject<Env> {
    * Sends a wake-up to the phone's push address, if it left one and has not
    * just been sent one. Returns at once; the request runs in the background.
    */
-  private wake(now: number, urgent = false, armRetry = true, message?: {
-    to: string; from: string; seq: number; kind: number; body: Uint8Array;
-  }): void {
+  private wake(now: number, urgent = false, armRetry = true, message?: QueuedChat): void {
     const sql = this.ctx.storage.sql;
     const row = sql.exec("SELECT url, key, auth, last, pending, call_wake, chat_push, day, sent FROM push WHERE id = 1").toArray()[0];
     if (!row) return;
@@ -927,7 +933,10 @@ export class Mailbox extends DurableObject<Env> {
     const today = Math.floor(now / 86_400_000);
     const sentToday = row.day === today ? (row.sent as number) : 0;
     const cost = parts?.length ?? 1;
-    if (sentToday + cost > PUSH_DAILY_CAP) return;
+    if (sentToday + cost > PUSH_DAILY_CAP) {
+      sql.exec("INSERT OR REPLACE INTO push_result (id, status) VALUES (1, ?)", PUSH_QUOTA);
+      return;
+    }
     const attempt = crypto.randomUUID();
     sql.exec(
       "UPDATE push SET last = ?, pending = 1, call_wake = ?, day = ?, sent = ?, attempt = ? WHERE id = 1",
@@ -962,7 +971,8 @@ export class Mailbox extends DurableObject<Env> {
     // replacing it with one that looks for the phone later, and a second call
     // does not move the moment already promised either.
     const armed = sql.exec("SELECT at, urgent FROM wake_retry WHERE id = 1").toArray()[0];
-    if (armed && Number(armed.urgent) === 1 && (!urgent || (armed.at as number) <= now + wait)) return;
+    if (armed && ((armed.urgent === 1 && !urgent) ||
+      (armed.urgent === Number(urgent) && (armed.at as number) <= now + wait))) return;
     // `seen` is how much was waiting when this try was arranged. The next try
     // compares it with how much is waiting then: only a message that was
     // actually taken counts as the phone having come.
@@ -983,8 +993,10 @@ export class Mailbox extends DurableObject<Env> {
 
   /** Asks to be called at [at], unless something sooner is already asked for. */
   private async armAlarm(at: number): Promise<void> {
-    const current = await this.ctx.storage.getAlarm();
-    if (current === null || current > at) await this.ctx.storage.setAlarm(at);
+    await this.ctx.storage.transaction(async (txn) => {
+      const current = await txn.getAlarm();
+      if (current === null || current > at) await txn.setAlarm(at);
+    });
   }
 
   /**
@@ -994,7 +1006,7 @@ export class Mailbox extends DurableObject<Env> {
    */
   private async retryWake(): Promise<void> {
     const sql = this.ctx.storage.sql;
-    const row = sql.exec("SELECT at, count, seen, urgent FROM wake_retry WHERE id = 1").toArray()[0];
+    const row = sql.exec("SELECT at, count, seen, urgent, progressed FROM wake_retry WHERE id = 1").toArray()[0];
     if (!row) return;
     const now = Date.now();
     const at = row.at as number;
@@ -1003,10 +1015,10 @@ export class Mailbox extends DurableObject<Env> {
       await this.armAlarm(at);
       return;
     }
-    const urgent = row.urgent === 1;
+    const urgent = row.urgent === 1 && sql.exec("SELECT 1 FROM queue WHERE wake = 2 AND at >= ? LIMIT 1", now - PUSH_CALL_TTL_SECONDS * 1000).toArray().length > 0;
     const waiting = this.queueDepth();
-    const hasAddress = sql.exec("SELECT 1 FROM push WHERE id = 1").toArray().length > 0;
-    if (waiting === 0 || !hasAddress) {
+    const address = sql.exec("SELECT owner, chat_push FROM push WHERE id = 1").toArray()[0];
+    if (waiting === 0 || !address) {
       // Everything waiting has been taken, or there is nowhere to send a
       // wake-up: there is nothing left to look for.
       sql.exec("DELETE FROM wake_retry");
@@ -1017,24 +1029,32 @@ export class Mailbox extends DurableObject<Env> {
     // of it, which is the whole reason this chain exists. What counts is the
     // queue having gone down since the last try.
     const seen = Number(row.seen ?? 0);
-    const progress = waiting < seen;
+    const progress = row.progressed === 1 || waiting < seen;
     const count = row.count as number;
     const waits = urgent ? WAKE_RETRY_WAITS_CALL_MS : WAKE_RETRY_WAITS_MS;
     if (count + 1 >= waits.length) {
       sql.exec("DELETE FROM wake_retry");
     } else {
       sql.exec(
-        "UPDATE wake_retry SET at = ?, count = ?, seen = ? WHERE id = 1",
+        "UPDATE wake_retry SET at = ?, count = ?, seen = ?, progressed = 0, urgent = ? WHERE id = 1",
         now + waits[count + 1]!,
         count + 1,
         waiting,
+        Number(urgent),
       );
       await this.armAlarm(now + waits[count + 1]!);
     }
     // The chain has already been moved on above, so this one only sends. A
     // phone that demonstrably took some of what was waiting is left alone to
     // take the rest; one that took nothing is woken again.
-    if (!progress) this.wake(now, urgent, false);
+    if (progress) return;
+    const chat = !urgent && address.chat_push === 1 && typeof address.owner === "string"
+      ? sql.exec("SELECT seq, sender, kind, body FROM queue WHERE wake = 1 ORDER BY seq LIMIT 1").toArray()[0]
+      : undefined;
+    this.wake(now, urgent, false, chat ? {
+      to: address.owner as string, from: chat.sender as string, seq: chat.seq as number,
+      kind: chat.kind as number, body: bytes(chat.body),
+    } : undefined);
   }
 
   private async deliverWake(
@@ -1079,13 +1099,7 @@ export class Mailbox extends DurableObject<Env> {
     return row !== undefined && Date.now() - (row.at as number) < PUSH_SETTLE_MS;
   }
 
-  /** Sends one wake-up. Returns the push service's HTTP status, or 0 if it could not be reached. */
-  /**
-   * Hands one wake-up to the push service. It is always sent as urgent: a
-   * wake-up is only ever sent for something the phone will show its owner (a
-   * message or a ringing call), never for a receipt, so the push service has
-   * no reason to slow them down.
-   */
+  /** Posts one high-urgency encrypted record. Returns the HTTP status or zero on failure. */
   private async postWake(url: string, key: Uint8Array, auth: Uint8Array, call: boolean, payload: Uint8Array): Promise<number> {
     let status = 0;
     try {
@@ -1133,12 +1147,7 @@ export class Mailbox extends DurableObject<Env> {
     return read() ?? created;
   }
 
-  /**
-   * A phone has gone. Anything that arrived while it was connected and was
-   * never acknowledged was probably lost on the way, so the phone is woken to
-   * fetch it. Older messages are left alone: it has already been woken for
-   * those, and a message it cannot accept must not wake it for ever.
-   */
+  /** A disconnected call can take its fallback immediately. Chats were pushed on insertion. */
   private left(ws: WebSocket): void {
     const state = getState(ws);
     if (state?.s !== "ready" || this.connected(ws)) return;
@@ -1252,6 +1261,7 @@ export class Mailbox extends DurableObject<Env> {
     const pushColumns = sql.exec("SELECT name FROM pragma_table_info('push')").toArray();
     if (!pushColumns.some((row) => row.name === "chat_push")) sql.exec("ALTER TABLE push ADD COLUMN chat_push INTEGER NOT NULL DEFAULT 0");
     if (!pushColumns.some((row) => row.name === "attempt")) sql.exec("ALTER TABLE push ADD COLUMN attempt TEXT");
+    if (!pushColumns.some((row) => row.name === "owner")) sql.exec("ALTER TABLE push ADD COLUMN owner TEXT");
     // One row: when the address in `push` was first left here.
     sql.exec("CREATE TABLE IF NOT EXISTS push_since (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL)");
     // One row: the key pair wake-ups are signed with.
@@ -1267,6 +1277,9 @@ export class Mailbox extends DurableObject<Env> {
     // A mailbox written to by the first build of the retry chain has no `seen`.
     if (!sql.exec("SELECT name FROM pragma_table_info('wake_retry')").toArray().some((row) => row.name === "seen")) {
       sql.exec("ALTER TABLE wake_retry ADD COLUMN seen INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!sql.exec("SELECT name FROM pragma_table_info('wake_retry')").toArray().some((row) => row.name === "progressed")) {
+      sql.exec("ALTER TABLE wake_retry ADD COLUMN progressed INTEGER NOT NULL DEFAULT 0");
     }
     // One row: the token for the file routes, and the day's uploads.
     sql.exec(

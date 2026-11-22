@@ -28,6 +28,7 @@ object DatabaseKey {
         IllegalStateException("The database key can no longer be unlocked on this phone", cause)
 
     private const val KEYSTORE = "AndroidKeyStore"
+    private const val PUSH_ALIAS = "maun.pushwork.v1"
     private const val WRAP_ALIAS = "maun.dbwrap.v1"
     private const val FILE_NAME = "db.key"
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
@@ -38,40 +39,50 @@ object DatabaseKey {
     @Synchronized
     fun loadOrCreate(context: Context): Loaded {
         val file = File(context.noBackupFilesDir, FILE_NAME)
-        if (file.exists()) return Loaded(unwrap(file.readBytes()), created = false)
+        if (file.exists()) {
+            val key = try {
+                unwrap(file.readBytes(), WRAP_ALIAS)
+            } catch (e: Exception) {
+                throw LostException(e)
+            }
+            return Loaded(key, created = false)
+        }
 
         val key = ByteArray(KEY_BYTES).also { SecureRandom().nextBytes(it) }
         // Write to a temporary file first so a crash cannot leave half a key.
         val temp = File(file.parentFile, "$FILE_NAME.tmp")
-        temp.writeBytes(wrap(key))
+        temp.writeBytes(wrap(key, WRAP_ALIAS))
         check(temp.renameTo(file)) { "could not save the database key" }
         return Loaded(key, created = true)
     }
 
-    private fun wrap(key: ByteArray): ByteArray {
+    // The work scheduler uses its own database. Keep routing IDs and ciphertext
+    // sealed there as well, with a distinct Keystore key and a fresh IV per record.
+    @Synchronized
+    fun sealPushWork(part: ByteArray): ByteArray = wrap(part, PUSH_ALIAS)
+
+    fun openPushWork(sealed: ByteArray): ByteArray = unwrap(sealed, PUSH_ALIAS)
+
+    private fun wrap(bytes: ByteArray, alias: String): ByteArray {
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, wrapKey(createIfMissing = true))
-        return cipher.iv + cipher.doFinal(key)
+        cipher.init(Cipher.ENCRYPT_MODE, wrapKey(alias, createIfMissing = true))
+        return cipher.iv + cipher.doFinal(bytes)
     }
 
-    private fun unwrap(stored: ByteArray): ByteArray {
-        try {
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            val iv = GCMParameterSpec(TAG_BITS, stored, 0, IV_BYTES)
-            cipher.init(Cipher.DECRYPT_MODE, wrapKey(createIfMissing = false), iv)
-            return cipher.doFinal(stored, IV_BYTES, stored.size - IV_BYTES)
-        } catch (e: Exception) {
-            throw LostException(e)
-        }
+    private fun unwrap(stored: ByteArray, alias: String): ByteArray {
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        val iv = GCMParameterSpec(TAG_BITS, stored, 0, IV_BYTES)
+        cipher.init(Cipher.DECRYPT_MODE, wrapKey(alias, createIfMissing = false), iv)
+        return cipher.doFinal(stored, IV_BYTES, stored.size - IV_BYTES)
     }
 
-    private fun wrapKey(createIfMissing: Boolean): SecretKey {
+    private fun wrapKey(alias: String, createIfMissing: Boolean): SecretKey {
         val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-        (keyStore.getKey(WRAP_ALIAS, null) as? SecretKey)?.let { return it }
+        (keyStore.getKey(alias, null) as? SecretKey)?.let { return it }
         check(createIfMissing) { "wrapping key missing from Keystore" }
 
         val spec = KeyGenParameterSpec.Builder(
-            WRAP_ALIAS,
+            alias,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
         )
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)

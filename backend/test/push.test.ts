@@ -356,6 +356,48 @@ describe("waking a phone", () => {
     await hangUp(a);
   });
 
+  it("keeps quiet rows silent across disconnect and recovery and reports the drain boundary", async () => {
+    const alice = await registered();
+    const bob = await withPush(true);
+    const a = await online(alice);
+    const b = await online(bob);
+    await sendMessage(a, bob.id, randomBytes(12));
+    const chat = await b.nextJson();
+    expect(await wakeCount(1)).toBe(1);
+    const id = requestId();
+    a.sendJson({ t: "send", id, to: bob.id, kind: 2, body: toBase64(randomBytes(8)), quiet: true });
+    expect(await a.nextJson()).toMatchObject({ t: "stored", id });
+    const receipt = await b.nextJson();
+    b.sendJson({ t: "ack", seq: chat.seq });
+    b.sendJson({ t: "echo", id: "boundary", body: "", drain: true });
+    expect(await b.nextJson()).toMatchObject({ t: "echo", through: receipt.seq });
+    await hangUp(b);
+    await editPush(bob.id, "UPDATE wake_retry SET at = ?", Date.now() - 1);
+    await runAlarm(bob.id);
+    expect(await wakeCount(1)).toBe(1);
+    expect(await retryRow(bob.id)).toBeUndefined();
+    await hangUp(a);
+  });
+
+  it("replays ciphertext on recovery when the first provider POST fails", async () => {
+    const alice = await registered();
+    const bob = await withPush(true);
+    const a = await online(alice);
+    const body = randomBytes(80);
+    pushServiceAnswer = () => new Response(null, { status: 503 });
+    await sendMessage(a, bob.id, body);
+    expect(await wakeCount(1)).toBe(1);
+    await vi.waitFor(async () => expect((await pushRow(bob.id))?.pending).toBe(0));
+    pushServiceAnswer = () => new Response(null, { status: 201 });
+    await editPush(bob.id, "UPDATE wake_retry SET at = ?", Date.now() - 1);
+    await runAlarm(bob.id);
+    expect(await wakeCount(2)).toBe(2);
+    const first = await bob.keys.decrypt(wakes[0]!.body);
+    expect(await bob.keys.decrypt(wakes[1]!.body)).toEqual(first);
+    expect(first.slice(CHAT_HEADER_BYTES, CHAT_HEADER_BYTES + body.length)).toEqual(body);
+    await hangUp(a);
+  });
+
   it("wakes the phone again when it does not come, then stops", async () => {
     // The push service answering is not the phone answering: an accepted
     // wake-up can be one Google or the phone never acted on.

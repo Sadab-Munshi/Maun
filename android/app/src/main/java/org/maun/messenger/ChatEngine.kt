@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -132,6 +133,7 @@ class ChatEngine(
     // there is no connection), the work done right after login, and passes
     // over the outbox that have been asked for and not finished.
     private val backlog = MutableStateFlow(-1)
+    private val committedThrough = MutableStateFlow(-1L)
     private val settingUp = MutableStateFlow(false)
     private val outboxRuns = MutableStateFlow(0)
 
@@ -195,8 +197,17 @@ class ChatEngine(
      * this, the connection can be dropped without losing anything.
      */
     suspend fun awaitCaughtUp() {
-        combine(backlog, settingUp, outboxRuns) { waiting, busy, runs -> waiting == 0 && !busy && runs == 0 }
+        combine(backlog, settingUp, outboxRuns) { waiting, busy, runs -> waiting >= 0 && !busy && runs == 0 }
             .first { it }
+        val current = link ?: throw RelayException("Connection lost during fetch")
+        val session = current.ready ?: throw RelayException("Connection lost during fetch")
+        val fence = current.request(JSONObject().put("t", "echo").put("body", "").put("drain", true))
+        val through = fence.optLong("through", -1L)
+        combine(committedThrough, backlog, outboxRuns) { saved, waiting, runs ->
+            if (current.ready !== session || waiting < 0) throw RelayException("Connection changed during fetch")
+            val received = if (through >= 0) saved >= through else waiting == 0
+            received && runs == 0
+        }.first { it }
     }
 
     // ---- Called by the connection --------------------------------------------
@@ -207,17 +218,17 @@ class ChatEngine(
         relayHasPush = ready?.hasPush == true
         upgradePush = ready?.chatPush == false
         settingUp.value = true
+        committedThrough.value = 0
         backlog.value = ready?.queued ?: 0
         kick()
         scope.launch {
             try {
-                // Each is tried again at the next login. Sending does not depend on either.
-                quietly { publishKeys() }
-                quietly { learnUsernames() }
-                quietly {
-                    // What became of the last wake-up only matters if it went
-                    // to the address this phone still uses.
-                    if (syncPush()) describeWakeUp(ready?.pushStatus)?.let { _pushProblem.value = it }
+                coroutineScope {
+                    launch { quietly { publishKeys() } }
+                    launch { quietly { learnUsernames() } }
+                    quietly {
+                        if (syncPush()) describeWakeUp(ready?.pushStatus)?.let { _pushProblem.value = it }
+                    }
                 }
             } finally {
                 kick()
@@ -229,6 +240,7 @@ class ChatEngine(
     /** The connection that had logged in is gone. */
     fun onOffline() {
         backlog.value = -1
+        committedThrough.value = -1
     }
 
     private suspend fun quietly(block: suspend () -> Unit) {
@@ -244,6 +256,7 @@ class ChatEngine(
     suspend fun onFrame(frame: JSONObject) {
         if (frame.optString("t") != "msg") return
         handle(frame)
+        committedThrough.value = frame.optLong("seq", committedThrough.value)
         backlog.update { if (it > 0) it - 1 else it }
     }
 
@@ -989,18 +1002,18 @@ class ChatEngine(
     private class SocketPayload : RuntimeException()
 
     /** Uses the same Signal state and message transaction as the WebSocket. Only the socket ACKs. */
-    internal fun receiveChatPush(from: String, kind: Int, body: ByteArray) {
-        if (receive(from, kind, body, chatOnly = true)) kick()
+    internal fun receiveChatPush(from: String, kind: Int, body: ByteArray, allowed: () -> Boolean = { true }) {
+        if (receive(from, kind, body, allowChatPush = allowed)) kick()
     }
 
-    private fun receive(from: String, kind: Int, body: ByteArray?, chatOnly: Boolean = false): Boolean {
+    private fun receive(from: String, kind: Int, body: ByteArray?, allowChatPush: (() -> Boolean)? = null): Boolean {
         // Nothing the relay should ever send; acknowledge it so it goes away.
         if (body == null || from == selfId || !ContactCode.isId(from)) return false
         return try {
             tx.inTransaction {
-                if (dao.isBlocked(from)) return@inTransaction false
+                if (allowChatPush?.invoke() == false || dao.isBlocked(from)) return@inTransaction false
                 val payload = Payload.decode(signal.decrypt(from, kind, body))
-                if (chatOnly && payload !is Payload.Text && payload !is Payload.File && payload !is Payload.Pin &&
+                if (allowChatPush != null && payload !is Payload.Text && payload !is Payload.File && payload !is Payload.Pin &&
                     !(payload is Payload.LiveLocation && payload.type == Payload.LIVE_SHARE)
                 ) {
                     // Roll back the ratchet for a control frame. Its socket handler needs
@@ -1061,7 +1074,7 @@ class ChatEngine(
             // Saved during an earlier connection that ended before the acknowledgement.
             false
         } catch (_: UndecryptableException) {
-            if (!chatOnly) noteUnreadable(from)
+            if (allowChatPush == null) noteUnreadable(from)
             false
         }
     }
@@ -1341,6 +1354,7 @@ class ChatEngine(
     /** Says why the relay's last wake-up did not get through, or null if it did or nothing is known. */
     private fun describeWakeUp(status: Int?): String? = when {
         status == null || status == WAKE_UP_UNFINISHED || status in 200..299 -> null
+        status == -2 -> "The relay reached its daily push limit. Messages remain in your mailbox."
         status == 0 -> "The relay could not reach the push service, so the last wake-up was lost."
         status == 429 ->
             "The push service turned the relay's last wake-up away: too many requests. " +

@@ -318,6 +318,7 @@ class Messenger(context: Context) {
         }
     }
     private var announcedThrough = 0L
+    private val presentation = Mutex()
 
     private val setup = Mutex()
 
@@ -364,8 +365,7 @@ class Messenger(context: Context) {
                     account.first { it !is AccountState.Loading }
                     db.chat().observeChats().collect {
                         _chats.value = it
-                        val checkpoint = announceUnread(it)
-                        if (checkpoint != null) db.meta().put(MetaEntry(KEY_ANNOUNCED, checkpoint.toString()))
+                        presentUnread(db)
                     }
                 }
                 scope.launch { db.chat().observeBlocked().collect { _blocked.value = it } }
@@ -1308,25 +1308,35 @@ class Messenger(context: Context) {
     }
 
     /** Present an authenticated chat locally even when a new relay connection cannot be made. */
-    internal fun receiveChatPush(part: ChatPushPart) {
+    internal fun receiveChatPush(part: ChatPushPart, backup: java.util.UUID?) {
         scope.launch(Dispatchers.IO) {
-            val current = account.first { it !is AccountState.Loading }
-            if (current !is AccountState.Present || current.code.id != part.recipient || !current.registered) return@launch
-            val db = database ?: return@launch
-            val chat = engine ?: return@launch
+            // A failed save leaves both the scheduled copy and the relay queue available.
             try {
-                val body = db.inTransaction {
-                    if (_signedOut.value || _banned.value || _awaiting.value || db.chat().isBlocked(part.sender)) null
-                    else part.assemble(db.chatParts())
-                }
-                if (body != null && engine === chat && !_signedOut.value && !_banned.value && !_awaiting.value) {
-                    chat.receiveChatPush(part.sender, part.kind, body)
-                }
+                saveChatPush(part)
+                backup?.let { androidx.work.WorkManager.getInstance(appContext).cancelWorkById(it) }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                // The mailbox retains the original until a socket confirms a successful save.
+                // The expedited worker gets its own attempt.
             }
+        }
+    }
+
+    internal suspend fun saveChatPush(part: ChatPushPart) = withContext(Dispatchers.IO) {
+        val current = account.first { it !is AccountState.Loading }
+        if (current !is AccountState.Present || current.code.id != part.recipient || !current.registered) return@withContext
+        val db = database ?: return@withContext
+        val chat = engine ?: return@withContext
+        val body = db.inTransaction {
+            if (_signedOut.value || _banned.value || _awaiting.value || db.chat().isBlocked(part.sender)) null
+            else part.assemble(db.chatParts())
+        }
+        if (body != null && engine === chat && !_signedOut.value && !_banned.value && !_awaiting.value) {
+            chat.receiveChatPush(part.sender, part.kind, body) {
+                engine === chat && !_signedOut.value && !_banned.value && !_awaiting.value
+            }
+            presentUnread(db)
+            part.saved(db.chatParts())
         }
     }
 
@@ -1376,7 +1386,11 @@ class Messenger(context: Context) {
         }
         try {
             return withTimeoutOrNull(timeoutMillis) {
-                engine?.awaitCaughtUp()
+                try {
+                    engine?.awaitCaughtUp() ?: return@withTimeoutOrNull false
+                } catch (_: RelayException) {
+                    return@withTimeoutOrNull false
+                }
                 // A call that was among what arrived is handed to the main thread;
                 // let that happen before looking whether one is ringing.
                 withContext(Dispatchers.Main) { }
@@ -1429,6 +1443,13 @@ class Messenger(context: Context) {
     /** The push app could not give this phone a wake-up address. [reason] is for the screen. */
     fun onPushFailed(reason: String) {
         _pushProblem.value = reason
+    }
+
+    private suspend fun presentUnread(db: AppDatabase) = presentation.withLock {
+        // The observer and a cold push can arrive in either order. Read inside the
+        // lock so an older observer snapshot cannot clear a newer notification.
+        val checkpoint = announceUnread(db.chat().observeChats().first())
+        if (checkpoint != null) db.meta().put(MetaEntry(KEY_ANNOUNCED, checkpoint.toString()))
     }
 
     /** Tells the user about messages that arrived while they were not looking. Never says what is in them. */

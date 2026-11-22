@@ -14,8 +14,8 @@ import org.unifiedpush.android.connector.data.PushMessage
  *
  * It hands Maun an address at which wake-ups for this phone can be left, and
  * keys to encrypt them with. Maun gives both to the relay. When the relay has
- * a message for this phone and the phone is not connected, it leaves a wake-up
- * there; the push service passes it on, and Maun connects and fetches.
+ * a chat for this phone, it can deliver the Signal ciphertext on this channel
+ * immediately. The socket still takes and acknowledges the canonical mailbox row.
  */
 class WakeService : PushService() {
     private companion object {
@@ -58,9 +58,15 @@ class WakeService : PushService() {
         DeliveryTrace.began(this, kind)
         // Start at once: every second counts for a call that is ringing. The
         // scheduled job does the same work, and is what Android lets finish.
-        ChatPushPart.parse(message.content)?.let(messenger::receiveChatPush)
+        val part = ChatPushPart.parse(message.content)
+        if (part != null) {
+            // Submit the durable local copy before the connector can release this process.
+            // Start the same transaction directly so scheduler quotas cannot delay presentation.
+            val work = runCatching { ChatPushWorker.retain(this, message.content) }.getOrNull()
+            messenger.receiveChatPush(part, work)
+        }
         messenger.fetchSoon()
-        FetchWorker.schedule(this)
+        FetchWorker.schedule(this, coalesce = part != null)
     }
 
     override fun onRegistrationFailed(reason: FailedReason, instance: String) {

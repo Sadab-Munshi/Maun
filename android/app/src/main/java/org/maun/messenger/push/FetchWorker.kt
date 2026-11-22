@@ -135,7 +135,7 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
          * moment it does. Recovery jobs use a different chain so yesterday's
          * backoff cannot become a prerequisite of a new push.
          */
-        fun schedule(context: Context, attempt: Int = 0, delayMillis: Long = 0L, whenOnline: Boolean = false) {
+        fun schedule(context: Context, attempt: Int = 0, delayMillis: Long = 0L, whenOnline: Boolean = false, coalesce: Boolean = false) {
             val request = OneTimeWorkRequestBuilder<FetchWorker>()
                 .setConstraints(online)
                 .setInputData(workDataOf(KEY_ATTEMPT to attempt, KEY_WHEN_ONLINE to whenOnline))
@@ -152,7 +152,9 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                 }
                 .build()
             val name = if (delayMillis > 0) RECOVERY else NOW
-            WorkManager.getInstance(context).enqueueUniqueWork(name, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+            // Inline records already have durable local work. One fetch can reconcile a burst.
+            val policy = if (coalesce) ExistingWorkPolicy.KEEP else ExistingWorkPolicy.APPEND_OR_REPLACE
+            WorkManager.getInstance(context).enqueueUniqueWork(name, policy, request)
         }
 
         /**
@@ -175,6 +177,7 @@ class FetchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         /** Stops every fetch, queued or running, and the hourly one: this phone is signed out. */
         fun cancel(context: Context) {
             val work = WorkManager.getInstance(context)
+            work.cancelAllWorkByTag(ChatPushWorker.TAG)
             work.cancelUniqueWork(NOW)
             work.cancelUniqueWork(RECOVERY)
             work.cancelUniqueWork(HOURLY)
