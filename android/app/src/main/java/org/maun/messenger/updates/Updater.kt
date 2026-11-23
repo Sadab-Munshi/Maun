@@ -313,6 +313,7 @@ class Updater(private val context: Context) {
         }
     }
 
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.S)
     private fun installWithSession(file: File, release: PublishedRelease) {
         val installer = context.packageManager.packageInstaller
         var sessionId: Int? = null
