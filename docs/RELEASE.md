@@ -2,9 +2,9 @@
 
 Everything about putting a new Maun into people's hands: the key it is signed
 with, the workflow that builds it, the number in its name, and what an update
-does to the data already on the phone. Checked against app 0.29.0 (versionCode
-36) at `acc3494`; release-specific numbers and file names go stale, so verify
-them against `android/app/build.gradle.kts` and the release assets before use.
+does to the data already on the phone. Checked against app 0.30.0 (versionCode
+37); release-specific numbers and file names go stale, so verify them against
+`android/app/build.gradle.kts` and the release assets before use.
 
 ## The identity of the app
 
@@ -49,12 +49,12 @@ copy of the file and its password somewhere that is not a phone.
 4. When it is right, run **Release → Run workflow** on `main` with `publish`
    ticked. That creates the GitHub Release `v<versionName>` with the APKs
    attached and marks it the latest.
-5. The workflow creates the release with a short, fixed body. The in-app update
-   check shows the release body, so edit or expand it after publishing if the
-   release needs feature-specific notes; check what the updater will show.
+5. The workflow creates the release with a fixed body describing one-tap
+   self-updates and the files to choose. The in-app update check shows this
+   release body, so check it before publishing.
 
 The APKs are named `maun-<versionName>-<versionCode>-<abi>.apk`, for example
-`maun-0.29.0-36-arm64-v8a.apk`. `arm64-v8a` is nearly every phone made since
+`maun-0.30.0-37-arm64-v8a.apk`. `arm64-v8a` is nearly every phone made since
 2016; `armeabi-v7a` is the 32-bit fallback. The build produces one file per
 architecture so nobody downloads a copy of both native libraries.
 
@@ -72,11 +72,14 @@ compares that APK's version code with `BuildConfig.VERSION_CODE`.
 - Newer: the version, the release notes, and an **Update** button.
 - The download goes to the app's cache, under a temporary name, and is renamed
   only when it is whole; a half-downloaded file is never offered.
-- Installing is Android's own installer, with Android's confirmation, and the
-  user can cancel there. Maun never installs silently, and a cancelled install
-  leaves the download in place so it can be tried again.
-- A phone that does not yet allow Maun to install apps is sent to that setting
-  first.
+- Tapping **Update** downloads and starts the install session automatically.
+  The APK is checked for Maun's package ID, a newer version, and the same signing
+  certificate before it is handed to Android.
+- On eligible Android 12+ self-updates, Maun asks Android to omit the second
+  installer confirmation. Android can still require confirmation, and Android's
+  install verification or Play Protect is never bypassed.
+- If Maun has not yet been allowed to install apps, Android Settings opens once;
+  after the user grants that access, Maun resumes the install on return.
 - No connection, a refused connection, a 404, a draft or a pre-release: each
   says so in a line the reader can act on.
 

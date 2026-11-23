@@ -635,6 +635,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun installUpdate(release: PublishedRelease) = messenger.updates.install(release)
 
+    fun resumePendingUpdate() = messenger.updates.resumePendingInstall()
+
     fun dismissUpdate() = messenger.updates.dismiss()
 
     /** A notification about several conversations was tapped, until the list is shown. */

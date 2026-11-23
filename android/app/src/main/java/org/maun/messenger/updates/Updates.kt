@@ -34,8 +34,11 @@ sealed interface UpdateState {
     /** [fraction] is null while the size of the file is still unknown. */
     data class Downloading(val release: PublishedRelease, val fraction: Float?) : UpdateState
 
-    /** Downloaded and handed to Android's installer, which asks the user itself. */
+    /** The APK is ready, usually while Android Settings is open for install-source approval. */
     data class ReadyToInstall(val release: PublishedRelease) : UpdateState
+
+    /** Android is installing the update after the user's single Update action. */
+    data class Installing(val release: PublishedRelease) : UpdateState
 
     /** Why the check or the download did not work, in words a person can act on. */
     data class Failed(val reason: String) : UpdateState

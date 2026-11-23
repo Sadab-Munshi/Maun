@@ -618,6 +618,9 @@ class ScreensTest {
     fun updateReady() = shoot("update-ready") { Update(UpdateState.ReadyToInstall(newer)) }
 
     @Test
+    fun updateInstalling() = shoot("update-installing") { Update(UpdateState.Installing(newer)) }
+
+    @Test
     fun updateOffline() = shoot("update-offline") {
         Update(UpdateState.Failed("Could not reach GitHub. Check the connection and try again."))
     }

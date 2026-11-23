@@ -35,11 +35,10 @@
         android:name="android.hardware.camera"
         android:required="false" />
 
-    <!--
-        "Check for updates" hands a downloaded APK to Android's installer. Maun
-        never installs anything itself: Android asks, and the user may say no.
-    -->
+    <!-- Maun hands verified self-updates to Android's PackageInstaller. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Lets Android skip its second confirmation for eligible self-update sessions. -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
 
     <!-- To say that a message has arrived. Asked for at first login or from Settings. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -87,6 +86,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Maun"
         android:usesCleartextTraffic="false">
+
+        <receiver
+            android:name=".updates.InstallStatusReceiver"
+            android:exported="false" />
 
         <activity
             android:name=".MainActivity"

@@ -16,7 +16,7 @@ analytics, no phone number, and no chat history on any server.
 - Building, signing and publishing a version: [docs/RELEASE.md](docs/RELEASE.md)
 - Working on this repository, with or without an AI agent: [AGENTS.md](AGENTS.md)
 
-## Status: app 0.29.0 (files, voice messages, voice and video calls, profile pictures, tappable links, a location sent once or a live location for a quarter of an hour to a day, and an optional member-only mode with usernames)
+## Status: app 0.30.0 (one-tap self-updates on supported Android versions, files, voice messages, voice and video calls, profile pictures, tappable links, a location sent once or a live location for a quarter of an hour to a day, and an optional member-only mode with usernames)
 
 Two phones can exchange end-to-end encrypted text, and are told about new
 messages while the app is closed. The app can be locked behind the phone's

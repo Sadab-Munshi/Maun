@@ -169,6 +169,10 @@ jobs:
           notes=$(cat <<NOTES
           Maun $VERSION_NAME (versionCode $VERSION_CODE).
 
+          Tap Update once to download and start installing. Android may still
+          request confirmation on devices or installs that require it. The APK
+          is verified before Maun hands it to Android's PackageInstaller.
+
           Signed with Maun's permanent release key. Updating keeps your chats,
           keys, contacts, settings, saved media and login: do not uninstall.
 
