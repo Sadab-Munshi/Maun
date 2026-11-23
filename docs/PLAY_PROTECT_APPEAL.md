@@ -5,9 +5,9 @@ code cannot do: asking Google to correct a classification, and recording what
 the phone actually said.
 
 It was written when 0.24.2 was the newest release, and its example file names
-and the "Facts to paste" block have been brought up to 0.29.0 (versionCode 36).
-When a newer release exists, read the version and checksum off that release
-page — nothing else here changes.
+and the "Facts to paste" block are current at 0.30.0 (versionCode 37). When a
+newer release exists, read the version and checksum off that release page —
+nothing else here changes.
 
 ## First: which file is on the phone
 
@@ -30,8 +30,8 @@ file being tested is not the release at all.
 To tell what a file is, on a computer:
 
 ```
-apksigner verify --print-certs maun-0.29.0-36-arm64-v8a.apk  # the certificate
-sha256sum maun-0.29.0-36-arm64-v8a.apk                       # compare with PLAY_PROTECT.md
+apksigner verify --print-certs maun-0.30.0-37-arm64-v8a.apk  # the certificate
+sha256sum maun-0.30.0-37-arm64-v8a.apk                       # compare with PLAY_PROTECT.md
 unzip -l maun-release-apk.zip                                # what is inside the artifact
 ```
 
@@ -72,9 +72,9 @@ Facts to paste, all of which are true of this repository:
 ```
 App name:      Maun
 Package name:  org.maun.messenger
-Version:       0.29.0 (versionCode 36), targetSdkVersion 36, minSdkVersion 29
-Binary:        https://github.com/Sadab-Munshi/Maun/releases/download/v0.29.0/maun-0.29.0-36-arm64-v8a.apk
-               sha256 9045f5b0bb35ec9e33639ef26c34194fcfdaca7ea98487ec6257a883ec9358c2
+Version:       0.30.0 (versionCode 37), targetSdkVersion 36, minSdkVersion 29
+Binary:        https://github.com/Sadab-Munshi/Maun/releases/download/v0.30.0/maun-0.30.0-37-arm64-v8a.apk
+               sha256 ff2d83a4c6423e033c137228e780972e0878bd4cad016345649142a1258822b5
 Source:        https://github.com/Sadab-Munshi/Maun
 Signing cert  35564CDE8213C64B4354421DC57523E7591979A466FD5E0EA81CF4D91C5B41FD
               (the same key for every release; apksigner verify --print-certs)
@@ -88,14 +88,16 @@ A description that states the facts without arguing:
 > release page. The app requests no SMS, notification-listener or accessibility
 > permission. It has no advertising or analytics SDK, no dynamic code loading,
 > `allowBackup=false` and `usesCleartextTraffic=false`, and it is not debuggable.
-> It declares `REQUEST_INSTALL_PACKAGES` for one purpose only: the in-app "Check
-> for updates" button downloads the APK from the project's own GitHub release
-> and hands it to Android's installer, which asks the user. The app never
-> installs anything itself. Before that hand-off the downloaded file is verified
-> to be the same package id, a higher version code, and the same signing
-> certificate as the running app. The APK attached to this appeal is the exact
-> file published, and its signing certificate is unchanged since the first
-> release.
+> It declares `REQUEST_INSTALL_PACKAGES` and
+> `UPDATE_PACKAGES_WITHOUT_USER_ACTION` for one purpose only: the in-app "Check
+> for updates" action downloads the APK from the project's own GitHub release
+> and submits a self-update session to Android's PackageInstaller. On eligible
+> Android versions this can avoid a second confirmation; Android may still
+> require user action, and neither Android verification nor Play Protect is
+> bypassed. Before hand-off, the download is checked for the same package id, a
+> newer version code, and the same signing certificate as the running app. The
+> APK attached to this appeal is the exact file published, and its signing
+> certificate is unchanged since the first release.
 
 Attach the APK or give the release URL, and say which phone showed which
 message.

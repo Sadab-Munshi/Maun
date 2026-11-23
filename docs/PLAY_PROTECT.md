@@ -118,11 +118,11 @@ With that answer:
 ## Verifying a download before installing it
 
 Every release publishes both APKs. These were the two files attached to the
-newest release when this section was last checked — 0.29.0, version code 36:
+newest release when this section was last checked — 0.30.0, version code 37:
 
 ```
-9045f5b0bb35ec9e33639ef26c34194fcfdaca7ea98487ec6257a883ec9358c2  maun-0.29.0-36-arm64-v8a.apk
-7d54dfa6d6a1efc3d29f88d88b4c4d61e4a6c27585d3d4bd719cbab32e1179d0  maun-0.29.0-36-armeabi-v7a.apk
+ff2d83a4c6423e033c137228e780972e0878bd4cad016345649142a1258822b5  maun-0.30.0-37-arm64-v8a.apk
+9e56fe55a4b223e96c3cf3dc1a2084f062ef51b4510b1400b58eb6a9f2b06c49  maun-0.30.0-37-armeabi-v7a.apk
 ```
 
 This list goes stale with every release, so treat the release page as the
