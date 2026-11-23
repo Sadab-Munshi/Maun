@@ -277,6 +277,7 @@ fun SettingsScreen(
                     is UpdateState.Available -> "Maun ${state.release.versionName} is available."
                     is UpdateState.Downloading -> "Downloading ${state.release.versionName}…"
                     is UpdateState.ReadyToInstall -> "${state.release.versionName} is ready to install."
+                    is UpdateState.Installing -> "Installing ${state.release.versionName}…"
                     is UpdateState.Failed -> "Couldn't check. Tap to try again."
                 },
                 onClick = {
@@ -359,10 +360,9 @@ fun SettingsScreen(
 }
 
 /**
- * What the update check has to say, and the one thing to do about it. Android
- * installs the APK itself, with its own question; this only downloads it and
- * points the way. Every state says something a person can act on, including
- * the ones where nothing happened.
+ * What the update check has to say, and the one thing to do about it. One tap
+ * starts the download and hands the verified APK to Android for installation;
+ * Android may still request confirmation on devices where it requires it.
  */
 @Composable
 internal fun UpdateDialog(
@@ -372,12 +372,6 @@ internal fun UpdateDialog(
     onInstall: (PublishedRelease) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val release = when (state) {
-        is UpdateState.Available -> state.release
-        is UpdateState.Downloading -> state.release
-        is UpdateState.ReadyToInstall -> state.release
-        else -> null
-    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -388,6 +382,7 @@ internal fun UpdateDialog(
                     is UpdateState.Available -> "Maun ${state.release.versionName} is available"
                     is UpdateState.Downloading -> "Downloading Maun ${state.release.versionName}"
                     is UpdateState.ReadyToInstall -> "Ready to install"
+                    is UpdateState.Installing -> "Installing Maun ${state.release.versionName}"
                     is UpdateState.Failed -> "Couldn't check for updates"
                 },
             )
@@ -419,7 +414,8 @@ internal fun UpdateDialog(
                             )
                         }
                         Text(
-                            text = "Your chats, contacts and settings stay as they are.",
+                            text = "Tap Update to download and start installing. Android may still ask for confirmation " +
+                                "if this phone requires it. Your chats, contacts and settings stay as they are.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -441,8 +437,13 @@ internal fun UpdateDialog(
                         )
                     }
                     is UpdateState.ReadyToInstall -> Text(
-                        text = "Downloaded. Android will ask you to confirm the install; Maun cannot " +
-                            "install anything by itself.",
+                        text = "The download is ready. Allow Maun to install apps in Android settings; " +
+                            "Maun will continue automatically when you return.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    is UpdateState.Installing -> Text(
+                        text = "Android is installing the verified update. It may still ask for confirmation " +
+                            "if this phone requires it.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     is UpdateState.Failed -> Text(
@@ -456,7 +457,7 @@ internal fun UpdateDialog(
         confirmButton = {
             when (state) {
                 is UpdateState.Available -> TextButton(onClick = { onDownload(state.release) }) {
-                    Text(if (release == null) "Update" else "Update")
+                    Text("Update")
                 }
                 is UpdateState.ReadyToInstall -> TextButton(onClick = { onInstall(state.release) }) {
                     Text("Install")

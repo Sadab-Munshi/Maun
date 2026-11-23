@@ -1,7 +1,9 @@
 package org.maun.messenger.updates
 
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -10,6 +12,7 @@ import android.provider.Settings
 import androidx.core.content.FileProvider
 import java.io.File
 import java.io.FileOutputStream
+import java.io.FileInputStream
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
@@ -31,9 +34,10 @@ import org.maun.messenger.network.RelayClient
  * installed, downloads the APK for this phone and hands it to Android's own
  * installer.
  *
- * Nothing is installed by Maun: the installer is Android's, with Android's
- * confirmation, and the user can cancel it there. Nothing is checked without
- * being asked either — the check runs when the reader taps it, and not before.
+ * Maun checks only after the person asks. The APK is verified against Maun's
+ * package, version and signing certificate, then Android's PackageInstaller
+ * installs it. On supported Android versions it can complete the self-update
+ * without a second confirmation; Android can still require user action.
  */
 class Updater(private val context: Context) {
 
@@ -41,6 +45,7 @@ class Updater(private val context: Context) {
 
     private val _state = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val state: StateFlow<UpdateState> = _state.asStateFlow()
+    @Volatile private var waitingForInstallPermission = false
 
     /**
      * For the small API call: a minute is generous for one JSON answer.
@@ -124,7 +129,7 @@ class Updater(private val context: Context) {
                 _state.value = UpdateState.Failed("The download failed. Try again.")
                 return@launch
             }
-            _state.value = UpdateState.ReadyToInstall(release)
+            install(release)
         }
     }
 
@@ -258,12 +263,14 @@ class Updater(private val context: Context) {
         }
     }
 
-    /**
-     * Hands the downloaded APK to Android's installer. When this phone does not
-     * yet let Maun install apps, the screen for that is opened instead, and the
-     * install is offered again afterwards.
-     */
+    /** Installs a verified download after the user has chosen Update. */
     fun install(release: PublishedRelease) {
+        if (_state.value is UpdateState.Installing) return
+        _state.value = UpdateState.Installing(release)
+        scope.launch { installDownloaded(release) }
+    }
+
+    private fun installDownloaded(release: PublishedRelease) {
         val file = File(updatesDirectory(), "maun-${release.versionCode}.apk")
         if (!file.isFile || file.length() == 0L) {
             _state.value = UpdateState.Failed("The download is gone. Download it again.")
@@ -294,20 +301,82 @@ class Updater(private val context: Context) {
             }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+            waitingForInstallPermission = true
+            _state.value = UpdateState.ReadyToInstall(release)
             openInstallPermission()
             return
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            installWithSession(file, release)
+        } else {
+            installWithSystemInstaller(file, release)
+        }
+    }
+
+    private fun installWithSession(file: File, release: PublishedRelease) {
+        val installer = context.packageManager.packageInstaller
+        var sessionId: Int? = null
+        try {
+            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
+                setAppPackageName(context.packageName)
+                setSize(file.length())
+                setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+            }
+            sessionId = installer.createSession(params)
+            installer.openSession(sessionId).use { session ->
+                session.openWrite("base.apk", 0L, file.length()).use { output ->
+                    FileInputStream(file).use { input -> input.copyTo(output) }
+                    session.fsync(output)
+                }
+                val statusIntent = Intent(context, InstallStatusReceiver::class.java)
+                    .setAction(InstallStatusReceiver.ACTION)
+                val statusPendingIntent = PendingIntent.getBroadcast(
+                    context,
+                    sessionId,
+                    statusIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+                )
+                session.commit(statusPendingIntent.intentSender)
+            }
+            waitingForInstallPermission = false
+            _state.value = UpdateState.Installing(release)
+        } catch (e: Exception) {
+            sessionId?.let { runCatching { installer.abandonSession(it) } }
+            Log.w(TAG, "Could not start the update install session", e)
+            _state.value = UpdateState.Failed("Android could not start the update. Try again.")
+        }
+    }
+
+    /** Older Android versions still use Android's installer UI; they cannot skip its confirmation. */
+    private fun installWithSystemInstaller(file: File, release: PublishedRelease) {
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         val intent = Intent(Intent.ACTION_VIEW)
             .setDataAndType(uri, APK_MIME)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         try {
             context.startActivity(intent)
+            waitingForInstallPermission = false
+            _state.value = UpdateState.ReadyToInstall(release)
         } catch (_: Exception) {
             _state.value = UpdateState.Failed("This phone has no way to install the update. Download it from the release page instead.")
+        }
+    }
+
+    /** Continue automatically after the person grants Maun install access in Android Settings. */
+    fun resumePendingInstall() {
+        val error = context.getSharedPreferences(INSTALL_PREFS, Context.MODE_PRIVATE)
+            .getString(INSTALL_ERROR, null)
+        if (error != null) {
+            context.getSharedPreferences(INSTALL_PREFS, Context.MODE_PRIVATE).edit().remove(INSTALL_ERROR).apply()
+            _state.value = UpdateState.Failed(error)
             return
         }
-        _state.value = UpdateState.ReadyToInstall(release)
+        if (!waitingForInstallPermission || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val release = (_state.value as? UpdateState.ReadyToInstall)?.release ?: return
+        if (context.packageManager.canRequestPackageInstalls()) {
+            waitingForInstallPermission = false
+            install(release)
+        }
     }
 
     /**
@@ -357,7 +426,7 @@ class Updater(private val context: Context) {
 
     /** Puts the answer away, so Settings goes back to offering the check. */
     fun dismiss() {
-        if (_state.value is UpdateState.Downloading) return
+        if (_state.value is UpdateState.Downloading || _state.value is UpdateState.Installing) return
         _state.value = UpdateState.Idle
     }
 
@@ -366,6 +435,8 @@ class Updater(private val context: Context) {
     private companion object {
         const val TAG = "MaunUpdate"
         const val APK_MIME = "application/vnd.android.package-archive"
+        const val INSTALL_PREFS = "update_install"
+        const val INSTALL_ERROR = "last_error"
 
         /** A release APK is about 30 MB; anything of this size is not one. */
         const val MAX_DOWNLOAD_BYTES = 120L * 1024 * 1024

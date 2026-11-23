@@ -283,6 +283,7 @@ fun AppRoot(viewModel: MainViewModel = viewModel()) {
                             LifecycleResumeEffect(Unit) {
                                 viewModel.refreshDelivery()
                                 viewModel.refreshPrivacy()
+                                viewModel.resumePendingUpdate()
                                 onPauseOrDispose { }
                             }
                             SettingsScreen(
