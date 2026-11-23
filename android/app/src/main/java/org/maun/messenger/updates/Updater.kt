@@ -364,10 +364,10 @@ class Updater(private val context: Context) {
 
     /** Continue automatically after the person grants Maun install access in Android Settings. */
     fun resumePendingInstall() {
-        val error = context.getSharedPreferences(INSTALL_PREFS, Context.MODE_PRIVATE)
-            .getString(INSTALL_ERROR, null)
+        val error = context.getSharedPreferences(UPDATE_INSTALL_PREFS, Context.MODE_PRIVATE)
+            .getString(UPDATE_INSTALL_ERROR, null)
         if (error != null) {
-            context.getSharedPreferences(INSTALL_PREFS, Context.MODE_PRIVATE).edit().remove(INSTALL_ERROR).apply()
+            context.getSharedPreferences(UPDATE_INSTALL_PREFS, Context.MODE_PRIVATE).edit().remove(UPDATE_INSTALL_ERROR).apply()
             _state.value = UpdateState.Failed(error)
             return
         }
@@ -435,8 +435,6 @@ class Updater(private val context: Context) {
     private companion object {
         const val TAG = "MaunUpdate"
         const val APK_MIME = "application/vnd.android.package-archive"
-        const val INSTALL_PREFS = "update_install"
-        const val INSTALL_ERROR = "last_error"
 
         /** A release APK is about 30 MB; anything of this size is not one. */
         const val MAX_DOWNLOAD_BYTES = 120L * 1024 * 1024

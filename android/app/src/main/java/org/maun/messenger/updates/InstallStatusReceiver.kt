@@ -8,13 +8,16 @@ import android.os.Build
 import android.util.Log
 
 /** Receives Android's result for Maun's self-update install session. */
+internal const val UPDATE_INSTALL_PREFS = "update_install"
+internal const val UPDATE_INSTALL_ERROR = "last_error"
+
 class InstallStatusReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION) return
         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
-        val preferences = context.getSharedPreferences(Updater.INSTALL_PREFS, Context.MODE_PRIVATE)
+        val preferences = context.getSharedPreferences(UPDATE_INSTALL_PREFS, Context.MODE_PRIVATE)
         when (status) {
-            PackageInstaller.STATUS_SUCCESS -> preferences.edit().remove(Updater.INSTALL_ERROR).apply()
+            PackageInstaller.STATUS_SUCCESS -> preferences.edit().remove(UPDATE_INSTALL_ERROR).apply()
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 val confirmation = userAction(intent)
                 if (confirmation == null) {
@@ -45,7 +48,7 @@ class InstallStatusReceiver : BroadcastReceiver() {
 
     private fun fail(preferences: android.content.SharedPreferences) {
         preferences.edit()
-            .putString(Updater.INSTALL_ERROR, "Android could not finish installing the update. Try again from Settings.")
+            .putString(UPDATE_INSTALL_ERROR, "Android could not finish installing the update. Try again from Settings.")
             .apply()
     }
 
